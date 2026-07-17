@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Projeto
+config.txt
+placas.db
+placas.db-journal
+*.log
+
+# Modelos (baixados no entrypoint)
+models/*.onnx
+models/*.pt
+
+# Snapshots e mídia
+static/snapshots/*
+!static/snapshots/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+.DS_Store
+
+# Docker
+.env

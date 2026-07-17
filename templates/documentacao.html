@@ -1,0 +1,583 @@
+{% extends "base.html" %}
+{% block title %}Documentação — ALPR{% endblock %}
+{% block conteudo %}
+<style>
+  .doc-header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 16px; }
+  .doc-header p { margin: 6px 0 0; color: #94a3b8; max-width: 820px; line-height: 1.5; }
+  .doc-tabs { display: inline-flex; gap: 6px; padding: 4px; background: #111827; border: 1px solid #2a3142; border-radius: 8px; }
+  .doc-tab { background: transparent; color: #cbd5e1; border: 1px solid transparent; padding: 9px 14px; }
+  .doc-tab:hover { background: #1f2937; }
+  .doc-tab.active { background: #16a34a; color: #fff; }
+  .doc-panel { display: none; }
+  .doc-panel.active { display: block; }
+  .doc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .doc-section { background: #1a1f2b; border: 1px solid #2a3142; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .doc-section h2, .doc-section h3 { margin-top: 0; }
+  .doc-section p, .doc-section li { color: #cbd5e1; line-height: 1.55; }
+  .doc-section small { color: #94a3b8; }
+  .doc-list { margin: 0; padding-left: 20px; }
+  .doc-code { font-family: Consolas, Monaco, monospace; font-size: 13px; color: #e5e7eb; background: #0a0d13; border: 1px solid #2a3142; border-radius: 6px; padding: 10px; overflow-x: auto; white-space: pre-wrap; }
+  .endpoint { display: grid; grid-template-columns: 92px minmax(180px, 1fr); gap: 10px; align-items: start; padding: 10px 0; border-bottom: 1px solid #2a3142; }
+  .endpoint:last-child { border-bottom: 0; }
+  .method { display: inline-block; min-width: 62px; text-align: center; padding: 3px 8px; border-radius: 4px; font: 700 12px Consolas, Monaco, monospace; }
+  .get { background: #0f766e; }
+  .post { background: #0369a1; }
+  .put { background: #7c3aed; }
+  .delete { background: #dc2626; }
+  .path { font-family: Consolas, Monaco, monospace; color: #fff; }
+  .note { color: #94a3b8; margin-top: 4px; }
+  .api-examples { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-top: 18px; }
+  .api-card { background: #111827; border: 1px solid #2a3142; border-radius: 8px; padding: 12px; min-width: 0; }
+  .api-card h3 { margin: 0 0 8px; font-size: 15px; }
+  .api-card .api-meta { color: #94a3b8; font-size: 12px; margin-bottom: 8px; }
+  .api-label { color: #4da3ff; font-size: 12px; font-weight: 700; margin: 10px 0 4px; text-transform: uppercase; }
+  .api-runner { background: #111827; border: 1px solid #2a3142; border-radius: 8px; padding: 14px; margin: 18px 0; }
+  .runner-row { display: grid; grid-template-columns: 1fr 120px; gap: 12px; margin-bottom: 12px; }
+  .runner-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .runner-field label { color: #94a3b8; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+  .runner-field input, .runner-field select, .runner-field textarea { width: 100%; box-sizing: border-box; }
+  .runner-field textarea { min-height: 132px; resize: vertical; font-family: Consolas, Monaco, monospace; }
+  .runner-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .runner-actions button { min-height: 38px; }
+  .runner-status { color: #94a3b8; font-size: 13px; }
+  .runner-image { display: none; max-width: 100%; border-radius: 6px; border: 1px solid #2a3142; margin-top: 10px; }
+  @media (max-width: 720px) {
+    .doc-header { display: block; }
+    .doc-tabs { width: 100%; margin-top: 12px; box-sizing: border-box; }
+    .doc-tab { flex: 1; }
+    .endpoint { grid-template-columns: 1fr; }
+    .runner-row { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="doc-header">
+  <div>
+    <h1>Documentação</h1>
+    <p>Guia da aplicação ALPR para operação diária, integração via API e manutenção do código. Use as abas para alternar entre visão do usuário e visão do desenvolvedor.</p>
+  </div>
+  <div class="doc-tabs" role="tablist" aria-label="Abas da documentação">
+    <button class="doc-tab active" id="tab-user" role="tab" aria-selected="true" aria-controls="panel-user" onclick="mostrarAba('user')">User</button>
+    <button class="doc-tab" id="tab-dev" role="tab" aria-selected="false" aria-controls="panel-dev" onclick="mostrarAba('dev')">Developer</button>
+  </div>
+</div>
+
+<section id="panel-user" class="doc-panel active" role="tabpanel" aria-labelledby="tab-user">
+  <div class="doc-grid">
+    <div class="doc-section">
+      <h2>Funcionamento do Web</h2>
+      <p>A interface web centraliza o monitoramento de câmeras, leitura manual de placas, consulta do histórico, listas de atenção, testes e configuração do pipeline.</p>
+      <ul class="doc-list">
+        <li><strong>Ao Vivo:</strong> mostra câmeras ativas por bomba e lado, stream MJPEG quando a detecção automática está ligada e botão <strong>Ler Placa</strong> para captura manual.</li>
+        <li><strong>Dashboard:</strong> resume volume de leituras, placas mais frequentes, status do pipeline e logs recentes.</li>
+        <li><strong>Histórico:</strong> consulta detecções gravadas no SQLite com filtro por placa, período e paginação.</li>
+        <li><strong>Listas:</strong> cadastra placas em lista branca ou negra para acompanhamento operacional.</li>
+        <li><strong>Câmeras:</strong> cadastra bomba, lado, tipo de câmera, RTSP/Intelbras, teste de imagem e status ativo.</li>
+        <li><strong>Configuração:</strong> ajusta detector, OCR, snapshots, thresholds, RTSP e comportamento do pipeline.</li>
+        <li><strong>Testes:</strong> permite validar imagens e OCR sem depender do fluxo ao vivo.</li>
+      </ul>
+    </div>
+
+    <div class="doc-section">
+      <h2>Fluxo de Leitura</h2>
+      <ol class="doc-list">
+        <li>A câmera fornece frames por USB, RTSP ou integração Intelbras.</li>
+        <li>O detector localiza regiões candidatas de placa no frame.</li>
+        <li>O OCR pré-processa o crop, remove ruídos e tenta reconhecer caracteres.</li>
+        <li>O validador aceita padrões brasileiros antigos e Mercosul.</li>
+        <li>Quando há múltiplos snapshots ou engines, o sistema vota no resultado mais consistente.</li>
+        <li>A detecção é registrada em <span class="path">placas.db</span> e aparece em recentes, histórico e dashboard.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="doc-section">
+    <h2>Operação Recomendada</h2>
+    <div class="doc-grid">
+      <div>
+        <h3>Primeiro Uso</h3>
+        <ul class="doc-list">
+          <li>Abra <span class="path">/cameras</span> e cadastre cada câmera com nome, bomba e lado.</li>
+          <li>Use o teste de câmera antes de ativar o monitoramento.</li>
+          <li>Configure modelo, OCR e thresholds em <span class="path">/configuracao</span>.</li>
+          <li>Confira em <span class="path">/</span> se as câmeras ativas aparecem no grid ao vivo.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Leitura Manual</h3>
+        <ul class="doc-list">
+          <li>Clique em <strong>Ler Placa</strong> no card da câmera.</li>
+          <li>O sistema captura um ou mais frames conforme <span class="path">snapshots_votacao</span>.</li>
+          <li>O retorno mostra placa, padrão, confiança, votos por foto/engine e link do snapshot quando habilitado.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Diagnóstico</h3>
+        <ul class="doc-list">
+          <li>Use <span class="path">/api/stats</span> para verificar FPS, uptime e pipeline.</li>
+          <li>Use <span class="path">/api/logs</span> para erros de câmera, OCR ou detector.</li>
+          <li>Use <span class="path">/api/debug/ocr_crop</span> para ver o último crop enviado ao OCR.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="panel-dev" class="doc-panel" role="tabpanel" aria-labelledby="tab-dev">
+  <div class="doc-section">
+    <h2>Arquitetura da Aplicação</h2>
+    <div class="doc-grid">
+      <div>
+        <h3>Entrada e Servidor</h3>
+        <ul class="doc-list">
+          <li><span class="path">main.py</span> ajusta o event loop no Windows e inicia o servidor.</li>
+          <li><span class="path">servidor.py</span> cria o FastAPI, monta arquivos estáticos, inicializa banco e inicia pipelines em background.</li>
+          <li><span class="path">rotas/paginas.py</span> expõe as páginas Jinja2.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Pipeline ALPR</h3>
+        <ul class="doc-list">
+          <li><span class="path">pipeline.py</span> orquestra captura, detector, OCR, votação e persistência.</li>
+          <li><span class="path">detector.py</span> carrega modelo ONNX/YOLO e retorna bounding boxes.</li>
+          <li><span class="path">ocr.py</span> suporta Tesseract, EasyOCR, PaddleOCR, docTR, fast-plate-ocr, AutoOCR e MultiOCR.</li>
+          <li><span class="path">validador.py</span> normaliza e valida placas antigas e Mercosul.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Estado e Dados</h3>
+        <ul class="doc-list">
+          <li><span class="path">banco.py</span> gerencia SQLite, tabelas <span class="path">deteccoes</span>, <span class="path">listas_placas</span> e <span class="path">cameras</span>.</li>
+          <li><span class="path">estado.py</span> mantém status em memória, frames recentes, logs e crop de debug.</li>
+          <li><span class="path">config.py</span> lê e salva <span class="path">config.txt</span> com padrões seguros.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="doc-section">
+    <h2>API REST</h2>
+    <p><small>Base URL local padrão: <span class="path">http://localhost:8000</span>. Os endpoints abaixo retornam JSON, exceto snapshots/testes que retornam JPEG.</small></p>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/deteccoes</span><div class="note">Lista detecções. Query: <span class="path">placa</span>, <span class="path">desde</span>, <span class="path">ate</span>, <span class="path">limit</span>, <span class="path">offset</span>.</div></div></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><div><span class="path">/api/deteccoes/{id}</span><div class="note">Remove uma detecção do histórico.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/stats</span><div class="note">Retorna total, leituras de hoje, top placas, FPS, uptime, pipeline e modo automático.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/logs?nivel=ERROR&limit=100</span><div class="note">Lista logs em memória, opcionalmente filtrados por nível.</div></div></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><div><span class="path">/api/logs</span><div class="note">Limpa logs em memória.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/recentes</span><div class="note">Retorna as últimas detecções mantidas no estado da aplicação.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/status</span><div class="note">Snapshot completo do status operacional.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/config</span><div class="note">Retorna configuração atual e padrões. Campos sensíveis são mascarados.</div></div></div>
+    <div class="endpoint"><span class="method post">POST</span><div><span class="path">/api/config</span><div class="note">Salva configuração permitida e tenta reiniciar o pipeline.</div></div></div>
+    <div class="endpoint"><span class="method post">POST</span><div><span class="path">/api/camera/teste</span><div class="note">Testa parâmetros de câmera avulsos e devolve JPEG.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/cameras</span><div class="note">Lista câmeras cadastradas.</div></div></div>
+    <div class="endpoint"><span class="method post">POST</span><div><span class="path">/api/cameras</span><div class="note">Cria câmera. Campos principais: nome, bomba, lado, camera_tipo, camera_indice, dados Intelbras/RTSP, ativo.</div></div></div>
+    <div class="endpoint"><span class="method put">PUT</span><div><span class="path">/api/cameras/{id}</span><div class="note">Atualiza câmera e reinicia/paralisa pipeline conforme status ativo.</div></div></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><div><span class="path">/api/cameras/{id}</span><div class="note">Remove câmera e para seu pipeline.</div></div></div>
+    <div class="endpoint"><span class="method post">POST</span><div><span class="path">/api/cameras/{id}/teste</span><div class="note">Captura frame de teste da câmera cadastrada e retorna JPEG.</div></div></div>
+    <div class="endpoint"><span class="method post">POST</span><div><span class="path">/api/cameras/{id}/ler-placa</span><div class="note">Executa leitura manual, salva detecção quando há placa válida e retorna placa, confiança, votos, snapshot e frame_url.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/listas?tipo=branca</span><div class="note">Lista placas cadastradas em listas branca/negra.</div></div></div>
+    <div class="endpoint"><span class="method post">POST</span><div><span class="path">/api/listas</span><div class="note">Cria item de lista. Body: placa, tipo branca/negra, descricao.</div></div></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><div><span class="path">/api/listas/{id}</span><div class="note">Remove item de lista.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/modelos</span><div class="note">Lista arquivos <span class="path">.onnx</span> disponíveis em <span class="path">models/</span>.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/debug/ocr_crop</span><div class="note">Retorna JPEG do último crop enviado ao OCR.</div></div></div>
+
+    <h2 style="margin-top:22px">Executar endpoint</h2>
+    <div class="api-runner">
+      <div class="runner-field" style="margin-bottom:12px">
+        <label for="runner-endpoint">Endpoint</label>
+        <select id="runner-endpoint" onchange="selecionarEndpoint()"></select>
+      </div>
+      <div class="runner-row">
+        <div class="runner-field">
+          <label for="runner-url">URL montada</label>
+          <input id="runner-url" type="text" readonly>
+        </div>
+        <div class="runner-field">
+          <label for="runner-method">Método</label>
+          <input id="runner-method" type="text" readonly>
+        </div>
+      </div>
+      <div class="doc-grid">
+        <div class="runner-field">
+          <label for="runner-params">Parâmetros JSON</label>
+          <textarea id="runner-params" oninput="atualizarRunnerUrl()"></textarea>
+        </div>
+        <div class="runner-field">
+          <label for="runner-body">Body JSON</label>
+          <textarea id="runner-body"></textarea>
+        </div>
+      </div>
+      <div class="runner-actions" style="margin-top:12px">
+        <button type="button" onclick="executarEndpoint()">Executar</button>
+        <button type="button" onclick="selecionarEndpoint()">Restaurar exemplo</button>
+        <span id="runner-status" class="runner-status"></span>
+      </div>
+      <div class="api-label" style="margin-top:14px">Resposta</div>
+      <pre id="runner-response" class="doc-code">Aguardando execução.</pre>
+      <img id="runner-image" class="runner-image" alt="Resposta em imagem">
+    </div>
+
+    <h2 style="margin-top:22px">JSON de cada requisição</h2>
+    <p><small>Quando o endpoint não possui body, a documentação indica os parâmetros de rota/query e mostra um exemplo de resposta.</small></p>
+    <div id="api-json-exemplos" class="api-examples"></div>
+  </div>
+
+  <div class="doc-grid">
+    <div class="doc-section">
+      <h2>Exemplos de Requisição</h2>
+      <div class="doc-code">GET /api/deteccoes?placa=ABC&amp;limit=20&amp;offset=0</div>
+      <br>
+      <div class="doc-code">POST /api/listas
+Content-Type: application/json
+
+{
+  "placa": "ABC1D23",
+  "tipo": "negra",
+  "descricao": "Monitorar acesso"
+}</div>
+      <br>
+      <div class="doc-code">POST /api/cameras/1/ler-placa</div>
+    </div>
+
+    <div class="doc-section">
+      <h2>Banco de Dados</h2>
+      <ul class="doc-list">
+        <li><span class="path">deteccoes</span>: placa, padrão, confiança, snapshot, data UTC, camera_id e bbox JSON.</li>
+        <li><span class="path">listas_placas</span>: placa única, tipo branca/negra, descrição e data UTC.</li>
+        <li><span class="path">cameras</span>: metadados da câmera, bomba, lado, RTSP/Intelbras, senha, URL customizada e status ativo.</li>
+      </ul>
+    </div>
+
+    <div class="doc-section">
+      <h2>Cuidados de Manutenção</h2>
+      <ul class="doc-list">
+        <li>Ao mudar chaves de configuração, atualize <span class="path">config.PADROES</span> e a lista permitida da API.</li>
+        <li>Ao criar campos no SQLite, adicione migração incremental em <span class="path">banco._migrar</span>.</li>
+        <li>Evite abrir duas conexões RTSP para a mesma câmera; reaproveite frame do pipeline quando possível.</li>
+        <li>Para novos OCRs, implemente a mesma interface: <span class="path">carregar()</span>, <span class="path">ler()</span> e, quando aplicável, <span class="path">ler_detalhado()</span>.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const apiExemplos = [
+  {
+    metodo: 'GET',
+    rota: '/api/deteccoes',
+    parametros: { placa: 'ABC', desde: '2026-05-21T00:00:00Z', ate: '2026-05-21T23:59:59Z', limit: 50, offset: 0 },
+    body: null,
+    resposta: [{
+      id: 1,
+      placa: 'ABC1D23',
+      padrao: 'mercosul',
+      confianca: 0.91,
+      snapshot: '/static/snapshots/20260521T120000_ABC1D23.jpg',
+      criado_em: '2026-05-21T12:00:00+00:00',
+      camera_id: 'rtsp',
+      bbox: '{"x":120,"y":80,"w":220,"h":70}'
+    }]
+  },
+  {
+    metodo: 'DELETE',
+    rota: '/api/deteccoes/{id}',
+    parametros: { id: 1 },
+    body: null,
+    resposta: { removido: true }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/stats',
+    parametros: null,
+    body: null,
+    resposta: { total: 128, hoje: 12, top: [{ placa: 'ABC1D23', ocorrencias: 4 }], fps: 14.8, uptime_seg: 3600, pipeline: true, deteccao_automatica: true }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/logs',
+    parametros: { nivel: 'ERROR', limit: 100 },
+    body: null,
+    resposta: [{ ts: '2026-05-21T12:00:00Z', level: 'ERROR', logger: 'pipeline', msg: 'Falha ao abrir câmera' }]
+  },
+  {
+    metodo: 'DELETE',
+    rota: '/api/logs',
+    parametros: null,
+    body: null,
+    resposta: { limpo: true }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/recentes',
+    parametros: null,
+    body: null,
+    resposta: [{ id: 1, placa: 'ABC1D23', padrao: 'mercosul', confianca: 0.91, snapshot: '/static/snapshots/placa.jpg', criado_em: '2026-05-21T12:00:00Z' }]
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/listas',
+    parametros: { tipo: 'negra' },
+    body: null,
+    resposta: [{ id: 1, placa: 'ABC1D23', tipo: 'negra', descricao: 'Monitorar acesso', criado_em: '2026-05-21T12:00:00Z' }]
+  },
+  {
+    metodo: 'POST',
+    rota: '/api/listas',
+    parametros: null,
+    body: { placa: 'ABC1D23', tipo: 'negra', descricao: 'Monitorar acesso' },
+    resposta: { id: 1 }
+  },
+  {
+    metodo: 'DELETE',
+    rota: '/api/listas/{id}',
+    parametros: { id: 1 },
+    body: null,
+    resposta: { removido: true }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/status',
+    parametros: null,
+    body: null,
+    resposta: { pipeline_rodando: true, fps_atual: 14.8, cameras: {}, recentes: [] }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/config',
+    parametros: null,
+    body: null,
+    resposta: { modelo_path: 'models/yolo26s.onnx', conf_threshold: '0.35', nms_threshold: '0.45', ocr_engine: 'auto', intelbras_senha: '', _padroes: {} }
+  },
+  {
+    metodo: 'POST',
+    rota: '/api/config',
+    parametros: null,
+    body: { modelo_path: 'models/yolo26s.onnx', conf_threshold: '0.35', nms_threshold: '0.45', ocr_engine: 'auto', deteccao_automatica: 'sim', snapshots_votacao: '3' },
+    resposta: { salvo: true, pipeline_reiniciado: true }
+  },
+  {
+    metodo: 'POST',
+    rota: '/api/camera/teste',
+    parametros: null,
+    body: { camera_tipo: 'intelbras', camera_indice: '0', camera_largura: 1280, camera_altura: 720, camera_fps: 15, intelbras_host: '192.168.0.10', intelbras_porta: '554', intelbras_usuario: 'admin', intelbras_senha: 'senha', intelbras_canal: '1', intelbras_subtype: '1', intelbras_formato: 'padrao', rtsp_transporte: 'tcp' },
+    resposta: 'image/jpeg'
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/cameras',
+    parametros: null,
+    body: null,
+    resposta: [{ id: 1, nome: 'Entrada 1', bomba: 1, lado: 1, camera_tipo: 'rtsp', camera_indice: '0', rtsp_url_custom: 'rtsp://usuario:senha@host:554/cam/realmonitor', ativo: 1 }]
+  },
+  {
+    metodo: 'POST',
+    rota: '/api/cameras',
+    parametros: null,
+    body: { nome: 'Entrada 1', bomba: 1, lado: 1, camera_tipo: 'rtsp', camera_indice: '0', rtsp_url_custom: 'rtsp://usuario:senha@host:554/cam/realmonitor', intelbras_host: '', intelbras_porta: '554', intelbras_usuario: 'admin', intelbras_senha: '', intelbras_canal: '1', intelbras_subtype: '1', intelbras_formato: 'padrao', ativo: true },
+    resposta: { id: 1 }
+  },
+  {
+    metodo: 'PUT',
+    rota: '/api/cameras/{id}',
+    parametros: { id: 1 },
+    body: { nome: 'Entrada 1', bomba: 1, lado: 1, camera_tipo: 'rtsp', camera_indice: '0', rtsp_url_custom: 'rtsp://usuario:senha@host:554/cam/realmonitor', intelbras_host: '', intelbras_porta: '554', intelbras_usuario: 'admin', intelbras_senha: '', intelbras_canal: '1', intelbras_subtype: '1', intelbras_formato: 'padrao', ativo: true },
+    resposta: { atualizado: true }
+  },
+  {
+    metodo: 'DELETE',
+    rota: '/api/cameras/{id}',
+    parametros: { id: 1 },
+    body: null,
+    resposta: { removido: true }
+  },
+  {
+    metodo: 'POST',
+    rota: '/api/cameras/{id}/teste',
+    parametros: { id: 1 },
+    body: null,
+    resposta: 'image/jpeg'
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/modelos',
+    parametros: null,
+    body: null,
+    resposta: ['yolo26s.onnx', 'placas.onnx']
+  },
+  {
+    metodo: 'POST',
+    rota: '/api/cameras/{id}/ler-placa',
+    parametros: { id: 1 },
+    body: null,
+    resposta: { bomba: 1, lado: 1, placa: 'ABC1D23', padrao: 'mercosul', confianca: 0.91, votos_snapshot: 2, total_snapshots: 3, votos_ocr: 1, total_engines: 2, detalhes_ocr: [{ engine: 'easyocr', placa: 'ABC1D23', padrao: 'mercosul', confianca: 0.91 }], snapshot: '/static/snapshots/20260521T120000_ABC1D23.jpg', frame_url: '/static/snapshots/preview_1.jpg' }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/debug/ocr_crop',
+    parametros: null,
+    body: null,
+    resposta: 'image/jpeg'
+  }
+];
+
+function formatarJson(valor) {
+  if (valor === null || valor === undefined) return 'Sem body JSON';
+  if (typeof valor === 'string') return valor;
+  return JSON.stringify(valor, null, 2);
+}
+
+function escaparHtml(valor) {
+  return String(valor)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function renderizarApiJson() {
+  const el = document.getElementById('api-json-exemplos');
+  if (!el) return;
+  el.innerHTML = apiExemplos.map((item) => `
+    <article class="api-card">
+      <h3><span class="method ${item.metodo.toLowerCase()}">${item.metodo}</span> <span class="path">${item.rota}</span></h3>
+      <div class="api-meta">${item.parametros ? 'Parâmetros: ' + escaparHtml(JSON.stringify(item.parametros)) : 'Parâmetros: nenhum'}</div>
+      <div class="api-label">Request JSON</div>
+      <pre class="doc-code">${escaparHtml(formatarJson(item.body))}</pre>
+      <div class="api-label">Response</div>
+      <pre class="doc-code">${escaparHtml(formatarJson(item.resposta))}</pre>
+    </article>
+  `).join('');
+}
+
+function valorJsonDoTextarea(id, fallback) {
+  const el = document.getElementById(id);
+  const texto = (el?.value || '').trim();
+  if (!texto) return fallback;
+  return JSON.parse(texto);
+}
+
+function montarEndpointUrl(item, params) {
+  const usados = new Set();
+  const rota = item.rota.replace(/\{([^}]+)\}/g, (_, chave) => {
+    usados.add(chave);
+    if (params[chave] === undefined || params[chave] === null || params[chave] === '') {
+      throw new Error(`Informe o parâmetro "${chave}"`);
+    }
+    return encodeURIComponent(params[chave]);
+  });
+
+  const query = new URLSearchParams();
+  Object.entries(params || {}).forEach(([chave, valor]) => {
+    if (usados.has(chave) || valor === undefined || valor === null || valor === '') return;
+    query.append(chave, valor);
+  });
+  const qs = query.toString();
+  return qs ? `${rota}?${qs}` : rota;
+}
+
+function endpointSelecionado() {
+  const select = document.getElementById('runner-endpoint');
+  return apiExemplos[Number(select?.value || 0)] || apiExemplos[0];
+}
+
+function atualizarRunnerUrl() {
+  const item = endpointSelecionado();
+  const status = document.getElementById('runner-status');
+  try {
+    const params = valorJsonDoTextarea('runner-params', {});
+    document.getElementById('runner-url').value = montarEndpointUrl(item, params || {});
+    if (status) status.textContent = '';
+  } catch (e) {
+    document.getElementById('runner-url').value = item.rota;
+    if (status) status.textContent = e.message;
+  }
+}
+
+function selecionarEndpoint() {
+  const item = endpointSelecionado();
+  const paramsEl = document.getElementById('runner-params');
+  const bodyEl = document.getElementById('runner-body');
+  document.getElementById('runner-method').value = item.metodo;
+  paramsEl.value = formatarJson(item.parametros || {});
+  bodyEl.value = item.body && typeof item.body !== 'string' ? formatarJson(item.body) : '';
+  bodyEl.placeholder = item.body ? '' : 'Sem body JSON para este endpoint';
+  document.getElementById('runner-response').textContent = 'Aguardando execução.';
+  document.getElementById('runner-image').style.display = 'none';
+  atualizarRunnerUrl();
+}
+
+function inicializarRunner() {
+  const select = document.getElementById('runner-endpoint');
+  if (!select) return;
+  select.innerHTML = apiExemplos.map((item, index) =>
+    `<option value="${index}">${item.metodo} ${item.rota}</option>`
+  ).join('');
+  selecionarEndpoint();
+}
+
+async function executarEndpoint() {
+  const item = endpointSelecionado();
+  const status = document.getElementById('runner-status');
+  const respostaEl = document.getElementById('runner-response');
+  const imgEl = document.getElementById('runner-image');
+  imgEl.style.display = 'none';
+
+  try {
+    const params = valorJsonDoTextarea('runner-params', {});
+    const url = montarEndpointUrl(item, params || {});
+    const bodyTexto = (document.getElementById('runner-body').value || '').trim();
+    const body = bodyTexto ? JSON.parse(bodyTexto) : null;
+
+    if (item.metodo !== 'GET') {
+      const ok = confirm(`${item.metodo} ${url}\n\nEsse endpoint pode alterar dados. Deseja executar?`);
+      if (!ok) return;
+    }
+
+    const inicio = performance.now();
+    status.textContent = 'Executando...';
+    respostaEl.textContent = '';
+
+    const opcoes = { method: item.metodo, headers: {} };
+    if (body !== null && item.metodo !== 'GET') {
+      opcoes.headers['Content-Type'] = 'application/json';
+      opcoes.body = JSON.stringify(body);
+    }
+
+    const resp = await fetch(url, opcoes);
+    const duracao = Math.round(performance.now() - inicio);
+    const tipo = resp.headers.get('content-type') || '';
+    status.textContent = `${resp.status} ${resp.statusText} · ${duracao}ms`;
+
+    if (tipo.includes('image/')) {
+      const blob = await resp.blob();
+      imgEl.src = URL.createObjectURL(blob);
+      imgEl.style.display = 'block';
+      respostaEl.textContent = `${tipo}\n${blob.size} bytes`;
+      return;
+    }
+
+    const texto = await resp.text();
+    try {
+      respostaEl.textContent = JSON.stringify(JSON.parse(texto), null, 2);
+    } catch (_) {
+      respostaEl.textContent = texto || '(resposta vazia)';
+    }
+  } catch (e) {
+    status.textContent = 'Erro';
+    respostaEl.textContent = e.message;
+  }
+}
+
+function mostrarAba(nome) {
+  const userAtiva = nome === 'user';
+  document.getElementById('panel-user').classList.toggle('active', userAtiva);
+  document.getElementById('panel-dev').classList.toggle('active', !userAtiva);
+  document.getElementById('tab-user').classList.toggle('active', userAtiva);
+  document.getElementById('tab-dev').classList.toggle('active', !userAtiva);
+  document.getElementById('tab-user').setAttribute('aria-selected', String(userAtiva));
+  document.getElementById('tab-dev').setAttribute('aria-selected', String(!userAtiva));
+}
+
+inicializarRunner();
+renderizarApiJson();
+</script>
+{% endblock %}

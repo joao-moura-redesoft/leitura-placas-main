@@ -1,0 +1,341 @@
+{
+  "data": "2026-05-20T14:47:02.104412",
+  "total_fotos": 26,
+  "engines": {
+    "auto": {
+      "acuracia": 0.8846,
+      "ok": 23,
+      "erros": 2,
+      "falhas_deteccao": 1,
+      "total": 26,
+      "por_formato": {
+        "antigo": {
+          "ok": 12,
+          "total": 14
+        },
+        "mercosul": {
+          "ok": 11,
+          "total": 12
+        }
+      },
+      "confusoes": {
+        "Q>0": 1,
+        "N>I": 1
+      },
+      "detalhes": [
+        {
+          "status": "falhou",
+          "motivo": "YOLO sem detecção",
+          "lido": "",
+          "esperado": "FBI5551",
+          "id": "8f334d6a",
+          "arquivo": "static/snapshots/preview_4.jpg",
+          "placa_correta": "FBI5551",
+          "formato": "antigo",
+          "tipo": "frame",
+          "obs": "placa moto antigo — faixa metálica UF-CIDADE"
+        },
+        {
+          "status": "ok",
+          "lido": "ABC1D23",
+          "esperado": "ABC1D23",
+          "conf_ocr": 0.969,
+          "id": "4e886f16",
+          "arquivo": "testes/fotos/synthetic_ABC1D23.jpg",
+          "placa_correta": "ABC1D23",
+          "formato": "mercosul",
+          "tipo": "crop",
+          "obs": "sintético mercosul_carro"
+        },
+        {
+          "status": "ok",
+          "lido": "XYZ9E87",
+          "esperado": "XYZ9E87",
+          "conf_ocr": 0.916,
+          "id": "f8c8130a",
+          "arquivo": "testes/fotos/synthetic_XYZ9E87.jpg",
+          "placa_correta": "XYZ9E87",
+          "formato": "mercosul",
+          "tipo": "crop",
+          "obs": "sintético mercosul_carro"
+        },
+        {
+          "status": "ok",
+          "lido": "QRS4F56",
+          "esperado": "QRS4F56",
+          "conf_ocr": 0.943,
+          "id": "1f9a3514",
+          "arquivo": "testes/fotos/synthetic_QRS4F56.jpg",
+          "placa_correta": "QRS4F56",
+          "formato": "mercosul",
+          "tipo": "crop",
+          "obs": "sintético mercosul_carro"
+        },
+        {
+          "status": "ok",
+          "lido": "DEF7G89",
+          "esperado": "DEF7G89",
+          "conf_ocr": 0.97,
+          "id": "a5d8f0a9",
+          "arquivo": "testes/fotos/synthetic_DEF7G89.jpg",
+          "placa_correta": "DEF7G89",
+          "formato": "mercosul",
+          "tipo": "crop",
+          "obs": "sintético mercosul_carro"
+        },
+        {
+          "status": "ok",
+          "lido": "GHI2J34",
+          "esperado": "GHI2J34",
+          "conf_ocr": 0.947,
+          "id": "887da191",
+          "arquivo": "testes/fotos/synthetic_GHI2J34.jpg",
+          "placa_correta": "GHI2J34",
+          "formato": "mercosul",
+          "tipo": "crop",
+          "obs": "sintético mercosul_carro"
+        },
+        {
+          "status": "ok",
+          "lido": "JKL3M45",
+          "esperado": "JKL3M45",
+          "conf_ocr": 0.989,
+          "id": "0c2bf8fb",
+          "arquivo": "testes/fotos/synthetic_JKL3M45.jpg",
+          "placa_correta": "JKL3M45",
+          "formato": "mercosul",
+          "tipo": "crop",
+          "obs": "sintético mercosul_moto"
+        },
+        {
+          "status": "errou",
+          "lido": "NOP5067",
+          "esperado": "NOP5Q67",
+          "conf_ocr": 0.942,
+          "id": "b7dc5a5e",
+          "arquivo": "testes/fotos/synthetic_NOP5Q67.jpg",
+          "placa_correta": "NOP5Q67",
+          "formato": "mercosul",
+          "tipo": "crop",
+          "obs": "sintético mercosul_moto"
+        },
+        {
+          "status": "ok",
+          "lido": "RST6U78",
+          "esperado": "RST6U78",
+          "conf_ocr": 0.909,
+          "id": "7b8bea59",
+          "arquivo": "testes/fotos/synthetic_RST6U78.jpg",
+          "placa_correta": "RST6U78",
+          "formato": "mercosul",
+          "tipo": "crop",
+          "obs": "sintético mercosul_moto"
+        },
+        {
+          "status": "ok",
+          "lido": "VWX8Y90",
+          "esperado": "VWX8Y90",
+          "conf_ocr": 0.987,
+          "id": "3f1378a2",
+          "arquivo": "testes/fotos/synthetic_VWX8Y90.jpg",
+          "placa_correta": "VWX8Y90",
+          "formato": "mercosul",
+          "tipo": "crop",
+          "obs": "sintético mercosul_moto"
+        },
+        {
+          "status": "ok",
+          "lido": "BCD0E12",
+          "esperado": "BCD0E12",
+          "conf_ocr": 0.997,
+          "id": "177d48aa",
+          "arquivo": "testes/fotos/synthetic_BCD0E12.jpg",
+          "placa_correta": "BCD0E12",
+          "formato": "mercosul",
+          "tipo": "crop",
+          "obs": "sintético mercosul_moto"
+        },
+        {
+          "status": "ok",
+          "lido": "FBI5551",
+          "esperado": "FBI5551",
+          "conf_ocr": 0.988,
+          "id": "88401501",
+          "arquivo": "testes/fotos/synthetic_FBI5551.jpg",
+          "placa_correta": "FBI5551",
+          "formato": "antigo",
+          "tipo": "crop",
+          "obs": "sintético antigo_carro"
+        },
+        {
+          "status": "ok",
+          "lido": "MNO2345",
+          "esperado": "MNO2345",
+          "conf_ocr": 0.957,
+          "id": "a0101823",
+          "arquivo": "testes/fotos/synthetic_MNO2345.jpg",
+          "placa_correta": "MNO2345",
+          "formato": "antigo",
+          "tipo": "crop",
+          "obs": "sintético antigo_carro"
+        },
+        {
+          "status": "ok",
+          "lido": "PQR6789",
+          "esperado": "PQR6789",
+          "conf_ocr": 0.924,
+          "id": "01869ba8",
+          "arquivo": "testes/fotos/synthetic_PQR6789.jpg",
+          "placa_correta": "PQR6789",
+          "formato": "antigo",
+          "tipo": "crop",
+          "obs": "sintético antigo_carro"
+        },
+        {
+          "status": "ok",
+          "lido": "STU1234",
+          "esperado": "STU1234",
+          "conf_ocr": 0.634,
+          "id": "9e987695",
+          "arquivo": "testes/fotos/synthetic_STU1234.jpg",
+          "placa_correta": "STU1234",
+          "formato": "antigo",
+          "tipo": "crop",
+          "obs": "sintético antigo_carro"
+        },
+        {
+          "status": "ok",
+          "lido": "VWX8901",
+          "esperado": "VWX8901",
+          "conf_ocr": 0.998,
+          "id": "a1c3a0fa",
+          "arquivo": "testes/fotos/synthetic_VWX8901.jpg",
+          "placa_correta": "VWX8901",
+          "formato": "antigo",
+          "tipo": "crop",
+          "obs": "sintético antigo_carro"
+        },
+        {
+          "status": "ok",
+          "lido": "YZA3456",
+          "esperado": "YZA3456",
+          "conf_ocr": 1.0,
+          "id": "ea4d08f0",
+          "arquivo": "testes/fotos/synthetic_YZA3456.jpg",
+          "placa_correta": "YZA3456",
+          "formato": "antigo",
+          "tipo": "crop",
+          "obs": "sintético antigo_moto"
+        },
+        {
+          "status": "ok",
+          "lido": "BCD7890",
+          "esperado": "BCD7890",
+          "conf_ocr": 1.0,
+          "id": "fbea6660",
+          "arquivo": "testes/fotos/synthetic_BCD7890.jpg",
+          "placa_correta": "BCD7890",
+          "formato": "antigo",
+          "tipo": "crop",
+          "obs": "sintético antigo_moto"
+        },
+        {
+          "status": "ok",
+          "lido": "EFG1234",
+          "esperado": "EFG1234",
+          "conf_ocr": 0.993,
+          "id": "23d03c72",
+          "arquivo": "testes/fotos/synthetic_EFG1234.jpg",
+          "placa_correta": "EFG1234",
+          "formato": "antigo",
+          "tipo": "crop",
+          "obs": "sintético antigo_moto"
+        },
+        {
+          "status": "ok",
+          "lido": "HIJ5678",
+          "esperado": "HIJ5678",
+          "conf_ocr": 1.0,
+          "id": "f87faed5",
+          "arquivo": "testes/fotos/synthetic_HIJ5678.jpg",
+          "placa_correta": "HIJ5678",
+          "formato": "antigo",
+          "tipo": "crop",
+          "obs": "sintético antigo_moto"
+        },
+        {
+          "status": "ok",
+          "lido": "KLM9012",
+          "esperado": "KLM9012",
+          "conf_ocr": 0.805,
+          "id": "90bb20d3",
+          "arquivo": "testes/fotos/synthetic_KLM9012.jpg",
+          "placa_correta": "KLM9012",
+          "formato": "antigo",
+          "tipo": "crop",
+          "obs": "sintético antigo_moto"
+        },
+        {
+          "status": "ok",
+          "lido": "LSN4I49",
+          "esperado": "LSN4I49",
+          "conf_ocr": 0.275,
+          "id": "88432f92",
+          "arquivo": "testes/fotos/real_mercosul_carro_1.jpg",
+          "placa_correta": "LSN4I49",
+          "formato": "mercosul",
+          "tipo": "real",
+          "obs": "placa mercosul carro particular RJ (foto real 2018) — CC BY 4.0"
+        },
+        {
+          "status": "ok",
+          "lido": "AOB1C02",
+          "esperado": "AOB1C02",
+          "conf_ocr": 0.206,
+          "id": "e7e59142",
+          "arquivo": "testes/fotos/real_mercosul_carro_2.jpg",
+          "placa_correta": "AOB1C02",
+          "formato": "mercosul",
+          "tipo": "real",
+          "obs": "placa mercosul carro exemplo didático AOB1CD2 (normalizado AOB1C02, SP) — CC BY-SA 4.0"
+        },
+        {
+          "status": "ok",
+          "lido": "AAA0001",
+          "esperado": "AAA0001",
+          "conf_ocr": 1.0,
+          "id": "405c416d",
+          "arquivo": "testes/fotos/real_antigo_carro_4.jpg",
+          "placa_correta": "AAA0001",
+          "formato": "antigo",
+          "tipo": "real",
+          "obs": "1ª placa cinza do Brasil (AAA-0001) — Wikimedia Commons"
+        },
+        {
+          "status": "ok",
+          "lido": "HQW5678",
+          "esperado": "HQW5678",
+          "conf_ocr": 0.971,
+          "id": "2fff2725",
+          "arquivo": "testes/fotos/real_antigo_carro_5.png",
+          "placa_correta": "HQW5678",
+          "formato": "antigo",
+          "tipo": "real",
+          "obs": "placa antigo carro Brasil 1990 MS-Campo Grande HQW-5678 — Wikimedia Commons"
+        },
+        {
+          "status": "errou",
+          "lido": "IOP4567",
+          "esperado": "NOP4567",
+          "conf_ocr": 0.457,
+          "id": "52931367",
+          "arquivo": "testes/fotos/real_antigo_moto_1.jpg",
+          "placa_correta": "NOP4567",
+          "formato": "antigo",
+          "tipo": "real",
+          "obs": "placa antigo moto Brasil 2011 AM-São Sebastião do Uatumã NOP-4567 — CC BY-SA 3.0"
+        }
+      ]
+    }
+  }
+}

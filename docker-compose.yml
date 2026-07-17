@@ -1,0 +1,24 @@
+services:
+  alpr:
+    build: .
+    container_name: leitura-placas
+    ports:
+      - "14000:14000"
+    volumes:
+      - ./placas.db:/app/placas.db
+      - ./static/snapshots:/app/static/snapshots
+      - ./models:/app/models
+      - ./config.txt:/app/config.txt
+    environment:
+      PORTA: "14000"
+      CAMERA_TIPO: "intelbras"
+      LOG_LEVEL: "info"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:14000/api/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # Para câmera USB (camera_tipo=usb), descomente:
+    # devices:
+    #   - "/dev/video0:/dev/video0"

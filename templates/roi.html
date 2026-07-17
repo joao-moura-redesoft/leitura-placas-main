@@ -1,0 +1,331 @@
+{% extends "base.html" %}
+{% block title %}Área de Captura — ALPR{% endblock %}
+{% block conteudo %}
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+  <h1 style="margin:0">Área de Captura</h1>
+  <span id="cam-badge" style="background:#dcfce7;color:#15803d;padding:4px 12px;
+        border-radius:20px;font-size:13px;font-weight:600">…</span>
+  <a href="/cameras" style="color:#64748b;font-size:13px;margin-left:auto">← Voltar para Câmeras</a>
+</div>
+
+<p style="color:#64748b;margin:-10px 0 20px;font-size:14px">
+  Clique e arraste na imagem para definir a região que o sistema vai monitorar.
+  Apenas placas dentro da área serão processadas pelo OCR.
+</p>
+
+<div class="card">
+  <!-- Editor -->
+  <div id="editor-wrap" style="position:relative;border:1px solid #e2e8f0;border-radius:8px;
+       overflow:hidden;background:#0f172a;cursor:crosshair;user-select:none;touch-action:none">
+    <img id="snap" alt="Frame da câmera"
+         style="display:block;width:100%;height:auto;pointer-events:none" draggable="false">
+    <canvas id="canvas" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
+    <div id="no-frame" style="display:none;width:100%;aspect-ratio:16/9;
+         align-items:center;justify-content:center;color:#94a3b8;font-size:14px;flex-direction:column;gap:8px">
+      <span style="font-size:32px">📷</span>
+      <span>Câmera sem frame disponível</span>
+      <span style="font-size:12px">Inicie o pipeline e clique em Atualizar</span>
+    </div>
+  </div>
+
+  <!-- Controles -->
+  <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <button onclick="lerPlaca()" id="btn-ler" style="background:#0f172a">
+      Ler Placa
+    </button>
+    <button onclick="salvar()" id="btn-salvar" disabled>Salvar Área</button>
+    <button onclick="limpar()"
+            style="background:#f1f5f9;color:#374151;border:1px solid #e2e8f0">
+      Usar Frame Completo
+    </button>
+    <button onclick="atualizarSnap()"
+            style="background:#f1f5f9;color:#374151;border:1px solid #e2e8f0">
+      ↻ Atualizar Imagem
+    </button>
+    <span id="roi-info" style="font-size:12px;color:#64748b;font-family:monospace;margin-left:4px"></span>
+  </div>
+  <div id="msg" style="margin-top:10px;font-size:13px;min-height:20px"></div>
+  <div id="resultado-placa" style="display:none;margin-top:12px;padding:14px;border-radius:8px;
+       background:#f8fafc;border:1px solid #e2e8f0;text-align:center"></div>
+</div>
+
+<div class="card" style="margin-top:0">
+  <h3 style="margin-top:0;font-size:14px">Como usar</h3>
+  <ul style="color:#64748b;font-size:13px;line-height:1.8;padding-left:18px;margin:0">
+    <li>Clique e arraste na imagem para desenhar a área monitorada</li>
+    <li><strong>Salvar Área</strong> aplica imediatamente — o pipeline não precisa reiniciar</li>
+    <li><strong>Usar Frame Completo</strong> remove a área e volta a monitorar tudo</li>
+    <li><strong>Atualizar Imagem</strong> captura um frame mais recente da câmera</li>
+  </ul>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CAM_ID = {{ camera_id }};
+
+let _frameW = 0, _frameH = 0;
+let _roi  = null;    // {x, y, w, h} em pixels do frame real
+let _drag = null;    // {x0, y0} em pixels do canvas lógico
+let _rect = null;    // retângulo temporário durante o arrasto (canvas pixels)
+
+const wrap   = document.getElementById('editor-wrap');
+const snap   = document.getElementById('snap');
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+
+// ── Conversão de coordenadas ─────────────────────────────────────────────────
+
+function _eventParaCanvas(e) {
+  const r = canvas.getBoundingClientRect();
+  const sx = canvas.width  / r.width;
+  const sy = canvas.height / r.height;
+  const src = e.touches ? e.touches[0] : e;
+  return [(src.clientX - r.left) * sx, (src.clientY - r.top) * sy];
+}
+
+function _canvasParaFrame(cx, cy) {
+  return [Math.round(cx * _frameW / canvas.width),
+          Math.round(cy * _frameH / canvas.height)];
+}
+
+function _roiParaCanvas(roi) {
+  return {
+    x: roi.x * canvas.width  / _frameW,
+    y: roi.y * canvas.height / _frameH,
+    w: roi.w * canvas.width  / _frameW,
+    h: roi.h * canvas.height / _frameH,
+  };
+}
+
+// ── Desenho ──────────────────────────────────────────────────────────────────
+
+function _desenhar() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!_frameW) return;
+
+  // Overlay escuro cobrindo o frame inteiro
+  ctx.fillStyle = 'rgba(0,0,0,0.50)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Calcula retângulo a exibir: drag em andamento tem prioridade
+  let cr = _rect;
+  if (!cr && _roi) cr = _roiParaCanvas(_roi);
+
+  if (cr && cr.w > 2 && cr.h > 2) {
+    const {x, y, w, h} = cr;
+
+    // "Janela" transparente — remove o overlay na área selecionada
+    ctx.clearRect(x, y, w, h);
+
+    // Borda tracejada azul
+    ctx.save();
+    ctx.strokeStyle = '#16a34a';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 4]);
+    ctx.strokeRect(x, y, w, h);
+    ctx.restore();
+
+    // Handles nos quatro cantos
+    const HW = 8;
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = '#16a34a';
+    ctx.lineWidth = 2;
+    for (const [cx, cy] of [[x,y],[x+w,y],[x,y+h],[x+w,y+h]]) {
+      ctx.beginPath();
+      ctx.rect(cx - HW/2, cy - HW/2, HW, HW);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Label com coordenadas (acima ou abaixo dependendo do espaço)
+    const [fx, fy] = _canvasParaFrame(x, y);
+    const fw = Math.round(w * _frameW / canvas.width);
+    const fh = Math.round(h * _frameH / canvas.height);
+    const label = `x:${fx} y:${fy}  ${fw}×${fh}px`;
+    ctx.font = 'bold 12px monospace';
+    const tw = ctx.measureText(label).width;
+    const ly = y > 22 ? y - 8 : y + h + 16;
+    ctx.fillStyle = '#16a34a';
+    ctx.fillRect(x, ly - 14, tw + 8, 18);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(label, x + 4, ly);
+
+    document.getElementById('roi-info').textContent = `Área: x=${fx} y=${fy} — ${fw}×${fh} px`;
+    document.getElementById('btn-salvar').disabled = false;
+  } else {
+    document.getElementById('roi-info').textContent = 'Nenhuma área — monitorando frame completo';
+    document.getElementById('btn-salvar').disabled = true;
+  }
+}
+
+// ── Eventos mouse / touch ────────────────────────────────────────────────────
+
+canvas.addEventListener('mousedown',  onStart);
+canvas.addEventListener('touchstart', onStart, {passive:false});
+window.addEventListener('mousemove',  onMove);
+window.addEventListener('touchmove',  onMove, {passive:false});
+window.addEventListener('mouseup',    onEnd);
+window.addEventListener('touchend',   onEnd);
+
+function onStart(e) {
+  if (!_frameW) return;
+  e.preventDefault();
+  const [cx, cy] = _eventParaCanvas(e);
+  _drag = {x0: cx, y0: cy};
+  _rect = {x: cx, y: cy, w: 0, h: 0};
+}
+
+function onMove(e) {
+  if (!_drag) return;
+  e.preventDefault();
+  const [cx, cy] = _eventParaCanvas(e);
+  _rect = {
+    x: Math.min(_drag.x0, cx),
+    y: Math.min(_drag.y0, cy),
+    w: Math.abs(cx - _drag.x0),
+    h: Math.abs(cy - _drag.y0),
+  };
+  _desenhar();
+}
+
+function onEnd(e) {
+  if (!_drag) return;
+  _drag = null;
+  if (_rect && _rect.w > 5 && _rect.h > 5) {
+    const [fx, fy] = _canvasParaFrame(_rect.x, _rect.y);
+    const fw = Math.round(_rect.w * _frameW / canvas.width);
+    const fh = Math.round(_rect.h * _frameH / canvas.height);
+    _roi = {
+      x: Math.max(0, fx),
+      y: Math.max(0, fy),
+      w: Math.min(fw, _frameW - Math.max(0, fx)),
+      h: Math.min(fh, _frameH - Math.max(0, fy)),
+    };
+  }
+  _rect = null;
+  _desenhar();
+}
+
+// ── Snapshot ─────────────────────────────────────────────────────────────────
+
+async function atualizarSnap() {
+  const url = `/api/cameras/${CAM_ID}/snapshot?t=${Date.now()}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      snap.style.display = 'none';
+      document.getElementById('no-frame').style.display = 'flex';
+      return;
+    }
+    snap.src = url;
+    snap.style.display = 'block';
+    document.getElementById('no-frame').style.display = 'none';
+  } catch {
+    snap.style.display = 'none';
+    document.getElementById('no-frame').style.display = 'flex';
+  }
+}
+
+snap.addEventListener('load', () => {
+  _frameW = snap.naturalWidth;
+  _frameH = snap.naturalHeight;
+  canvas.width  = _frameW;
+  canvas.height = _frameH;
+  _desenhar();
+});
+
+// ── Ações ────────────────────────────────────────────────────────────────────
+
+async function lerPlaca() {
+  const btn = document.getElementById('btn-ler');
+  btn.disabled = true;
+  btn.textContent = 'Capturando…';
+  document.getElementById('resultado-placa').style.display = 'none';
+  try {
+    const r = await fetch(`/api/cameras/${CAM_ID}/ler-placa`, { method: 'POST' });
+    const d = await r.json();
+
+    // Atualiza o frame do editor com a foto capturada
+    if (d.frame_url) {
+      const url = d.frame_url + '?t=' + Date.now();
+      snap.src = url;
+      snap.style.display = 'block';
+      document.getElementById('no-frame').style.display = 'none';
+    } else {
+      await atualizarSnap();
+    }
+
+    // Exibe resultado da leitura
+    const res = document.getElementById('resultado-placa');
+    res.style.display = 'block';
+    if (!r.ok || d.detail) {
+      res.innerHTML = `<span style="color:#b91c1c">Erro: ${d.detail || d.mensagem || 'falha'}</span>`;
+    } else if (!d.placa) {
+      res.innerHTML = `<span style="color:#94a3b8">${d.mensagem || 'Nenhuma placa detectada na área'}</span>`;
+    } else {
+      res.innerHTML = `
+        <div style="font-size:28px;font-weight:700;letter-spacing:5px;color:#0f172a;font-family:'Consolas',monospace">
+          ${d.placa}
+        </div>
+        <div style="margin-top:6px;font-size:12px;color:#94a3b8">
+          <span class="badge badge-${d.padrao}">${d.padrao}</span>
+          &nbsp;${Math.round((d.confianca || 0) * 100)}% confiança
+          ${d.snapshot ? `&nbsp;<a href="${d.snapshot}" target="_blank" style="color:#16a34a">ver foto</a>` : ''}
+        </div>`;
+    }
+  } catch (ex) {
+    document.getElementById('resultado-placa').style.display = 'block';
+    document.getElementById('resultado-placa').innerHTML =
+      `<span style="color:#b91c1c">Erro de rede: ${ex.message}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Ler Placa';
+  }
+}
+
+async function salvar() {
+  if (!_roi) return;
+  const r = await fetch(`/api/cameras/${CAM_ID}/roi`, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(_roi),
+  });
+  _mostrarMsg(r.ok,
+    'Área salva. O pipeline já está usando a nova configuração.',
+    'Erro ao salvar — tente novamente.');
+}
+
+async function limpar() {
+  const r = await fetch(`/api/cameras/${CAM_ID}/roi`, { method: 'DELETE' });
+  if (r.ok) { _roi = null; _rect = null; _desenhar(); }
+  _mostrarMsg(r.ok,
+    'Área removida. Câmera monitorando o frame completo.',
+    'Erro ao remover — tente novamente.');
+}
+
+function _mostrarMsg(ok, textOk, textErr) {
+  const el = document.getElementById('msg');
+  const cor = ok ? '#15803d' : '#b91c1c';
+  el.innerHTML = `<span style="color:${cor}">${ok ? textOk : textErr}</span>`;
+  setTimeout(() => { el.innerHTML = ''; }, 5000);
+}
+
+// ── Inicialização ─────────────────────────────────────────────────────────────
+
+async function init() {
+  const cameras = await fetch('/api/cameras').then(r => r.json()).catch(() => []);
+  const cam = cameras.find(c => c.id === CAM_ID);
+  if (cam) {
+    document.getElementById('cam-badge').textContent =
+      cam.nome || `Bomba ${cam.bomba} · Lado ${cam.lado}`;
+    if (cam.roi) {
+      try { _roi = typeof cam.roi === 'string' ? JSON.parse(cam.roi) : cam.roi; } catch {}
+    }
+  }
+  await atualizarSnap();
+}
+
+init();
+</script>
+{% endblock %}

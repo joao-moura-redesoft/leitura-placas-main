@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Histórico — ALPR{% endblock %}
+{% block conteudo %}
+<h1>Histórico de Detecções</h1>
+<div class="card">
+  <input id="filtro" placeholder="Filtrar por placa...">
+  <button onclick="carregar()">Buscar</button>
+</div>
+<div class="card">
+  <table>
+    <thead><tr><th>Placa</th><th>Padrão</th><th>Confiança</th><th>Data</th><th>Snapshot</th></tr></thead>
+    <tbody id="corpo"></tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function carregar() {
+  const placa = document.getElementById('filtro').value.trim();
+  const url = '/api/deteccoes?limit=100' + (placa ? '&placa=' + encodeURIComponent(placa) : '');
+  const r = await fetch(url).then(r => r.json());
+  document.getElementById('corpo').innerHTML = r.map(d => `
+    <tr>
+      <td><strong>${d.placa}</strong></td>
+      <td><span class="badge badge-${d.padrao}">${d.padrao}</span></td>
+      <td>${(d.confianca * 100).toFixed(0)}%</td>
+      <td>${new Date(d.criado_em).toLocaleString()}</td>
+      <td>${d.snapshot ? `<a href="${d.snapshot}" target="_blank">ver</a>` : '-'}</td>
+    </tr>
+  `).join('');
+}
+carregar();
+</script>
+{% endblock %}

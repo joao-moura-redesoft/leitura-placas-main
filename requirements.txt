@@ -1,0 +1,51 @@
+# ── Dependências principais ───────────────────────────────────────────────────
+bcrypt>=4.2
+# Detector de placas — YOLOv9-t ONNX, licença MIT (uso comercial OK).
+# Backend padrão (detector_backend = open_image_models). Baixa o modelo no 1º uso.
+open-image-models>=0.5
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+jinja2==3.1.6
+python-multipart==0.0.27
+opencv-python-headless==4.13.0.92
+numpy==2.3.5
+onnxruntime==1.25.1
+pytesseract==0.3.13
+Pillow==12.2.0
+requests==2.33.1
+
+# ── Engine OCR ativo ──────────────────────────────────────────────────────────
+# Troque pelo engine selecionado em config.txt (ocr_engine = <valor>).
+# Instale apenas UM por vez — cada engine é independente dos outros.
+
+# ocr_engine = easyocr  →  pip install easyocr
+easyocr==1.7.2
+
+# ocr_engine = fast_plate_ocr  →  pip install fast-plate-ocr
+# fast-plate-ocr
+
+# ocr_engine = paddleocr  →  pip install paddlepaddle paddleocr
+# paddlepaddle
+# paddleocr
+
+# ocr_engine = doctr  →  pip install "python-doctr[torch]"
+# python-doctr[torch]
+
+# ocr_engine = tesseract  →  sem pacote pip adicional
+#   Windows: winget install UB-Mannheim.TesseractOCR
+#   Linux:   apt install tesseract-ocr
+
+# ── Ferramentas de desenvolvimento ───────────────────────────────────────────
+# benchmark_stream.py usa psutil para medir CPU/memória
+# psutil
+
+# ── Reload automático (python main.py --reload) ───────────────────────────────
+# Necessário para o uvicorn detectar alterações de arquivo no Windows.
+# Sem este pacote o --reload não funciona.
+watchfiles>=1.0
+
+# ── Tracker (ByteTrack) ───────────────────────────────────────────────────────
+# tracker_ativo = sim  →  pip install boxmot
+# Reduz chamadas OCR em ~99% rastreando veículos entre frames.
+# Fallback automático para modo clássico se não instalado.
+# boxmot

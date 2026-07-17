@@ -1,0 +1,831 @@
+{% extends "base.html" %}
+{% block title %}Configuração — ALPR{% endblock %}
+{% block conteudo %}
+<h1>Configuração</h1>
+<p style="color:#64748b; margin-bottom: 20px;">Alterações são salvas em <code>config.txt</code> e o pipeline é reiniciado automaticamente.</p>
+
+<nav class="cfg-tabs">
+  <button class="cfg-tab active" data-tab="camera"   onclick="trocarTab(this)">Câmera</button>
+  <button class="cfg-tab"        data-tab="deteccao" onclick="trocarTab(this)">Detecção</button>
+  <button class="cfg-tab"        data-tab="ocr"      onclick="trocarTab(this)">OCR</button>
+  <button class="cfg-tab"        data-tab="saidas"   onclick="trocarTab(this)">Saídas</button>
+  <button class="cfg-tab"        data-tab="sistema"  onclick="trocarTab(this)">Sistema</button>
+</nav>
+
+<form id="form-config" onsubmit="event.preventDefault(); salvar();">
+
+<!-- ═══════════════════════════════════════════════════════ ABA CÂMERA -->
+<div class="tab-pane active" id="tab-camera">
+
+  <div class="card">
+    <h2 style="margin-top:0;">Conexão da Câmera</h2>
+    <div class="grid-form">
+      <label>Protocolo <span class="help" data-tip="Tipo de câmera a usar. USB para webcam local, RTSP para câmera IP com URL direta, Intelbras para modelos VIP via protocolo Dahua/RTSP, CSI para câmera flat-cable do Raspberry Pi.">?</span>
+        <select name="camera_tipo" id="camera_tipo" onchange="mostrarSecaoProtocolo()">
+          <option value="usb">USB / Webcam local</option>
+          <option value="rtsp">RTSP (URL direta — inclui IP/PTZ)</option>
+          <option value="intelbras">Intelbras VIP (RTSP/Dahua)</option>
+          <option value="csi">CSI (Raspberry Pi Camera)</option>
+        </select>
+      </label>
+    </div>
+
+    <fieldset class="proto-secao" data-proto="usb">
+      <legend>USB</legend>
+      <div class="grid-form">
+        <label>Índice do dispositivo <span class="help" data-tip="Número da câmera USB no sistema. 0 = primeira câmera, 1 = segunda. Se só houver uma webcam, use 0.">?</span>
+          <input type="text" name="camera_indice" placeholder="0">
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="proto-secao" data-proto="rtsp">
+      <legend>RTSP — URL completa</legend>
+      <div class="grid-form">
+        <label style="grid-column: 1 / -1;">URL <span class="help" data-tip="Endereço RTSP completo da câmera IP. Exemplo: rtsp://admin:senha@192.168.1.10:554/cam/realmonitor?channel=1&subtype=1">?</span>
+          <input type="text" name="camera_indice" placeholder="rtsp://usuario:senha@host:554/path">
+        </label>
+        <label>Transporte <span class="help" data-tip="TCP é mais estável e evita perda de frames em redes congestionadas (recomendado). UDP é mais rápido mas pode perder pacotes. Troque para UDP apenas se TCP causar latência excessiva.">?</span>
+          <select name="rtsp_transporte">
+            <option value="tcp">TCP (recomendado — mais estável)</option>
+            <option value="udp">UDP (mais rápido, pode perder frames)</option>
+          </select>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="proto-secao" data-proto="intelbras">
+      <legend>Intelbras VIP</legend>
+      <div class="grid-form">
+        <label>Host <span class="help" data-tip="Endereço IP da câmera na rede local. Exemplo: 192.168.1.108. Recomenda-se fixar o IP no DHCP do roteador.">?</span>
+          <input type="text" name="intelbras_host" placeholder="192.168.1.108">
+        </label>
+        <label>Porta <span class="help" data-tip="Porta RTSP da câmera. Padrão Intelbras: 554.">?</span>
+          <input type="number" name="intelbras_porta" min="1" max="65535">
+        </label>
+        <label>Usuário <span class="help" data-tip="Usuário de acesso ao stream. Padrão de fábrica: admin.">?</span>
+          <input type="text" name="intelbras_usuario">
+        </label>
+        <label>Senha <span class="help" data-tip="Senha do usuário. Deixe em branco para manter a senha já salva sem alterá-la.">?</span>
+          <input type="password" name="intelbras_senha" placeholder="••••">
+        </label>
+        <label>Canal <span class="help" data-tip="Canal de vídeo. Use 1 para câmeras standalone. Em DVR/NVR, cada câmera tem um canal (1, 2, 3…).">?</span>
+          <input type="number" name="intelbras_canal" min="1">
+        </label>
+        <label>Subtype <span class="help" data-tip="0 = main stream (alta resolução). 1 = sub stream (menor resolução, recomendado para Raspberry Pi).">?</span>
+          <select name="intelbras_subtype">
+            <option value="0">0 — main (alta resolução)</option>
+            <option value="1">1 — sub (recomendado Pi)</option>
+          </select>
+        </label>
+        <label>Formato <span class="help" data-tip="'Padrão' funciona na maioria dos modelos VIP. 'Legado' para VIP 1120, 1220 e 1130.">?</span>
+          <select name="intelbras_formato">
+            <option value="padrao">Padrão (maioria dos modelos)</option>
+            <option value="legado">Legado (VIP 1120/1220/1130)</option>
+          </select>
+        </label>
+        <label>Transporte <span class="help" data-tip="TCP é mais estável e evita perda de frames em redes congestionadas (recomendado). UDP é mais rápido mas pode perder pacotes.">?</span>
+          <select name="rtsp_transporte">
+            <option value="tcp">TCP (recomendado — mais estável)</option>
+            <option value="udp">UDP (mais rápido, pode perder frames)</option>
+          </select>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="proto-secao" data-proto="csi">
+      <legend>CSI</legend>
+      <p style="color:#94a3b8; margin: 0;">Sem parâmetros adicionais — usa libcamerasrc do Raspberry Pi.</p>
+    </fieldset>
+
+    <div style="margin-top: 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+      <button type="button" onclick="testarConexao()">Testar conexão</button>
+      <span id="teste-status" style="color:#94a3b8;"></span>
+    </div>
+    <div id="preview-area" style="margin-top: 12px; display:none;">
+      <p style="color:#94a3b8; margin: 0 0 6px 0;">Preview da câmera (frame único):</p>
+      <img id="preview-img" style="max-width: 100%; max-height: 480px; border-radius: 6px; border: 1px solid #e2e8f0;" alt="Preview">
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Captura</h2>
+    <div class="grid-form">
+      <label>Resolução <span class="help" data-tip="Largura × altura do frame capturado. Resoluções maiores melhoram leitura de placas distantes, mas aumentam uso de CPU e RAM. Para Raspberry Pi, HD (1280×720) é o ponto de equilíbrio recomendado.">?</span>
+        <select id="resolucao_preset" onchange="aplicarPreset()">
+          <option value="640x480">VGA — 640×480 (mais leve)</option>
+          <option value="1280x720">HD — 1280×720 (padrão)</option>
+          <option value="1920x1080">Full HD — 1920×1080</option>
+          <option value="2560x1440">QHD — 2560×1440</option>
+          <option value="3840x2160">4K UHD — 3840×2160</option>
+          <option value="custom">Personalizado</option>
+        </select>
+      </label>
+      <label>Largura (px) <span class="help" data-tip="Largura do frame em pixels.">?</span>
+        <input type="number" name="camera_largura" id="camera_largura" min="160" max="3840">
+      </label>
+      <label>Altura (px) <span class="help" data-tip="Altura do frame em pixels.">?</span>
+        <input type="number" name="camera_altura" id="camera_altura" min="120" max="2160">
+      </label>
+      <label>FPS da câmera <span class="help" data-tip="Quadros por segundo solicitados à câmera. 15 fps é suficiente para placas em movimento moderado. Valores muito altos consomem CPU sem ganho real.">?</span>
+        <input type="number" name="camera_fps" min="1" max="60">
+      </label>
+    </div>
+    <p style="color:#94a3b8; font-size: 12px; margin: 8px 0 0 0;">
+      Resoluções maiores melhoram a leitura de placas distantes mas pesam no CPU.
+      Em câmera USB, FPS pode cair em resoluções altas dependendo do modelo.
+    </p>
+  </div>
+
+</div><!-- /tab-camera -->
+
+
+<!-- ═══════════════════════════════════════════════════════ ABA DETECÇÃO -->
+<div class="tab-pane" id="tab-deteccao">
+
+  <div class="card">
+    <h2 style="margin-top:0;">Modelo de Detecção</h2>
+    <div class="grid-form">
+      <label>Backend <span class="help" data-tip="open-image-models (MIT, uso comercial livre) baixa um YOLOv9-t ONNX automaticamente. ONNX local usa um arquivo .onnx seu (models/) e permite votação por múltiplos modelos.">?</span>
+        <select name="detector_backend">
+          <option value="open_image_models">open-image-models (MIT — comercial OK)</option>
+          <option value="onnx">ONNX local (models/*.onnx)</option>
+        </select>
+      </label>
+      <label>Modelo (open-image-models) <span class="help" data-tip="Tamanho de entrada do YOLOv9. Menor (256/384) = mais rápido no Raspberry Pi; maior (512/640) = mais preciso. Baixado automaticamente no primeiro uso.">?</span>
+        <select name="oim_modelo">
+          <option value="yolo-v9-t-256-license-plate-end2end">yolo-v9-t 256 (mais rápido)</option>
+          <option value="yolo-v9-t-384-license-plate-end2end">yolo-v9-t 384 (equilíbrio)</option>
+          <option value="yolo-v9-t-416-license-plate-end2end">yolo-v9-t 416</option>
+          <option value="yolo-v9-t-512-license-plate-end2end">yolo-v9-t 512</option>
+          <option value="yolo-v9-t-640-license-plate-end2end">yolo-v9-t 640 (mais preciso)</option>
+          <option value="yolo-v9-s-608-license-plate-end2end">yolo-v9-s 608 (maior)</option>
+        </select>
+      </label>
+      <label>Modelo principal (ONNX local) <span class="help" data-tip="Usado quando o Backend é 'ONNX local'. Caminho para o arquivo .onnx do modelo treinado para detectar placas.">?</span>
+        <input type="text" name="modelo_path">
+      </label>
+      <label>Modelos extras de validação <span class="help" data-tip="Modelos ONNX adicionais para confirmar detecções por votação. Coloque os arquivos .onnx na pasta models/ para aparecerem aqui.">?</span>
+        <input type="hidden" name="detector_modelos_extra" id="modelos-extra-value">
+        <div id="modelos-dropdown" class="engines-dropdown" onclick="toggleModelosDropdown(event)">
+          <span id="modelos-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Nenhum (só modelo principal)</span>
+          <span style="flex-shrink:0;margin-left:6px">▾</span>
+        </div>
+        <div id="modelos-panel">
+          <div id="modelos-lista" style="padding:8px;font-size:12px;color:#64748b">Carregando…</div>
+        </div>
+      </label>
+      <label>Votos mínimos (detector) <span class="help" data-tip="Número mínimo de modelos que precisam detectar a mesma região para aceitar. 1 = aceita qualquer modelo. 2 = exige ≥2 concordando.">?</span>
+        <select name="detector_votos_minimos">
+          <option value="1">1 — aceita qualquer modelo (padrão)</option>
+          <option value="2">2 — exige ≥ 2 modelos concordando</option>
+          <option value="3">3 — exige ≥ 3 modelos concordando</option>
+        </select>
+      </label>
+      <label>Confiança mínima <span class="help" data-tip="Nível mínimo de confiança do YOLO para aceitar uma detecção (0.0 a 1.0). Recomendado: 0.40 a 0.60.">?</span>
+        <input type="number" step="0.01" min="0" max="1" name="conf_threshold">
+      </label>
+      <label>NMS threshold <span class="help" data-tip="Non-Maximum Suppression — elimina detecções duplicadas sobrepostas. Valores menores são mais rigorosos. Recomendado: 0.45.">?</span>
+        <input type="number" step="0.01" min="0" max="1" name="nms_threshold">
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Modo de Detecção</h2>
+    <div class="grid-form">
+      <label>Detecção automática <span class="help" data-tip="Sim = detecta placas continuamente no stream em tempo real. Não = detecção só ocorre ao clicar 'Ler Placa'.">?</span>
+        <select name="deteccao_automatica">
+          <option value="sim">Sim — contínua (tempo real)</option>
+          <option value="nao">Não — somente pelo botão</option>
+        </select>
+      </label>
+      <label>FPS máx de detecção <span class="help" data-tip="Limita quantas vezes por segundo o YOLO é executado. O stream continua em camera_fps. Reduzir alivia CPU. Recomendado: 5.">?</span>
+        <input type="number" name="deteccao_fps_max" min="1" max="30">
+      </label>
+      <label>Processar a cada N frames <span class="help" data-tip="Pula frames entre detecções para aliviar CPU. 1 = todo frame. 2 = 1 a cada 2 (recomendado). O stream de vídeo continua fluido.">?</span>
+        <input type="number" name="processar_a_cada_n_frames" min="1" max="10">
+      </label>
+      <label>Fotos por leitura (botão) <span class="help" data-tip="Número de fotos tiradas ao clicar 'Ler Placa'. O sistema analisa todas e elege a placa mais votada. Mais fotos = maior confiança, mas maior tempo de resposta. Recomendado: 3.">?</span>
+        <input type="number" name="snapshots_votacao" min="1" max="10">
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Filtros e Validação</h2>
+    <div class="grid-form">
+      <label>Frames consenso <span class="help" data-tip="Leituras idênticas consecutivas necessárias para registrar uma placa. Aumentar reduz falsos positivos mas atrasa o registro. Recomendado: 3.">?</span>
+        <input type="number" name="frames_consenso" min="1" max="20">
+      </label>
+      <label>Cooldown (segundos) <span class="help" data-tip="Tempo mínimo entre dois registros da mesma placa. Evita registros repetidos de uma placa parada. Recomendado: 30 segundos.">?</span>
+        <input type="number" name="cooldown_seg" min="0" max="3600">
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Ajuste de Imagem por Ambiente</h2>
+    <p style="margin-top:0;color:#64748b;font-size:.85rem">
+      Analisa cada frame, detecta a condição da cena (noite, baixa luz, nublado/chuva,
+      sol forte) e corrige brilho, contraste e saturação antes da detecção — melhora a
+      captura em condições ruins. Perfil atual aparece no Dashboard.
+    </p>
+    <div class="grid-form">
+      <label>Ativar ajuste adaptativo <span class="help" data-tip="Sim = corrige a imagem automaticamente conforme a luz/contraste do ambiente. Não = usa o frame da câmera sem alteração.">?</span>
+        <select name="ajuste_ambiente">
+          <option value="sim">Sim — corrige por ambiente</option>
+          <option value="nao">Não — imagem original</option>
+        </select>
+      </label>
+      <label>Intensidade (0–1) <span class="help" data-tip="Mistura entre imagem original e corrigida. 0 = sem efeito, 1 = correção total. Recomendado: 0.8.">?</span>
+        <input type="number" name="ajuste_forca" min="0" max="1" step="0.05">
+      </label>
+      <label>Brilho alvo (0–255) <span class="help" data-tip="Luminância média que o gamma automático tenta atingir. Maior = imagem mais clara. Recomendado: 120.">?</span>
+        <input type="number" name="ajuste_brilho_alvo" min="60" max="220">
+      </label>
+      <label>Reclassificar a cada N frames <span class="help" data-tip="A cada quantos frames a cena é reanalisada. Menor = adapta mais rápido, custa mais CPU. Recomendado: 8.">?</span>
+        <input type="number" name="ajuste_recalc_frames" min="1" max="60">
+      </label>
+      <label>Contraste local (CLAHE) <span class="help" data-tip="Realça detalhe local — ótimo em neblina/chuva/baixo contraste. Recomendado: Sim.">?</span>
+        <select name="ajuste_clahe">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Balanço de branco <span class="help" data-tip="Remove dominante de cor (ex.: azulado à noite) via gray-world. Recomendado: Sim.">?</span>
+        <select name="ajuste_wb">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Ajuste de saturação <span class="help" data-tip="Compensa a saturação conforme a cena (reforça em pouca luz, segura no sol forte). Recomendado: Sim.">?</span>
+        <select name="ajuste_saturacao">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Redução de ruído à noite <span class="help" data-tip="Filtro leve que reduz o ruído típico de pouca luz. Custa um pouco de CPU. Recomendado: Sim.">?</span>
+        <select name="ajuste_denoise_noite">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
+</div><!-- /tab-deteccao -->
+
+
+<!-- ═══════════════════════════════════════════════════════ ABA OCR -->
+<div class="tab-pane" id="tab-ocr">
+
+  <div class="card">
+    <h2 style="margin-top:0;">Engine de Leitura</h2>
+    <div class="grid-form">
+      <label>Engine principal <span class="help" data-tip="Motor de leitura de texto. Auto = detecta o formato pela faixa colorida e usa fast-plate-ocr para Mercosul ou EasyOCR para placa antiga (recomendado). Engines não instalados são baixados automaticamente.">?</span>
+        <select name="ocr_engine">
+          <option value="auto">Auto (Mercosul → fast-plate-ocr · Antigo → EasyOCR)</option>
+          <option value="tesseract">Tesseract (leve)</option>
+          <option value="easyocr">EasyOCR (preciso)</option>
+          <option value="fast_plate_ocr">fast-plate-ocr (ONNX leve)</option>
+          <option value="paddleocr">PaddleOCR (ARM64)</option>
+          <option value="doctr">docTR (transformers)</option>
+        </select>
+      </label>
+      <label>Tesseract PSM <span class="help" data-tip="Page Segmentation Mode do Tesseract. 6 = bloco uniforme (recomendado). 7 = linha única. 11 = texto esparso. O sistema tenta PSM 6 e 11 automaticamente como fallback.">?</span>
+        <input type="number" name="tesseract_psm" min="0" max="13">
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Validação por Múltiplos Engines</h2>
+    <div class="grid-form">
+      <label>Engines extras <span class="help" data-tip="Engines adicionais para confirmar a leitura por votação. Vazio = usa somente o engine principal. Engines não instalados são baixados automaticamente.">?</span>
+        <input type="hidden" name="ocr_engines_extra" id="engines-extra-value">
+        <div id="engines-dropdown" class="engines-dropdown" onclick="toggleEnginesDropdown(event)">
+          <span id="engines-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Nenhum (só engine principal)</span>
+          <span style="flex-shrink:0;margin-left:6px">▾</span>
+        </div>
+        <div id="engines-panel">
+          <label class="engine-check"><input type="checkbox" value="tesseract"      onchange="syncEnginesExtra()"> Tesseract <small>(leve)</small></label>
+          <label class="engine-check"><input type="checkbox" value="easyocr"        onchange="syncEnginesExtra()"> EasyOCR <small>(preciso)</small></label>
+          <label class="engine-check"><input type="checkbox" value="fast_plate_ocr" onchange="syncEnginesExtra()"> fast-plate-ocr <small>(ONNX)</small></label>
+          <label class="engine-check"><input type="checkbox" value="paddleocr"      onchange="syncEnginesExtra()"> PaddleOCR <small>(ARM64)</small></label>
+          <label class="engine-check"><input type="checkbox" value="doctr"          onchange="syncEnginesExtra()"> docTR <small>(transformers)</small></label>
+        </div>
+      </label>
+      <label>Votos mínimos <span class="help" data-tip="Número mínimo de engines que precisam concordar para aceitar a leitura. 1 = aceita qualquer resultado. 2 = exige ≥2 engines concordando.">?</span>
+        <select name="ocr_votos_minimos">
+          <option value="1">1 — aceita qualquer engine (padrão)</option>
+          <option value="2">2 — exige ≥ 2 engines concordando</option>
+          <option value="3">3 — exige ≥ 3 engines concordando</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
+</div><!-- /tab-ocr -->
+
+
+<!-- ═══════════════════════════════════════════════════════ ABA SAÍDAS -->
+<div class="tab-pane" id="tab-saidas">
+
+  <div class="card">
+    <h2 style="margin-top:0;">Snapshot</h2>
+    <div class="grid-form">
+      <label>Salvar snapshot <span class="help" data-tip="Grava uma imagem JPEG do recorte da placa a cada detecção confirmada. Arquivos salvos em static/snapshots/ com nome TIMESTAMP_PLACA.jpg.">?</span>
+        <select name="salvar_snapshot">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Qualidade JPEG <span class="help" data-tip="Qualidade da imagem snapshot (10 = mínima, 100 = máxima). Valores entre 75 e 85 oferecem boa legibilidade com arquivo menor.">?</span>
+        <input type="number" name="snapshot_qualidade" min="10" max="100">
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Webhook e Alertas</h2>
+    <div class="grid-form">
+      <label>Alertar lista negra <span class="help" data-tip="Envia HTTP POST para a URL do webhook sempre que uma placa cadastrada na lista negra for detectada.">?</span>
+        <select name="alerta_lista_negra">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Webhook toda detecção <span class="help" data-tip="Envia HTTP POST para a URL do webhook a cada placa detectada (não só lista negra). Payload JSON: {placa, padrao, confianca, snapshot, evento}.">?</span>
+        <select name="webhook_todas">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label style="grid-column: 1 / -1;">URL do webhook <span class="help" data-tip="Endereço HTTP/HTTPS que receberá os alertas via POST com corpo JSON. Deve responder em menos de 5 segundos. Exemplo: https://meuservidor.com/alpr/webhook">?</span>
+        <input type="text" name="webhook_url" placeholder="https://exemplo.com/alpr">
+      </label>
+    </div>
+  </div>
+
+</div><!-- /tab-saidas -->
+
+
+<!-- ═══════════════════════════════════════════════════════ ABA SISTEMA -->
+<div class="tab-pane" id="tab-sistema">
+
+  <div class="card">
+    <h2 style="margin-top:0;">Servidor</h2>
+    <div class="grid-form">
+      <label>Porta HTTP <span class="help" data-tip="Porta TCP em que o servidor web escuta. Padrão: 14000. Mudanças aqui exigem reiniciar o processo Python completamente.">?</span>
+        <input type="number" name="porta" min="1" max="65535">
+      </label>
+      <label>Nível de log <span class="help" data-tip="Verbosidade do log. 'debug' exibe tudo (útil para diagnóstico). 'info' é o normal em produção. 'warning' e 'error' mostram apenas problemas.">?</span>
+        <select name="log_level">
+          <option value="debug">debug</option>
+          <option value="info">info</option>
+          <option value="warning">warning</option>
+          <option value="error">error</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
+</div><!-- /tab-sistema -->
+
+
+<!-- ═══════════════════════ Banner instalação (fora das abas) -->
+<div id="banner-instalacao" style="display:none; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:14px 18px; margin-bottom:12px;">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <div>
+      <div style="color:#15803d; font-weight:600; font-size:14px;">Instalando dependência via pip…</div>
+      <div id="banner-pacote" style="color:#374151; font-size:13px; margin-top:2px;"></div>
+      <div style="color:#64748b; font-size:12px; margin-top:4px;">O pipeline será reiniciado automaticamente quando concluir. Aguarde.</div>
+    </div>
+  </div>
+  <div style="margin-top:10px; height:4px; background:#dcfce7; border-radius:2px; overflow:hidden;">
+    <div id="banner-barra" style="height:100%; width:30%; background:#16a34a; border-radius:2px; animation: slide 1.2s ease-in-out infinite;"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ Rodapé (sempre visível) -->
+<div class="card" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+  <span id="status-msg" style="color:#94a3b8;"></span>
+  <div style="display:flex; gap:8px;">
+    <button type="button" onclick="carregar()">Recarregar</button>
+    <button type="submit" id="btn-salvar">Salvar e reiniciar pipeline</button>
+  </div>
+</div>
+
+</form>
+
+<style>
+/* ─── Abas ───────────────────────────────────────────────────────── */
+.cfg-tabs {
+  display: flex;
+  gap: 2px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 4px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.cfg-tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 9px 14px;
+  color: #64748b;
+  cursor: pointer;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+  min-width: 80px;
+  white-space: nowrap;
+}
+.cfg-tab:hover { background: #f0fdf4; color: #16a34a; }
+.cfg-tab.active { background: #fff; color: #16a34a; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.tab-pane { display: none; }
+.tab-pane.active { display: block; }
+
+/* ─── Form ───────────────────────────────────────────────────────── */
+.grid-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.grid-form label { display: flex; flex-direction: column; font-size: 13px; color: #64748b; gap: 4px; font-weight: 500; }
+fieldset { border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; margin-top: 12px; background: #fafbfc; }
+fieldset legend { color: #16a34a; padding: 0 6px; font-weight: 600; font-size: 13px; }
+.proto-secao { display: none; }
+.proto-secao.ativo { display: block; }
+
+/* ─── Dropdown de engines ────────────────────────────────────────── */
+.engines-dropdown {
+  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 7px;
+  padding: 7px 10px; cursor: pointer; color: #1e293b; font-size: 13px;
+  display: flex; justify-content: space-between; align-items: center;
+  user-select: none; min-height: 36px; transition: border-color .15s;
+}
+.engines-dropdown:hover { border-color: #16a34a; }
+#engines-panel, #modelos-panel {
+  display: none; background: #fff; border: 1px solid #e2e8f0;
+  border-radius: 7px; padding: 6px 4px; margin-top: 2px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.08);
+}
+.engine-check {
+  display: flex !important; flex-direction: row !important;
+  align-items: center; gap: 8px; padding: 7px 10px;
+  border-radius: 5px; cursor: pointer; color: #374151 !important;
+  font-size: 13px !important; font-weight: normal !important;
+}
+.engine-check:hover { background: #f8fafc; }
+.engine-check small { color: #94a3b8; }
+.engine-check input[type=checkbox] {
+  width: 15px; height: 15px; cursor: pointer;
+  accent-color: #16a34a; flex-shrink: 0;
+}
+
+@keyframes slide {
+  0%   { margin-left: -30%; }
+  100% { margin-left: 100%; }
+}
+
+/* ─── Tooltip de ajuda ───────────────────────────────────────────── */
+.help {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; border-radius: 50%; background: #dcfce7;
+  color: #15803d; font-size: 10px; font-weight: bold; cursor: default;
+  position: relative; margin-left: 4px; flex-shrink: 0;
+  vertical-align: middle; border: 1px solid #bbf7d0; user-select: none;
+}
+.help::after {
+  content: attr(data-tip); display: none; position: absolute;
+  bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+  background: #1e293b; color: #e2e8f0; font-size: 12px; font-weight: normal;
+  line-height: 1.5; padding: 8px 12px; border-radius: 6px;
+  border: 1px solid #334155; width: 280px; white-space: normal; z-index: 100;
+  box-shadow: 0 4px 16px rgba(0,0,0,.25); pointer-events: none;
+}
+.help::before {
+  content: ''; display: none; position: absolute;
+  bottom: calc(100% + 2px); left: 50%; transform: translateX(-50%);
+  border: 6px solid transparent; border-top-color: #334155; z-index: 101; pointer-events: none;
+}
+.help:hover::after, .help:hover::before { display: block; }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const form = document.getElementById('form-config');
+const statusEl = document.getElementById('status-msg');
+
+/* ─── Abas ─────────────────────────────────────────────────────────────── */
+function trocarTab(btn) {
+  document.querySelectorAll('.cfg-tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+}
+
+/* ─── Câmera ────────────────────────────────────────────────────────────── */
+function mostrarSecaoProtocolo() {
+  const proto = document.getElementById('camera_tipo').value;
+  document.querySelectorAll('.proto-secao').forEach(el => {
+    el.classList.toggle('ativo', el.dataset.proto === proto);
+  });
+}
+
+const PRESETS_RES = ['640x480','1280x720','1920x1080','2560x1440','3840x2160'];
+
+function aplicarPreset() {
+  const sel = document.getElementById('resolucao_preset');
+  const v = sel.value;
+  const lar = document.getElementById('camera_largura');
+  const alt = document.getElementById('camera_altura');
+  if (v === 'custom') {
+    lar.removeAttribute('readonly'); alt.removeAttribute('readonly');
+    return;
+  }
+  const [w, h] = v.split('x');
+  lar.value = w; alt.value = h;
+}
+
+function sincronizarPresetComCampos() {
+  const w = document.getElementById('camera_largura').value;
+  const h = document.getElementById('camera_altura').value;
+  const chave = `${w}x${h}`;
+  const sel = document.getElementById('resolucao_preset');
+  sel.value = PRESETS_RES.includes(chave) ? chave : 'custom';
+}
+
+/* ─── Dropdown engines OCR ─────────────────────────────────────────────── */
+const _ENGINES_LABEL = {
+  auto: 'Auto', tesseract: 'Tesseract', easyocr: 'EasyOCR',
+  fast_plate_ocr: 'fast-plate-ocr', paddleocr: 'PaddleOCR', doctr: 'docTR',
+};
+
+function toggleEnginesDropdown(e) {
+  e.stopPropagation();
+  const panel = document.getElementById('engines-panel');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
+
+function syncEnginesExtra() {
+  const selecionados = [...document.querySelectorAll('#engines-panel input:checked')].map(c => c.value);
+  document.getElementById('engines-extra-value').value = selecionados.join(',');
+  document.getElementById('engines-label').textContent = selecionados.length
+    ? selecionados.map(v => _ENGINES_LABEL[v] || v).join(', ')
+    : 'Nenhum (só engine principal)';
+}
+
+function loadEnginesExtra(value) {
+  const sel = (value || '').split(',').map(s => s.trim()).filter(Boolean);
+  document.querySelectorAll('#engines-panel input[type=checkbox]').forEach(cb => {
+    cb.checked = sel.includes(cb.value);
+  });
+  syncEnginesExtra();
+}
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('#engines-dropdown') && !e.target.closest('#engines-panel'))
+    document.getElementById('engines-panel').style.display = 'none';
+});
+
+/* ─── Dropdown modelos YOLO ────────────────────────────────────────────── */
+let _modelosCarregados = false;
+
+function toggleModelosDropdown(e) {
+  e.stopPropagation();
+  const panel = document.getElementById('modelos-panel');
+  const aberto = panel.style.display !== 'none';
+  panel.style.display = aberto ? 'none' : 'block';
+  if (!aberto && !_modelosCarregados) carregarListaModelos();
+}
+
+async function carregarListaModelos() {
+  _modelosCarregados = true;
+  const lista = document.getElementById('modelos-lista');
+  try {
+    const modelos = await fetch('/api/modelos').then(r => r.json());
+    const principal = (form.querySelector('[name="modelo_path"]')?.value || '').trim();
+    const nomePrincipal = principal.split('/').pop().split('\\').pop();
+    const extras = modelos.filter(m => m !== nomePrincipal);
+    if (!extras.length) {
+      lista.textContent = 'Nenhum modelo extra em models/ — coloque arquivos .onnx lá.';
+      return;
+    }
+    const selecionados = (document.getElementById('modelos-extra-value').value || '')
+      .split(',').map(s => s.trim()).filter(Boolean);
+    lista.innerHTML = '';
+    extras.forEach(m => {
+      const lbl = document.createElement('label');
+      lbl.className = 'engine-check';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.value = `models/${m}`;
+      cb.checked = selecionados.includes(`models/${m}`);
+      cb.onchange = syncModelosExtra;
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(' ' + m));
+      lista.appendChild(lbl);
+    });
+    syncModelosExtra();
+  } catch { lista.textContent = 'Erro ao carregar lista de modelos.'; }
+}
+
+function syncModelosExtra() {
+  const checked = [...document.querySelectorAll('#modelos-panel input[type=checkbox]:checked')].map(c => c.value);
+  document.getElementById('modelos-extra-value').value = checked.join(',');
+  document.getElementById('modelos-label').textContent = checked.length
+    ? checked.map(v => v.split('/').pop()).join(', ')
+    : 'Nenhum (só modelo principal)';
+}
+
+function loadModelosExtra(value) {
+  document.getElementById('modelos-extra-value').value = value || '';
+  const selecionados = (value || '').split(',').map(s => s.trim()).filter(Boolean);
+  document.querySelectorAll('#modelos-panel input[type=checkbox]').forEach(cb => {
+    cb.checked = selecionados.includes(cb.value);
+  });
+  syncModelosExtra();
+}
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('#modelos-dropdown') && !e.target.closest('#modelos-panel'))
+    document.getElementById('modelos-panel').style.display = 'none';
+});
+
+/* ─── setValor central ─────────────────────────────────────────────────── */
+function setValor(name, valor) {
+  form.querySelectorAll(`[name="${name}"]`).forEach(el => { el.value = valor ?? ''; });
+  if (name === 'ocr_engines_extra')    loadEnginesExtra(valor || '');
+  if (name === 'detector_modelos_extra') loadModelosExtra(valor || '');
+}
+
+/* ─── Carregar config ──────────────────────────────────────────────────── */
+async function carregar() {
+  try {
+    const cfg = await fetch('/api/config').then(r => r.json());
+    for (const [k, v] of Object.entries(cfg)) {
+      if (k.startsWith('_')) continue;
+      setValor(k, v);
+    }
+    mostrarSecaoProtocolo();
+    sincronizarPresetComCampos();
+    statusEl.textContent = 'Configuração carregada.';
+    statusEl.style.color = '#94a3b8';
+  } catch (e) {
+    statusEl.textContent = 'Erro ao carregar configuração: ' + e;
+    statusEl.style.color = '#f87171';
+  }
+}
+
+/* ─── Banner instalação ────────────────────────────────────────────────── */
+let _pollingTimer = null;
+
+function _mostrarBannerInstalacao(pacote) {
+  document.getElementById('banner-pacote').textContent = 'Pacote: ' + pacote;
+  document.getElementById('banner-instalacao').style.display = 'block';
+  document.getElementById('btn-salvar').disabled = true;
+}
+
+function _esconderBannerInstalacao() {
+  document.getElementById('banner-instalacao').style.display = 'none';
+  document.getElementById('btn-salvar').disabled = false;
+}
+
+function _iniciarPollingInstalacao() {
+  if (_pollingTimer) return;
+  _pollingTimer = setInterval(async () => {
+    try {
+      const st = await fetch('/api/status').then(r => r.json());
+      if (st.instalando_pacote) {
+        _mostrarBannerInstalacao(st.instalando_pacote);
+        statusEl.textContent = 'Instalando ' + st.instalando_pacote + '…';
+        statusEl.style.color = '#93c5fd';
+      } else {
+        _esconderBannerInstalacao();
+        clearInterval(_pollingTimer); _pollingTimer = null;
+        if (st.pipeline) {
+          statusEl.textContent = 'Instalação concluída — pipeline reiniciado com sucesso.';
+          statusEl.style.color = '#16a34a';
+        } else {
+          statusEl.textContent = 'Instalação concluída — aguardando pipeline iniciar…';
+          statusEl.style.color = '#fbbf24';
+        }
+      }
+    } catch { /* ignora erros de rede durante instalação */ }
+  }, 1500);
+}
+
+/* ─── Salvar ────────────────────────────────────────────────────────────── */
+async function salvar() {
+  const proto = document.getElementById('camera_tipo').value;
+  const data = new FormData(form);
+  const payload = {};
+  for (const [k, v] of data.entries()) {
+    if (k === 'camera_indice') {
+      let valor = '';
+      form.querySelectorAll('[name="camera_indice"]').forEach(inp => {
+        if (inp.closest('.proto-secao.ativo')) valor = inp.value;
+      });
+      payload['camera_indice'] = valor;
+      continue;
+    }
+    if (k === 'rtsp_transporte') {
+      // Lê apenas do fieldset ativo para não duplicar
+      let valor = 'tcp';
+      form.querySelectorAll('[name="rtsp_transporte"]').forEach(sel => {
+        if (sel.closest('.proto-secao.ativo')) valor = sel.value;
+      });
+      payload['rtsp_transporte'] = valor;
+      continue;
+    }
+    if (payload[k] === undefined) payload[k] = v;
+  }
+  payload['camera_tipo'] = proto;
+
+  statusEl.textContent = 'Salvando…';
+  statusEl.style.color = '#94a3b8';
+  document.getElementById('btn-salvar').disabled = true;
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const json = await r.json();
+    if (!r.ok) {
+      statusEl.textContent = 'Erro: ' + (json.detail || r.status);
+      statusEl.style.color = '#f87171';
+      document.getElementById('btn-salvar').disabled = false;
+      return;
+    }
+    _iniciarPollingInstalacao();
+    if (json.pipeline_reiniciado) {
+      statusEl.textContent = 'Salvo e pipeline reiniciado com sucesso.';
+      statusEl.style.color = '#16a34a';
+      document.getElementById('btn-salvar').disabled = false;
+    } else {
+      statusEl.textContent = 'Configuração salva — verificando instalação de dependências…';
+      statusEl.style.color = '#93c5fd';
+    }
+  } catch (e) {
+    statusEl.textContent = 'Erro de rede: ' + e;
+    statusEl.style.color = '#f87171';
+    document.getElementById('btn-salvar').disabled = false;
+  }
+}
+
+/* ─── Testar conexão ────────────────────────────────────────────────────── */
+function montarPayloadCamera() {
+  const proto = document.getElementById('camera_tipo').value;
+  const data = new FormData(form);
+  const payload = {};
+  for (const [k, v] of data.entries()) {
+    if (k === 'camera_indice' || k === 'rtsp_transporte') continue;
+    if (payload[k] === undefined) payload[k] = v;
+  }
+  form.querySelectorAll('[name="camera_indice"]').forEach(inp => {
+    if (inp.closest('.proto-secao.ativo')) payload['camera_indice'] = inp.value;
+  });
+  form.querySelectorAll('[name="rtsp_transporte"]').forEach(sel => {
+    if (sel.closest('.proto-secao.ativo')) payload['rtsp_transporte'] = sel.value;
+  });
+  payload['camera_tipo'] = proto;
+  return payload;
+}
+
+async function testarConexao() {
+  const statusT = document.getElementById('teste-status');
+  const preview = document.getElementById('preview-area');
+  const img = document.getElementById('preview-img');
+  preview.style.display = 'none';
+  statusT.textContent = 'Testando conexão (pode levar até 30s em RTSP)…';
+  statusT.style.color = '#94a3b8';
+  try {
+    const r = await fetch('/api/camera/teste', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(montarPayloadCamera()),
+    });
+    if (!r.ok) {
+      let detail;
+      try { detail = (await r.json()).detail; } catch { detail = r.statusText; }
+      statusT.textContent = 'Falha: ' + detail;
+      statusT.style.color = '#f87171';
+      return;
+    }
+    const blob = await r.blob();
+    if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+    const url = URL.createObjectURL(blob);
+    img.src = url; img.dataset.url = url;
+    preview.style.display = 'block';
+    statusT.textContent = 'Conectado — frame capturado com sucesso';
+    statusT.style.color = '#16a34a';
+  } catch (e) {
+    statusT.textContent = 'Erro de rede: ' + e;
+    statusT.style.color = '#f87171';
+  }
+}
+
+carregar();
+</script>
+{% endblock %}

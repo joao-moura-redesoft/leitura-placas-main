@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Listas — ALPR{% endblock %}
+{% block conteudo %}
+<h1>Listas de Placas</h1>
+<div class="card">
+  <h2 style="margin-top:0;">Cadastrar</h2>
+  <input id="placa" placeholder="ABC1D23" maxlength="7">
+  <select id="tipo">
+    <option value="branca">Branca (autorizada)</option>
+    <option value="negra">Negra (alerta)</option>
+  </select>
+  <input id="descricao" placeholder="Descrição">
+  <button onclick="cadastrar()">Adicionar</button>
+</div>
+<div class="card">
+  <table>
+    <thead><tr><th>Placa</th><th>Tipo</th><th>Descrição</th><th>Cadastrada</th><th></th></tr></thead>
+    <tbody id="corpo"></tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function carregar() {
+  const r = await fetch('/api/listas').then(r => r.json());
+  document.getElementById('corpo').innerHTML = r.map(l => `
+    <tr>
+      <td><strong>${l.placa}</strong></td>
+      <td><span class="badge badge-${l.tipo === 'negra' ? 'antigo' : 'mercosul'}">${l.tipo}</span></td>
+      <td>${l.descricao || ''}</td>
+      <td>${new Date(l.criado_em).toLocaleString()}</td>
+      <td><button onclick="remover(${l.id})">Excluir</button></td>
+    </tr>
+  `).join('');
+}
+async function cadastrar() {
+  const placa = document.getElementById('placa').value.toUpperCase().trim();
+  const tipo = document.getElementById('tipo').value;
+  const descricao = document.getElementById('descricao').value;
+  const r = await fetch('/api/listas', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({placa, tipo, descricao}),
+  });
+  if (r.ok) { document.getElementById('placa').value = ''; document.getElementById('descricao').value = ''; carregar(); }
+  else { alert('Erro ao cadastrar'); }
+}
+async function remover(id) {
+  if (!confirm('Remover?')) return;
+  await fetch('/api/listas/' + id, {method: 'DELETE'});
+  carregar();
+}
+carregar();
+</script>
+{% endblock %}
