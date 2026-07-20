@@ -33,8 +33,8 @@ class Detector:
             return
         try:
             import onnxruntime as ort
-            providers = ["CPUExecutionProvider"]
-            self.sess = ort.InferenceSession(str(self.modelo_path), providers=providers)
+            from hardware import onnx_providers
+            self.sess = ort.InferenceSession(str(self.modelo_path), providers=onnx_providers())
             self.input_name = self.sess.get_inputs()[0].name
             out_shape = self.sess.get_outputs()[0].shape
             fmt = "YOLO26 e2e" if (len(out_shape) == 3 and out_shape[-1] == 6) else "YOLOv8"
@@ -229,7 +229,9 @@ class OpenImageDetector:
             self.sess = None
             return
         try:
-            self._det = LicensePlateDetector(detection_model=self.modelo, conf_thresh=self.conf)
+            from hardware import onnx_providers
+            self._det = LicensePlateDetector(detection_model=self.modelo, conf_thresh=self.conf,
+                                              providers=onnx_providers())
             self.sess = getattr(self._det, "model", None)
             log.info("open-image-models carregado [MIT]: %s (conf≥%.2f)", self.modelo, self.conf)
         except Exception as e:
@@ -300,7 +302,8 @@ class VehicleDetector:
             return
         try:
             import onnxruntime as ort
-            self.sess = ort.InferenceSession(str(self.modelo_path), providers=["CPUExecutionProvider"])
+            from hardware import onnx_providers
+            self.sess = ort.InferenceSession(str(self.modelo_path), providers=onnx_providers())
             self.input_name = self.sess.get_inputs()[0].name
             log.info("VehicleDetector carregado [YOLOX-s, Apache-2.0]: %s", self.modelo_path)
             # Aquece o grafo ONNX no carregamento (não na 1ª detecção real) — ORT otimiza

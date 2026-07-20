@@ -84,8 +84,13 @@ PADROES: dict[str, str] = {
     "snapshots_votacao": "3",
     # Máximo de fotos tiradas antes de desistir e responder com o que tiver (limite superior).
     "leitura_max_tentativas": "12",
-    # Tempo máximo (segundos) do loop de leitura, mesmo que o máximo de fotos não seja atingido.
-    "leitura_timeout_seg": "6",
+    # Tempo máximo (segundos) do loop de leitura, mesmo que o máximo de fotos não seja
+    # atingido. Medido em CPU (dev, sem GPU): ~7s/tentativa em crop pequeno/borrado com
+    # 2 estágios + s-608 + ensemble PaddleOCR — 6s não dava nem para 1 tentativa completa,
+    # e menos ainda para atingir o mínimo de fotos antes de poder parar por acordo. Em
+    # produção (GPU), cada tentativa deve ser bem mais rápida — este é um teto de
+    # segurança, não um alvo (o loop já para antes via `leitura_acordo_minimo`).
+    "leitura_timeout_seg": "28",
     # Concordância mínima (0-1) entre as leituras para parar antecipadamente com confiança.
     # 0.80 = para assim que 80%+ do peso das leituras concordar com a placa eleita.
     "leitura_acordo_minimo": "0.80",

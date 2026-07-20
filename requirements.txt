@@ -1,3 +1,15 @@
+# ── GPU em produção (opcional) ──────────────────────────────────────────────────
+# Todo detector/OCR pede CUDA automaticamente quando disponível (hardware.py) e cai
+# para CPU sem erro se não houver — não precisa mudar código, só trocar pacotes no
+# servidor de destino (requer driver NVIDIA + CUDA/cuDNN instalados no SO):
+#   pip uninstall onnxruntime && pip install onnxruntime-gpu   # detecção (2 estágios)
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121  # EasyOCR
+#   pip uninstall paddlepaddle && pip install paddlepaddle-gpu  # PaddleOCR (não
+#     testado em GPU real neste projeto — validar após instalar)
+# Este ambiente de desenvolvimento é CPU-only; os testes de precisão/latência deste
+# projeto foram medidos em CPU (i3-8100T) — em produção com GPU, latência tende a cair
+# bastante (detecção e OCR são a maior parte do custo por tentativa no loop de leitura).
+
 # ── Dependências principais ───────────────────────────────────────────────────
 bcrypt>=4.2
 # Detector de placas — YOLOv9-t ONNX, licença MIT (uso comercial OK).

@@ -165,8 +165,10 @@ class OCR:
             self._carregar_tesseract()
             return
         import easyocr
-        self._easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-        log.info("EasyOCR carregado")
+        from hardware import torch_cuda_disponivel
+        usar_gpu = torch_cuda_disponivel()
+        self._easyocr_reader = easyocr.Reader(["en"], gpu=usar_gpu, verbose=False)
+        log.info("EasyOCR carregado (gpu=%s)", usar_gpu)
         # Warm-up: força JIT do PyTorch para compilar os kernels durante o startup
         # e não na primeira leitura real (o que causaria atraso de 3-8 segundos).
         try:
@@ -182,8 +184,21 @@ class OCR:
             self._carregar_tesseract()
             return
         from paddleocr import PaddleOCR
+        # GPU: paddle não tem parâmetro de device no construtor do PaddleOCR — é um
+        # contexto GLOBAL (paddle.set_device). Só funciona se o pacote instalado for
+        # paddlepaddle-gpu (o paddlepaddle comum não tem CUDA compilado — is_compiled_
+        # with_cuda() retorna False e cai pra CPU automaticamente). NÃO verificado com
+        # GPU real (ambiente de desenvolvimento é CPU-only) — validar em produção.
+        try:
+            import paddle
+            if paddle.device.is_compiled_with_cuda():
+                paddle.set_device("gpu")
+                log.info("PaddleOCR: GPU CUDA disponível (paddlepaddle-gpu) — usando GPU")
+        except Exception as e:
+            log.warning("PaddleOCR: falha ao configurar GPU (%s) — usando CPU", e)
         # API 3.x (PP-OCRv5/v6). enable_mkldnn=False evita um bug do oneDNN no executor
-        # PIR do paddlepaddle 3.x em CPU. Desliga pré/pós de documento (é crop de placa).
+        # PIR do paddlepaddle 3.x em CPU (irrelevante em GPU, oneDNN é CPU-only).
+        # Desliga pré/pós de documento (é crop de placa).
         self._paddle = PaddleOCR(
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
@@ -1021,12 +1036,54 @@ class AutoOCRPaddle(AutoOCR):
     def ler_detalhado(self, crop) -> dict:
         from validador import validar
 
-        d = super().ler_detalhado(crop)
-        # Moto ou crop inválido: PaddleOCR não ajuda → mantém AutoOCR
-        if crop is None or crop.ndim != 3 or crop.size == 0 or getattr(self, "_ultimo_e_moto", False):
+        if crop is None or crop.ndim != 3 or crop.size == 0:
+            return super().ler_detalhado(crop)
+
+        # Nitidez decide a estratégia ANTES de rodar qualquer engine (medida é barata:
+        # só um Laplaciano). Cada engine sozinho custa segundos num crop pequeno/borrado
+        # (medido: AutoOCR ~3s, PaddleOCR ~3s em CPU) — por isso a estratégia muda:
+        cinza = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        nitidez = cv2.Laplacian(cinza, cv2.CV_64F).var()
+        crop_nitido = nitidez >= self._limiar_nitidez
+
+        if crop_nitido:
+            # Nítido: AutoOCR sozinho já é confiável (ver arbitragem abaixo, que sempre
+            # manteria o AutoOCR aqui) — roda só ele. Só aciona o Paddle se o AutoOCR não
+            # validar nada (raro num crop nítido) ou for moto (nesse caso, mantém AutoOCR).
+            d = super().ler_detalhado(crop)
+            if getattr(self, "_ultimo_e_moto", False) or d.get("placa") is not None:
+                return d
+            texto_p, conf_p = self._paddle.ler(crop)
+            vp = validar(texto_p)
+            if vp:
+                placa_p, padrao_p = vp
+                d = dict(d)
+                d["placa"], d["padrao"], d["confianca"] = placa_p, padrao_p, round(conf_p, 3)
+                d.setdefault("detalhes", []).append(
+                    {"engine": "paddleocr", "placa": placa_p, "padrao": padrao_p, "confianca": round(conf_p, 3)}
+                )
             return d
 
+        # Borrado: os dois PODEM legitimamente contribuir, então rodam EM PARALELO (thread)
+        # em vez de sequencial — sequencial custaria a SOMA dos dois (~6s); paralelo custa
+        # o MAIOR dos dois (~3s), já que numpy/onnxruntime liberam o GIL durante a inferência.
+        # Roda o Paddle mesmo se acabar sendo moto (resultado descartado depois) — não
+        # adiciona latência (é concorrente), só usa 1 núcleo extra do servidor dedicado.
+        import threading
+        resultado: dict = {}
+
+        def _rodar_auto() -> None:
+            resultado["d"] = AutoOCR.ler_detalhado(self, crop)
+
+        t = threading.Thread(target=_rodar_auto, daemon=True)
+        t.start()
         texto_p, conf_p = self._paddle.ler(crop)
+        t.join()
+        d = resultado["d"]
+
+        if getattr(self, "_ultimo_e_moto", False):
+            return d  # moto: paddle não ajuda (rodou em paralelo, mas resultado é descartado)
+
         vp = validar(texto_p)
         if not vp:
             return d
@@ -1036,21 +1093,15 @@ class AutoOCRPaddle(AutoOCR):
         if placa_a == placa_p:
             return d  # concordam
 
-        if placa_a is None:
-            escolher_paddle = True
-        else:
-            cinza = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-            nitidez = cv2.Laplacian(cinza, cv2.CV_64F).var()
-            escolher_paddle = nitidez < self._limiar_nitidez  # borrado → PaddleOCR
-            log.info("AutoOCRPaddle: discordam auto=%r paddle=%r nitidez=%.0f → %s",
-                     placa_a, placa_p, nitidez, "paddle" if escolher_paddle else "auto")
-
-        if escolher_paddle:
-            d = dict(d)
-            d["placa"], d["padrao"], d["confianca"] = placa_p, padrao_p, round(conf_p, 3)
-            d.setdefault("detalhes", []).append(
-                {"engine": "paddleocr", "placa": placa_p, "padrao": padrao_p, "confianca": round(conf_p, 3)}
-            )
+        # Já sabemos que o crop é borrado (nitidez < limiar) — Paddle tem prioridade
+        # quando discordam, ou quando o AutoOCR não validou nada.
+        log.info("AutoOCRPaddle: discordam auto=%r paddle=%r nitidez=%.0f → paddle",
+                 placa_a, placa_p, nitidez)
+        d = dict(d)
+        d["placa"], d["padrao"], d["confianca"] = placa_p, padrao_p, round(conf_p, 3)
+        d.setdefault("detalhes", []).append(
+            {"engine": "paddleocr", "placa": placa_p, "padrao": padrao_p, "confianca": round(conf_p, 3)}
+        )
         return d
 
 
