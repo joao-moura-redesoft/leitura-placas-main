@@ -9,6 +9,7 @@ Quando o modelo não está disponível, faz fallback para detecção por contorn
 """
 from __future__ import annotations
 import logging
+import threading
 from pathlib import Path
 
 import cv2
@@ -502,6 +503,14 @@ def criar_detector(cfg: dict):
 # Detector dedicado à leitura sob demanda (botão "Ler Placa"/GET) — cacheado por modelo.
 _detector_leitura = None
 _detector_leitura_id: tuple | None = None
+
+# Protege chamadas concorrentes ao detector cacheado acima. FastAPI roda cada request
+# num thread do pool — com 2+ câmeras, dois cliques simultâneos de "Ler Placa" chamariam
+# .detectar() na MESMA sessão onnxruntime de threads diferentes. Em CPUExecutionProvider
+# isso é seguro, mas em CUDAExecutionProvider (GPU) NÃO é — pode travar ou crashar
+# (bug conhecido do onnxruntime com handles cuDNN compartilhados entre threads). O lock
+# serializa o acesso: sem paralelismo entre leituras concorrentes, mas sem risco de crash.
+detector_leitura_lock = threading.Lock()
 
 
 def obter_detector_leitura(cfg: dict):

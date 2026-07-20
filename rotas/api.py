@@ -618,8 +618,8 @@ def cameras_ler_placa(id_: int):
     #   - detecção: s-608 + 2 estágios veículo→placa (obter_detector_leitura)
     #   - OCR: AutoOCRPaddle (reforço PaddleOCR p/ placa borrada) via obter_ocr_leitura
     # Ambos toleram a latência maior porque o GET é sob demanda.
-    from detector import obter_detector_leitura
-    from ocr import obter_ocr_leitura
+    from detector import obter_detector_leitura, detector_leitura_lock
+    from ocr import obter_ocr_leitura, ocr_leitura_lock
     det_inst = obter_detector_leitura(cfg)
     ocr_inst = obter_ocr_leitura(cfg)
 
@@ -657,7 +657,13 @@ def cameras_ler_placa(id_: int):
                 nitidez_principal = nitidez
                 frame_principal = frame
 
-            bboxes = det_inst.detectar(frame)
+            # Locks: det_inst/ocr_inst são instâncias CACHEADAS compartilhadas entre
+            # requests concorrentes (2+ câmeras podem "Ler Placa" ao mesmo tempo). Em
+            # CUDAExecutionProvider (GPU), chamadas concorrentes na mesma sessão onnxruntime
+            # podem travar/crashar — o lock serializa só a chamada individual, não o loop
+            # inteiro, pra não bloquear uma câmera pela duração toda da leitura da outra.
+            with detector_leitura_lock:
+                bboxes = det_inst.detectar(frame)
             f_h, f_w = frame.shape[:2]
             for x, y, w, h, conf_det in bboxes:
                 x, y, w, h = pipeline._expandir_bbox(x, y, w, h, f_w, f_h)
@@ -666,7 +672,8 @@ def cameras_ler_placa(id_: int):
                     continue
 
                 if hasattr(ocr_inst, "ler_detalhado"):
-                    ocr_res = ocr_inst.ler_detalhado(crop)
+                    with ocr_leitura_lock:
+                        ocr_res = ocr_inst.ler_detalhado(crop)
                     if not ocr_res["placa"]:
                         continue
                     placa      = ocr_res["placa"]
@@ -676,7 +683,8 @@ def cameras_ler_placa(id_: int):
                     total_eng  = ocr_res["total_engines"]
                     det_ocr    = ocr_res["detalhes"]
                 else:
-                    texto, conf_ocr = ocr_inst.ler(crop)
+                    with ocr_leitura_lock:
+                        texto, conf_ocr = ocr_inst.ler(crop)
                     resultado = validar(texto)
                     if not resultado:
                         continue
@@ -720,7 +728,8 @@ def cameras_ler_placa(id_: int):
     snap_dir = Path("static/snapshots")
     snap_dir.mkdir(parents=True, exist_ok=True)
     frame_preview = frame_principal.copy()
-    bboxes_preview = det_inst.detectar(frame_principal)
+    with detector_leitura_lock:
+        bboxes_preview = det_inst.detectar(frame_principal)
     f_h, f_w = frame_principal.shape[:2]
     for xb, yb, wb, hb, _ in bboxes_preview:
         xb, yb, wb, hb = pipeline._expandir_bbox(xb, yb, wb, hb, f_w, f_h)

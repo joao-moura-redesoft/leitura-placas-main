@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 
 import cv2
 import numpy as np
@@ -1069,7 +1070,6 @@ class AutoOCRPaddle(AutoOCR):
         # o MAIOR dos dois (~3s), já que numpy/onnxruntime liberam o GIL durante a inferência.
         # Roda o Paddle mesmo se acabar sendo moto (resultado descartado depois) — não
         # adiciona latência (é concorrente), só usa 1 núcleo extra do servidor dedicado.
-        import threading
         resultado: dict = {}
 
         def _rodar_auto() -> None:
@@ -1181,6 +1181,12 @@ class MultiOCR:
 # OCR dedicado à leitura sob demanda (botão "Ler Placa"/GET) — cacheado.
 _ocr_leitura = None
 _ocr_leitura_id: tuple | None = None
+
+# Protege chamadas concorrentes ao OCR cacheado acima — mesmo motivo do
+# detector_leitura_lock em detector.py: duas leituras GET simultâneas (2+ câmeras)
+# compartilhariam os mesmos engines (fast_plate_ocr/EasyOCR/PaddleOCR) de threads
+# diferentes. Seguro em CPU, arriscado em GPU (CUDA). Serializa por segurança.
+ocr_leitura_lock = threading.Lock()
 
 
 def obter_ocr_leitura(cfg: dict):
