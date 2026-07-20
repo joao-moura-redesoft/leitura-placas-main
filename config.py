@@ -42,17 +42,53 @@ PADROES: dict[str, str] = {
     "detector_votos_minimos": "1",
     "conf_threshold": "0.3",
     "nms_threshold": "0.4",
+    # ── Detecção em 2 estágios (veículo → placa) ────────────────────────────────
+    # Detecta o veículo primeiro (YOLOX-s ONNX, COCO, licença Apache-2.0) e busca a
+    # placa só dentro dele — elimina falsos positivos fora de veículo (texto de fundo,
+    # placas de exemplo em telas) e melhora placa pequena/distante. Fallback SEGURO: se
+    # nenhum veículo for achado, cai para a busca no frame inteiro (comportamento atual).
+    "veiculo_dois_estagios_get": "sim",     # leitura GET ("Ler Placa") — tolera a latência
+    "veiculo_dois_estagios_live": "nao",    # stream ao vivo — desligado por padrão (latência)
+    "veiculo_modelo_path": "models/vehicle_detector.onnx",
+    "veiculo_conf": "0.4",
+    "veiculo_nms": "0.5",
+    "veiculo_classes": "2,3,5,7",           # COCO: car, motorcycle, bus, truck
+    "veiculo_padding": "0.05",              # margem ao redor do veículo antes de buscar a placa
+    "veiculo_obrigatorio": "nao",           # sim = estrito (sem veículo → sem placa, sem fallback)
+    # Limita quantos veículos (maiores primeiro) disparam busca de placa por frame — protege
+    # a latência em cenas movimentadas (estacionamento/rua com dezenas de veículos visíveis).
+    "veiculo_max_veiculos": "5",
     # ocr_engine: auto | tesseract | easyocr | paddleocr | doctr | fast_plate_ocr
     # auto = detecta formato pela faixa colorida: Mercosul→fast_plate_ocr, Antigo→easyocr
     # engines não instalados são instalados automaticamente via pip na primeira inicialização
     "ocr_engine": "auto",
+    # Reforço PaddleOCR (Apache-2.0) na leitura GET ("Ler Placa"): melhora muito placa
+    # antiga borrada (UFPR-ALPR: 49%→64%). Só atua em linha única e quando o crop está
+    # borrado (nítido usa AutoOCR). Vale só no GET (tolera a latência maior). ocr_engine=auto.
+    "ocr_leitura_paddle": "sim",
     # Engines extras para votação (separados por vírgula, ex: "easyocr,fast_plate_ocr")
     # Vazio = usa somente ocr_engine (comportamento anterior)
     "ocr_engines_extra": "",
     # Votos mínimos para aceitar uma leitura (1 = desativado, 2 = exige ≥2 engines concordando)
     "ocr_votos_minimos": "1",
-    # Número de fotos tiradas por clique em "Ler Placa" — resultado eleito por votação
+    # ── Deskew (correção de rotação) ───────────────────────────────────────────
+    # Corrige inclinação rotacional da placa antes do OCR via minAreaRect + warpAffine.
+    # Custo: ~1–3 ms por crop. Com tracker ativo, impacto global desprezível.
+    "deskew_ativo": "sim",              # sim = ativa correção de rotação antes do OCR
+    "deskew_angulo_max": "30",          # ângulo máximo permitido para correção (graus)
+    # ── Loop de leitura por confiança (botão "Ler Placa" / GET) ────────────────────
+    # Em vez de tirar um número fixo de fotos e votar uma vez, tira fotos incrementalmente
+    # e para assim que o CONSENSO ficar forte o bastante — padrão "reject-retry" de ALPR.
+    # Número MÍNIMO de fotos antes de permitir parada antecipada (evita parar num acerto
+    # isolado de sorte). Resultado eleito por votação por caractere entre as leituras.
     "snapshots_votacao": "3",
+    # Máximo de fotos tiradas antes de desistir e responder com o que tiver (limite superior).
+    "leitura_max_tentativas": "12",
+    # Tempo máximo (segundos) do loop de leitura, mesmo que o máximo de fotos não seja atingido.
+    "leitura_timeout_seg": "6",
+    # Concordância mínima (0-1) entre as leituras para parar antecipadamente com confiança.
+    # 0.80 = para assim que 80%+ do peso das leituras concordar com a placa eleita.
+    "leitura_acordo_minimo": "0.80",
     # Máximo de detecções YOLO+OCR por segundo. Reduzir alivia CPU sem afetar o stream ao vivo.
     "deteccao_fps_max": "5",
     "tesseract_psm": "6",

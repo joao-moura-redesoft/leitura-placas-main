@@ -7,9 +7,14 @@ fastapi==0.136.1
 uvicorn[standard]==0.46.0
 jinja2==3.1.6
 python-multipart==0.0.27
-opencv-python-headless==4.13.0.92
+# opencv-contrib-python (não headless): o PaddleOCR depende dessa variante. Serve o app
+# também (mesmo módulo cv2 + contrib). Substitui o opencv-python-headless.
+opencv-contrib-python>=4.10
 numpy==2.3.5
 onnxruntime==1.25.1
+# Detector de VEÍCULO (1º estágio da detecção em 2 estágios, veiculo_dois_estagios_*) —
+# YOLOX-s ONNX, licença Apache-2.0. Sem dependência nova: reusa onnxruntime + opencv já
+# instalados. Baixe com: python scripts/baixar_modelo.py --veiculo
 pytesseract==0.3.13
 Pillow==12.2.0
 requests==2.33.1
@@ -24,9 +29,11 @@ easyocr==1.7.2
 # ocr_engine = fast_plate_ocr  →  pip install fast-plate-ocr
 # fast-plate-ocr
 
-# ocr_engine = paddleocr  →  pip install paddlepaddle paddleocr
-# paddlepaddle
-# paddleocr
+# PaddleOCR — reforço do OCR na leitura GET (ocr_leitura_paddle=sim), Apache-2.0.
+# Melhora placa antiga borrada (UFPR-ALPR: 49%→64%). Compatível com numpy 2.x.
+# Precisa de enable_mkldnn=False (bug do oneDNN no executor PIR em CPU) — já tratado no código.
+paddlepaddle>=3.3
+paddleocr>=3.7
 
 # ocr_engine = doctr  →  pip install "python-doctr[torch]"
 # python-doctr[torch]

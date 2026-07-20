@@ -192,6 +192,43 @@
   </div>
 
   <div class="card">
+    <h2 style="margin-top:0;">Detecção em 2 Estágios (Veículo → Placa)</h2>
+    <p style="margin-top:0;color:#64748b;font-size:.85rem">
+      Detecta o veículo primeiro (YOLOX-s, licença Apache-2.0) e busca a placa só dentro
+      dele — elimina falsos positivos fora de veículo (texto de fundo, placas de exemplo
+      em telas) e melhora placa pequena/distante. Se nenhum veículo for achado, cai para a
+      busca no frame inteiro (comportamento atual), a menos que "Modo estrito" esteja ativo.
+      Baixe o modelo com <code>python scripts/baixar_modelo.py --veiculo</code>.
+    </p>
+    <div class="grid-form">
+      <label>Na leitura (Ler Placa / GET) <span class="help" data-tip="Ativa os 2 estágios só na leitura sob demanda, que tolera a latência extra do modelo de veículo. Recomendado: Sim.">?</span>
+        <select name="veiculo_dois_estagios_get">
+          <option value="sim">Sim — mais preciso</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>No stream ao vivo <span class="help" data-tip="Ativa os 2 estágios também no stream contínuo. Roda 2 modelos por frame — mais preciso, porém mais pesado. Recomendado: Não, a menos que o servidor tenha CPU sobrando.">?</span>
+        <select name="veiculo_dois_estagios_live">
+          <option value="nao">Não — stream leve</option>
+          <option value="sim">Sim — filtra também ao vivo</option>
+        </select>
+      </label>
+      <label>Modo estrito <span class="help" data-tip="Não = se nenhum veículo for detectado, busca a placa no frame inteiro (nunca fica pior que hoje). Sim = sem veículo, sem placa — filtro mais rigoroso, mas pode perder leituras se o detector de veículo falhar.">?</span>
+        <select name="veiculo_obrigatorio">
+          <option value="nao">Não — cai para frame inteiro (seguro)</option>
+          <option value="sim">Sim — exige veículo detectado</option>
+        </select>
+      </label>
+      <label>Confiança mínima (veículo) <span class="help" data-tip="Nível mínimo de confiança do detector de veículo (0.0 a 1.0). Recomendado: 0.40.">?</span>
+        <input type="number" step="0.01" min="0" max="1" name="veiculo_conf">
+      </label>
+      <label>Máx. veículos por frame <span class="help" data-tip="Limita quantos veículos (os maiores primeiro) disparam busca de placa por frame. Protege a latência em cenas movimentadas (estacionamento/rua com muitos veículos visíveis). Recomendado: 5.">?</span>
+        <input type="number" step="1" min="1" max="30" name="veiculo_max_veiculos">
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
     <h2 style="margin-top:0;">Modo de Detecção</h2>
     <div class="grid-form">
       <label>Detecção automática <span class="help" data-tip="Sim = detecta placas continuamente no stream em tempo real. Não = detecção só ocorre ao clicar 'Ler Placa'.">?</span>
@@ -206,8 +243,29 @@
       <label>Processar a cada N frames <span class="help" data-tip="Pula frames entre detecções para aliviar CPU. 1 = todo frame. 2 = 1 a cada 2 (recomendado). O stream de vídeo continua fluido.">?</span>
         <input type="number" name="processar_a_cada_n_frames" min="1" max="10">
       </label>
-      <label>Fotos por leitura (botão) <span class="help" data-tip="Número de fotos tiradas ao clicar 'Ler Placa'. O sistema analisa todas e elege a placa mais votada. Mais fotos = maior confiança, mas maior tempo de resposta. Recomendado: 3.">?</span>
+      <label>Fotos mínimas por leitura (botão) <span class="help" data-tip="Número MÍNIMO de fotos tiradas ao clicar 'Ler Placa' antes de considerar parar. O sistema continua tirando fotos até o consenso ficar forte (ver 'Loop de leitura' abaixo) ou até o máximo. Recomendado: 3.">?</span>
         <input type="number" name="snapshots_votacao" min="1" max="10">
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Loop de Leitura por Confiança (Ler Placa)</h2>
+    <p style="margin-top:0;color:#64748b;font-size:.85rem">
+      Em vez de tirar um número fixo de fotos e votar uma vez, o botão "Ler Placa" tira
+      fotos incrementalmente e para assim que a concordância entre as leituras ficar forte
+      — padrão "reject-retry" usado por ALPR comerciais. Sempre respeita o mínimo de fotos
+      acima antes de considerar parar antecipadamente.
+    </p>
+    <div class="grid-form">
+      <label>Máximo de fotos <span class="help" data-tip="Limite superior de fotos tiradas antes de desistir e responder com o melhor resultado obtido até ali. Recomendado: 12.">?</span>
+        <input type="number" name="leitura_max_tentativas" min="1" max="50">
+      </label>
+      <label>Timeout (segundos) <span class="help" data-tip="Tempo máximo do loop de leitura, mesmo que o máximo de fotos não seja atingido (ex.: câmera lenta). Recomendado: 6.">?</span>
+        <input type="number" step="0.5" min="1" max="30" name="leitura_timeout_seg">
+      </label>
+      <label>Concordância mínima <span class="help" data-tip="Fração (0 a 1) do peso das leituras que precisa concordar com a placa eleita para parar antecipadamente com confiança. Recomendado: 0.80 (80%).">?</span>
+        <input type="number" step="0.05" min="0.3" max="1" name="leitura_acordo_minimo">
       </label>
     </div>
   </div>

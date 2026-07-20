@@ -276,6 +276,7 @@ Ordenado por impacto × facilidade de implementação:
 | 2026-05-20 | sessão     | HLS Streaming via FFmpeg — O(cameras) encodes para N viewers   |
 | 2026-05-20 | sessão     | ROI por câmera — elimina detecções fora da área de interesse   |
 | 2026-05-20 | sessão     | Painel de saúde no dashboard (`/api/health`)                   |
+| 2026-07-20 | sessão     | Deskew rotacional — `minAreaRect` + `warpAffine` antes do OCR  |
 
 ---
 

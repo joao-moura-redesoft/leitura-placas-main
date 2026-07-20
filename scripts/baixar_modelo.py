@@ -15,6 +15,7 @@ Uso:
   python scripts/baixar_modelo.py --legado                 # YOLOv8 legado
   python scripts/baixar_modelo.py --treinar --api-key KEY  # fine-tuning próprio
   python scripts/baixar_modelo.py --modelo yolo26s --treinar --api-key KEY
+  python scripts/baixar_modelo.py --veiculo                # detector de veículo (2 estágios)
 """
 from __future__ import annotations
 import argparse
@@ -37,9 +38,15 @@ ROBOFLOW_WORKSPACE = "roboflow-universe-projects"
 ROBOFLOW_PROJECT   = "license-plate-recognition-rxg4e"
 ROBOFLOW_VERSION   = 4
 
+# Detector de VEÍCULO (1º estágio da detecção em 2 estágios) — YOLOX-s ONNX,
+# OpenCV Model Zoo, licença Apache-2.0, treinado em COCO (car/motorcycle/bus/truck).
+VEICULO_HF_REPO = "opencv/object_detection_yolox"
+VEICULO_HF_FILE = "object_detection_yolox_2022nov.onnx"
+
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 PT_PATH    = MODELS_DIR / "plate_detector.pt"
 ONNX_PATH  = MODELS_DIR / "plate_detector.onnx"
+VEICULO_ONNX_PATH = MODELS_DIR / "vehicle_detector.onnx"
 
 
 def _pip_install(pacote: str) -> None:
@@ -179,6 +186,15 @@ def fluxo_legado() -> int:
     return 0 if ok else 2
 
 
+def fluxo_veiculo() -> int:
+    """Baixa o detector de VEÍCULO (YOLOX-s ONNX, Apache-2.0) para a detecção em 2 estágios."""
+    if VEICULO_ONNX_PATH.exists():
+        print(f"{VEICULO_ONNX_PATH} já existe. Apague para re-baixar.")
+        return 0
+    ok = baixar_hf(VEICULO_HF_REPO, VEICULO_HF_FILE, VEICULO_ONNX_PATH)
+    return 0 if ok else 1
+
+
 def fluxo_treinar(modelo_base: str, epochs: int, api_key: str) -> int:
     """Fine-tuning do yolo26n usando dataset Roboflow."""
     if ONNX_PATH.exists():
@@ -204,9 +220,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--modelo", default="yolo26n",
                    choices=["yolo26n", "yolo26s", "yolo26m"],
                    help="Base para fine-tuning (padrão: yolo26n)")
+    p.add_argument("--veiculo", action="store_true",
+                   help="Baixa o detector de VEÍCULO (YOLOX-s, Apache-2.0) para a "
+                        "detecção em 2 estágios (veiculo_dois_estagios_* em config.txt)")
     args = p.parse_args(argv if argv is not None else sys.argv[1:])
 
-    if args.legado:
+    if args.veiculo:
+        rc = fluxo_veiculo()
+    elif args.legado:
         rc = fluxo_legado()
     elif args.treinar:
         if not args.api_key:

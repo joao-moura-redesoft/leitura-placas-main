@@ -53,6 +53,7 @@ class _AuthMiddleware(BaseHTTPMiddleware):
 
         # Arquivos estáticos e streams sempre públicos
         if (path.startswith("/static/") or path.startswith("/testes/fotos/")
+                or path.startswith("/testes/resultados/")
                 or path in _PUBLICAS):
             return await call_next(request)
 
@@ -137,8 +138,10 @@ app = FastAPI(title="Leitura de Placas (ALPR)", lifespan=lifespan)
 app.add_middleware(_AuthMiddleware)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 _FOTOS_TESTE_DIR = "testes/fotos"
-import os as _os; _os.makedirs(_FOTOS_TESTE_DIR, exist_ok=True)
+_CROPS_TESTE_DIR = "testes/resultados/crops"
+import os as _os; _os.makedirs(_FOTOS_TESTE_DIR, exist_ok=True); _os.makedirs(_CROPS_TESTE_DIR, exist_ok=True)
 app.mount("/testes/fotos", StaticFiles(directory=_FOTOS_TESTE_DIR), name="testes_fotos")
+app.mount("/testes/resultados/crops", StaticFiles(directory=_CROPS_TESTE_DIR), name="testes_crops")
 # HLS: diretório criado sob demanda pelo hls_manager; montado sempre para evitar
 # erro de startup caso o modo seja ativado sem reiniciar o servidor.
 _os.makedirs("hls", exist_ok=True)

@@ -69,15 +69,20 @@ class Pipeline:
         self.detector = criar_detector(cfg)
         _engine = cfg.get("ocr_engine", "tesseract")
         _psm = int(cfg["tesseract_psm"])
+        _deskew_on = cfg.get("deskew_ativo", "sim").lower() in ("sim", "true", "1", "yes")
+        _deskew_max = float(cfg.get("deskew_angulo_max", "30"))
         extras = [e.strip() for e in cfg.get("ocr_engines_extra", "").split(",") if e.strip()]
         if _engine == "auto":
             from ocr import AutoOCR
-            self.ocr = AutoOCR(tesseract_psm=_psm)
+            self.ocr = AutoOCR(tesseract_psm=_psm,
+                               deskew_ativo=_deskew_on, deskew_angulo_max=_deskew_max)
         elif extras:
             from ocr import MultiOCR
-            self.ocr = MultiOCR(engines=[_engine] + extras, tesseract_psm=_psm)
+            self.ocr = MultiOCR(engines=[_engine] + extras, tesseract_psm=_psm,
+                                deskew_ativo=_deskew_on, deskew_angulo_max=_deskew_max)
         else:
-            self.ocr = OCR(engine=_engine, tesseract_psm=_psm)
+            self.ocr = OCR(engine=_engine, tesseract_psm=_psm,
+                           deskew_ativo=_deskew_on, deskew_angulo_max=_deskew_max)
         self.votos_minimos = max(1, int(cfg.get("ocr_votos_minimos", "1")))
         self.frames_consenso = int(cfg["frames_consenso"])
         self.cooldown_seg = int(cfg["cooldown_seg"])

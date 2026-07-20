@@ -115,9 +115,12 @@ def _tentar_importar(engine: str) -> bool:
 
 
 class OCR:
-    def __init__(self, engine: str = "tesseract", tesseract_psm: int = 7):
+    def __init__(self, engine: str = "tesseract", tesseract_psm: int = 7,
+                 deskew_ativo: bool = True, deskew_angulo_max: float = 30.0):
         self.engine = engine
         self.psm = tesseract_psm
+        self._deskew_ativo = deskew_ativo
+        self._deskew_angulo_max = deskew_angulo_max
         self._easyocr_reader = None
         self._paddle = None
         self._doctr = None
@@ -179,8 +182,16 @@ class OCR:
             self._carregar_tesseract()
             return
         from paddleocr import PaddleOCR
-        self._paddle = PaddleOCR(use_angle_cls=False, lang="en", use_gpu=False, show_log=False)
-        log.info("PaddleOCR carregado")
+        # API 3.x (PP-OCRv5/v6). enable_mkldnn=False evita um bug do oneDNN no executor
+        # PIR do paddlepaddle 3.x em CPU. Desliga pré/pós de documento (é crop de placa).
+        self._paddle = PaddleOCR(
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            lang="en",
+            enable_mkldnn=False,
+        )
+        log.info("PaddleOCR carregado (PP-OCR 3.x, mkldnn off)")
 
     def _carregar_doctr(self) -> None:
         if not _tentar_importar("doctr"):
@@ -291,6 +302,66 @@ class OCR:
 
         return crop_bgr
 
+    def _deskew(self, crop_bgr) -> np.ndarray:
+        """Corrige inclinação rotacional (skew 2D) da placa.
+
+        Detecta o ângulo de inclinação pelo retângulo de mínima área que
+        circunscreve os contornos de texto (chars escuros sobre fundo claro).
+        Aplica rotação via warpAffine para horizontalizar.
+
+        Faixa ativa: 0.5° ≤ |ângulo| ≤ deskew_angulo_max (padrão 30°).
+        Fora dessa faixa, retorna o crop original sem modificação.
+        """
+        if not self._deskew_ativo:
+            return crop_bgr
+        if crop_bgr.ndim != 3 or crop_bgr.size == 0:
+            return crop_bgr
+        h, w = crop_bgr.shape[:2]
+        if h < 20 or w < 20:
+            return crop_bgr
+
+        # Binariza: chars escuros → foreground branco
+        cinza = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+        borrado = cv2.GaussianBlur(cinza, (5, 5), 0)
+        _, bin_ = cv2.threshold(borrado, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        # Encontra contornos e une os pontos significativos
+        contornos, _ = cv2.findContours(bin_, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contornos:
+            return crop_bgr
+
+        # Filtra contornos pequenos (ruído) — mantém apenas caracteres
+        area_min = h * w * 0.002
+        pontos = [cnt for cnt in contornos if cv2.contourArea(cnt) >= area_min]
+        if not pontos:
+            return crop_bgr
+
+        todos = np.concatenate(pontos)
+        rect = cv2.minAreaRect(todos)
+        angulo = rect[-1]
+
+        # Normaliza ângulo para [-45, 45]
+        # OpenCV 4.5.1+: minAreaRect retorna [0, 90); versões anteriores [-90, 0)
+        if angulo > 45:
+            angulo -= 90
+        elif angulo < -45:
+            angulo += 90
+
+        # Fora da faixa ativa: sem correção
+        if abs(angulo) < 0.5 or abs(angulo) > self._deskew_angulo_max:
+            return crop_bgr
+
+        # Rotação — BORDER_REPLICATE evita bordas pretas que confundem OCR
+        cx, cy = w / 2, h / 2
+        M = cv2.getRotationMatrix2D((cx, cy), angulo, 1.0)
+        rotacionado = cv2.warpAffine(
+            crop_bgr, M, (w, h),
+            flags=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+        log.debug("Deskew: ângulo=%.1f° corrigido (%dx%d)", angulo, w, h)
+        return rotacionado
+
     def _remover_header(self, crop_bgr) -> tuple[np.ndarray, bool, bool]:
         """Remove o cabeçalho da placa Mercosul (carro e moto).
 
@@ -341,8 +412,10 @@ class OCR:
             header_region = regiao[:corte_local, :]
             if header_region.size > 0:
                 hsv_h = cv2.cvtColor(header_region, cv2.COLOR_BGR2HSV)
+                mask = cv2.inRange(hsv_h, np.array([80, 50, 50]), np.array([140, 255, 255]))
+                azul_ratio = cv2.countNonZero(mask) / mask.size
+                e_mercosul = azul_ratio > 0.15
                 sat_media = float(hsv_h[:, :, 1].mean())
-                e_mercosul = sat_media > 30
             else:
                 sat_media = 0.0
                 e_mercosul = False
@@ -501,6 +574,7 @@ class OCR:
         if crop.size == 0:
             return crop
         if crop.ndim == 3:
+            crop = self._deskew(crop)
             crop = self._corrigir_perspectiva(crop)
             crop, tinha_header, e_mercosul = self._remover_header(crop)
             if tinha_header and e_mercosul:
@@ -536,6 +610,7 @@ class OCR:
             # Smooths H.264/RTSP block artifacts before any other processing
             _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
             crop = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+            crop = self._deskew(crop)
             crop = self._corrigir_perspectiva(crop)
             crop, tinha_header, e_mercosul = self._remover_header(crop)
             if tinha_header and e_mercosul:
@@ -564,7 +639,10 @@ class OCR:
         # O modelo ViT foi treinado em placas completas (com a faixa colorida).
         # Remover o header muda a distribuição de entrada e piora a leitura.
         if engine == "fast_plate_ocr" and self._fast_plate is not None:
-            img_fp = self._corrigir_perspectiva(crop) if crop.ndim == 3 else crop
+            img_fp = crop
+            if crop.ndim == 3:
+                img_fp = self._deskew(crop)
+                img_fp = self._corrigir_perspectiva(img_fp)
             estado.registrar_crop_ocr(img_fp)
             return self._ler_fast_plate_ocr(img_fp)
 
@@ -637,17 +715,31 @@ class OCR:
         return texto, conf_media
 
     def _ler_paddleocr(self, img) -> tuple[str, float]:
+        """PaddleOCR 3.x: retorna o texto da MAIOR caixa (a placa é o maior texto do crop;
+        'BRASIL'/cidade/estado são menores). Isola a placa do texto ao redor."""
         try:
-            result = self._paddle.ocr(img, cls=False)
-            if not result or not result[0]:
-                return "", 0.0
-            textos = [r[1][0] for r in result[0]]
-            confs = [float(r[1][1]) for r in result[0]]
-            texto = re.sub(r"[^A-Z0-9]", "", "".join(textos).upper())
-            return texto, sum(confs) / len(confs)
+            res = self._paddle.predict(img)
         except Exception as e:
             log.error("Erro PaddleOCR: %s", e)
             return "", 0.0
+        melhor_txt, melhor_conf, melhor_area = "", 0.0, -1.0
+        for it in res or []:
+            try:
+                texts = it.get("rec_texts", []) or []
+                scores = it.get("rec_scores", []) or [0.0] * len(texts)
+                boxes = it.get("rec_boxes")
+                if boxes is None:
+                    boxes = it.get("rec_polys")
+                boxes = list(boxes) if boxes is not None else [None] * len(texts)
+            except Exception:
+                continue
+            for t, s, b in zip(texts, scores, boxes):
+                area = _area_caixa(b)
+                if area >= melhor_area:
+                    melhor_txt = re.sub(r"[^A-Z0-9]", "", str(t).upper())
+                    melhor_conf = float(s)
+                    melhor_area = area
+        return melhor_txt, melhor_conf
 
     def _ler_doctr(self, img) -> tuple[str, float]:
         try:
@@ -723,6 +815,22 @@ def _realcar_para_ocr(crop, alvo_h: int = 224, limiar_blur: float = 3500.0):
     return cv2.addWeighted(crop, 1.6, borrado, -0.6, 0)
 
 
+def _area_caixa(b) -> float:
+    """Área da caixa de um texto do PaddleOCR (rec_boxes [x1,y1,x2,y2] ou rec_polys 4 pts)."""
+    if b is None:
+        return 0.0
+    try:
+        a = np.asarray(b, dtype=float).reshape(-1)
+    except Exception:
+        return 0.0
+    if a.size == 4:
+        return abs((a[2] - a[0]) * (a[3] - a[1]))
+    if a.size >= 8 and a.size % 2 == 0:
+        xs, ys = a[0::2], a[1::2]
+        return float((xs.max() - xs.min()) * (ys.max() - ys.min()))
+    return 0.0
+
+
 class AutoOCR:
     """Seleciona o engine automaticamente pelo formato e tipo da placa:
 
@@ -736,9 +844,12 @@ class AutoOCR:
     Interface compatível com OCR e MultiOCR (.carregar(), .ler(), .ler_detalhado()).
     """
 
-    def __init__(self, tesseract_psm: int = 7):
-        self._fast = OCR(engine="fast_plate_ocr", tesseract_psm=tesseract_psm)
-        self._easy = OCR(engine="easyocr", tesseract_psm=tesseract_psm)
+    def __init__(self, tesseract_psm: int = 7,
+                 deskew_ativo: bool = True, deskew_angulo_max: float = 30.0):
+        self._fast = OCR(engine="fast_plate_ocr", tesseract_psm=tesseract_psm,
+                         deskew_ativo=deskew_ativo, deskew_angulo_max=deskew_angulo_max)
+        self._easy = OCR(engine="easyocr", tesseract_psm=tesseract_psm,
+                         deskew_ativo=deskew_ativo, deskew_angulo_max=deskew_angulo_max)
         self.engine = "auto"
         self._ultimo_detalhe: dict = {}
 
@@ -765,17 +876,26 @@ class AutoOCR:
         # Moto: aspect ≤ 2 (200×140 vs 400×130) — 2 linhas de texto, easyocr é superior
         aspect = (crop.shape[1] / max(crop.shape[0], 1)) if crop is not None else 3.0
         e_moto = tinha_header and aspect <= 2.0
+        self._ultimo_e_moto = e_moto
 
-        # fast_plate_ocr como principal apenas para Mercosul carro
-        # (tinha header colorido + não é moto + header era Mercosul azul/verde)
-        if tinha_header and not e_moto and e_mercosul_header:
-            principal, fallback = self._fast, self._easy   # Mercosul carro
+        # fast_plate_ocr como principal para carros (com cabeçalho, Mercosul ou antigo com tarjeta)
+        # Não dependemos da cor (e_mercosul_header) aqui para garantir que funcione de noite (câmeras IR)
+        if tinha_header and not e_moto:
+            principal, fallback = self._fast, self._easy   # Carro
         else:
-            principal, fallback = self._easy, self._fast   # Moto Mercosul ou antigo
+            principal, fallback = self._easy, self._fast   # Moto (layout quadrado, easyocr é melhor)
 
-        # Quando header Mercosul confirmado, passa hint para validar() priorizar
-        # correção Mercosul antes de aceitar antigo (ex: FBI0123 → FBI0I23 moto)
-        formato_hint = "mercosul" if tinha_header and e_mercosul_header else ""
+        # Quando header Mercosul confirmado, passa hint para validar(). Moto usa um hint
+        # mais forte ("mercosul_moto") porque o layout 2-linhas (aspecto do crop) já
+        # confirma o formato de forma confiável — não depende só da cor do header, então
+        # pode corrigir com prioridade (ex: FBI0123 → FBI0I23). Carro usa o hint mais fraco
+        # ("mercosul", só cor) que NUNCA corrompe um match antigo direto e limpo — evita
+        # que um falso-positivo do detector de header (ex: cartão de teste colorido)
+        # corrompa uma leitura antigo correta (ex: CDV2112 → CDV2I12).
+        if tinha_header and e_mercosul_header:
+            formato_hint = "mercosul_moto" if e_moto else "mercosul"
+        else:
+            formato_hint = ""
 
         tipo_placa = ("moto-mercosul" if e_moto else ("mercosul-carro" if e_mercosul_header else "antigo"))
         h, w = (crop.shape[:2] if crop is not None else (0, 0))
@@ -871,6 +991,69 @@ class AutoOCR:
         }
 
 
+class AutoOCRPaddle(AutoOCR):
+    """AutoOCR + PaddleOCR como reforço para placas de LINHA ÚNICA borradas.
+
+    O PaddleOCR (PP-OCR, Apache-2.0) lê muito melhor placas antigas/borradas reais
+    (UFPR-ALPR: ~70% vs ~50% do AutoOCR), mas é fraco no limpo e NÃO faz moto (2 linhas).
+    Arbitragem, só para não-moto:
+      - PaddleOCR e AutoOCR concordam        → mantém.
+      - AutoOCR não validou                  → usa PaddleOCR (se validar).
+      - Discordam                            → decide pela NITIDEZ do crop:
+            nítido (lapvar ≥ limiar) → AutoOCR; borrado (< limiar) → PaddleOCR.
+    Moto (2 linhas) sempre fica com o AutoOCR (o PaddleOCR não lê layout empilhado).
+
+    Uso recomendado só na leitura GET (tolera a latência maior do PaddleOCR).
+    """
+
+    def __init__(self, tesseract_psm: int = 7, limiar_nitidez: float = 3500.0,
+                 deskew_ativo: bool = True, deskew_angulo_max: float = 30.0):
+        super().__init__(tesseract_psm, deskew_ativo=deskew_ativo,
+                         deskew_angulo_max=deskew_angulo_max)
+        self._paddle = OCR(engine="paddleocr", tesseract_psm=tesseract_psm,
+                           deskew_ativo=deskew_ativo, deskew_angulo_max=deskew_angulo_max)
+        self._limiar_nitidez = limiar_nitidez
+
+    def carregar(self) -> None:
+        super().carregar()
+        self._paddle.carregar()
+
+    def ler_detalhado(self, crop) -> dict:
+        from validador import validar
+
+        d = super().ler_detalhado(crop)
+        # Moto ou crop inválido: PaddleOCR não ajuda → mantém AutoOCR
+        if crop is None or crop.ndim != 3 or crop.size == 0 or getattr(self, "_ultimo_e_moto", False):
+            return d
+
+        texto_p, conf_p = self._paddle.ler(crop)
+        vp = validar(texto_p)
+        if not vp:
+            return d
+        placa_p, padrao_p = vp
+        placa_a = d.get("placa")
+
+        if placa_a == placa_p:
+            return d  # concordam
+
+        if placa_a is None:
+            escolher_paddle = True
+        else:
+            cinza = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            nitidez = cv2.Laplacian(cinza, cv2.CV_64F).var()
+            escolher_paddle = nitidez < self._limiar_nitidez  # borrado → PaddleOCR
+            log.info("AutoOCRPaddle: discordam auto=%r paddle=%r nitidez=%.0f → %s",
+                     placa_a, placa_p, nitidez, "paddle" if escolher_paddle else "auto")
+
+        if escolher_paddle:
+            d = dict(d)
+            d["placa"], d["padrao"], d["confianca"] = placa_p, padrao_p, round(conf_p, 3)
+            d.setdefault("detalhes", []).append(
+                {"engine": "paddleocr", "placa": placa_p, "padrao": padrao_p, "confianca": round(conf_p, 3)}
+            )
+        return d
+
+
 class MultiOCR:
     """Executa múltiplos engines e elege o resultado por votação majoritária.
 
@@ -878,7 +1061,8 @@ class MultiOCR:
     Adiciona .ler_detalhado() que devolve votos e resultado por engine.
     """
 
-    def __init__(self, engines: list[str], tesseract_psm: int = 7):
+    def __init__(self, engines: list[str], tesseract_psm: int = 7,
+                 deskew_ativo: bool = True, deskew_angulo_max: float = 30.0):
         # Remove duplicatas preservando ordem; garante ao menos um engine
         vistos: set[str] = set()
         unicos = []
@@ -888,7 +1072,9 @@ class MultiOCR:
                 unicos.append(e)
         if not unicos:
             unicos = ["tesseract"]
-        self._ocrs = [OCR(engine=e, tesseract_psm=tesseract_psm) for e in unicos]
+        self._ocrs = [OCR(engine=e, tesseract_psm=tesseract_psm,
+                          deskew_ativo=deskew_ativo, deskew_angulo_max=deskew_angulo_max)
+                      for e in unicos]
         self.engine = ",".join(unicos)  # compatibilidade com estado.ocr_engine_ativo
         self._ultimo_detalhe: dict = {}
 
@@ -939,3 +1125,41 @@ class MultiOCR:
             "total_engines": total,
             "detalhes": detalhes,
         }
+
+
+# OCR dedicado à leitura sob demanda (botão "Ler Placa"/GET) — cacheado.
+_ocr_leitura = None
+_ocr_leitura_id: tuple | None = None
+
+
+def obter_ocr_leitura(cfg: dict):
+    """OCR de alta acurácia para a leitura GET. Com ocr_engine=auto e ocr_leitura_paddle=sim,
+    usa o ensemble AutoOCRPaddle (reforço PaddleOCR para placa borrada). Carregado uma vez.
+    O stream ao vivo continua com o OCR mais leve do pipeline."""
+    global _ocr_leitura, _ocr_leitura_id
+    engine = cfg.get("ocr_engine", "auto")
+    psm = int(cfg.get("tesseract_psm", "7"))
+    usar_paddle = str(cfg.get("ocr_leitura_paddle", "sim")).strip().lower() in ("sim", "true", "1")
+    extras = [e.strip() for e in cfg.get("ocr_engines_extra", "").split(",") if e.strip()]
+    deskew_on = str(cfg.get("deskew_ativo", "sim")).strip().lower() in ("sim", "true", "1", "yes")
+    deskew_max = float(cfg.get("deskew_angulo_max", "30"))
+    ident = (engine, psm, usar_paddle, tuple(extras), deskew_on, deskew_max)
+
+    if _ocr_leitura is None or _ocr_leitura_id != ident:
+        if engine == "auto" and usar_paddle:
+            _ocr_leitura = AutoOCRPaddle(tesseract_psm=psm,
+                                         deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
+        elif engine == "auto":
+            _ocr_leitura = AutoOCR(tesseract_psm=psm,
+                                   deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
+        elif extras:
+            _ocr_leitura = MultiOCR(engines=[engine] + extras, tesseract_psm=psm,
+                                    deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
+        else:
+            _ocr_leitura = OCR(engine=engine, tesseract_psm=psm,
+                               deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
+        _ocr_leitura.carregar()
+        _ocr_leitura_id = ident
+        log.info("OCR de leitura (GET) carregado: engine=%s paddle=%s deskew=%s",
+                 engine, usar_paddle, deskew_on)
+    return _ocr_leitura

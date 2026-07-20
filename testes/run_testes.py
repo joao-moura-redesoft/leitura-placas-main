@@ -22,6 +22,7 @@ sys.path.insert(0, str(_ROOT))
 os.chdir(_ROOT)
 
 import cv2
+import estado
 
 
 def _criar_detector(cfg: dict):
@@ -56,7 +57,7 @@ def _criar_ocr(cfg: dict):
     return ocr
 
 
-def _testar_foto(foto: dict, det, ocr, cfg: dict) -> dict:
+def _testar_foto(foto: dict, det, ocr, cfg: dict, crops_dir: Path | None = None) -> dict:
     from validador import validar
     from pipeline import _expandir_bbox
 
@@ -85,23 +86,30 @@ def _testar_foto(foto: dict, det, ocr, cfg: dict) -> dict:
                 continue
             texto, c_ocr = ocr.ler(crop)
             resultado = validar(texto)
-            candidatos.append((resultado[0] if resultado else "", conf_det, c_ocr))
+            with estado.lock:
+                crop_bytes = estado.ultimo_crop_ocr_jpg
+            candidatos.append((resultado[0] if resultado else "", conf_det, c_ocr, crop_bytes))
         match = next((c for c in candidatos if c[0] == placa_correta), None)
         if match:
+            crop_url = _salvar_crop_processado(foto, crops_dir, match[3])
             return {"status": "ok", "lido": match[0], "esperado": placa_correta,
-                    "conf_ocr": round(match[2], 3), **foto}
-        lido, _, conf_ocr = max(candidatos, key=lambda c: c[1]) if candidatos else ("", 0, 0)
+                    "conf_ocr": round(match[2], 3), "crop_processado": crop_url, **foto}
+        
+        melhor = max(candidatos, key=lambda c: c[1]) if candidatos else ("", 0, 0, None)
+        lido, conf_ocr, melhor_bytes = melhor[0], melhor[2], melhor[3] if len(melhor) == 4 else None
+        crop_url = _salvar_crop_processado(foto, crops_dir, melhor_bytes)
     else:
         texto, conf_ocr = ocr.ler(img)
         resultado = validar(texto)
         lido = resultado[0] if resultado else ""
-
+        crop_url = _salvar_crop_processado(foto, crops_dir)
     correto = (lido == placa_correta)
     return {
         "status": "ok" if correto else "errou",
         "lido": lido,
         "esperado": placa_correta,
         "conf_ocr": round(conf_ocr, 3),
+        "crop_processado": crop_url,
         **foto,
     }
 
@@ -112,6 +120,26 @@ def _char_diff(esperado: str, lido: str) -> list[tuple[str, str]]:
         if e != l:
             diffs.append((e, l))
     return diffs
+
+
+def _salvar_crop_processado(foto: dict, crops_dir: Path | None, jpg_bytes: bytes = None) -> str | None:
+    """Salva o último crop pós-processado pelo OCR (deskew+perspectiva+header).
+
+    Captura de estado.ultimo_crop_ocr_jpg que é atualizado pelo OCR.ler().
+    Retorna URL relativa ou None se não há crop disponível.
+    """
+    if crops_dir is None:
+        return None
+    if not jpg_bytes:
+        with estado.lock:
+            jpg_bytes = estado.ultimo_crop_ocr_jpg
+    if not jpg_bytes:
+        return None
+    nome_base = Path(foto.get("arquivo", "desconhecido")).stem
+    nome = f"{nome_base}_proc.jpg"
+    dest = crops_dir / nome
+    dest.write_bytes(jpg_bytes)
+    return f"/testes/resultados/crops/{nome}"
 
 
 def rodar(engines: list[str], salvar: bool = False) -> dict:
@@ -144,9 +172,13 @@ def rodar(engines: list[str], salvar: bool = False) -> dict:
         det = _criar_detector(cfg)
         ocr = _criar_ocr(cfg)
 
+        # Diretório para crops pós-processados (visível no frontend)
+        crops_dir = Path(__file__).parent / "resultados" / "crops"
+        crops_dir.mkdir(parents=True, exist_ok=True)
+
         resultados = []
         for foto in fotos:
-            r = _testar_foto(foto, det, ocr, cfg)
+            r = _testar_foto(foto, det, ocr, cfg, crops_dir=crops_dir)
             resultados.append(r)
 
         total = len(resultados)

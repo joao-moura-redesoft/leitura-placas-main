@@ -49,24 +49,40 @@ def _corrigir(texto: str, posicoes: list[str]) -> str:
 def _validar_7(trecho: str, formato_hint: str = "") -> tuple[str, str] | None:
     """Tenta validar exatamente 7 chars — direto e com correções posicionais.
 
-    formato_hint: quando 'mercosul', tenta correção Mercosul antes de aceitar
-    antigo direto (útil quando AutoOCR detectou header Mercosul na imagem).
+    formato_hint:
+      'mercosul_moto' : moto Mercosul (layout 2 linhas, aspecto do crop confirma) — a
+                        correção Mercosul tem prioridade sobre um match antigo direto,
+                        pois o layout já é um sinal forte e confiável.
+      'mercosul'      : carro — hint vem só da cor do header, menos confiável; um match
+                        antigo direto e limpo NUNCA é corrompido por este hint.
     """
     if RE_MERCOSUL.match(trecho):
         return trecho, "mercosul"
 
-    # Com hint Mercosul: tenta correção Mercosul ANTES de aceitar antigo direto.
-    # Evita que FBI0123 (OCR de FBI0I23 moto Mercosul) seja devolvido como antigo.
-    if formato_hint == "mercosul":
+    # Moto Mercosul (layout 2 linhas): a letra da posição 5 é frequentemente confundida
+    # pelo OCR com um dígito visualmente parecido (I→1, O→0, Q→0, T→7 na fonte da placa).
+    # Aqui confiamos no hint ANTES do match direto de antigo — senão strings como
+    # "FBI0123" (OCR de "FBI0I23") nunca seriam corrigidas. A visão de moto é confiável
+    # (aspecto ≤2 do crop já confirma o layout, não depende só da cor do header).
+    if formato_hint == "mercosul_moto":
         c = _corrigir(trecho, POSICOES_MERCOSUL)
         if RE_MERCOSUL.match(c):
             return c, "mercosul"
 
-    # Antigo direto tem prioridade sobre qualquer correção Mercosul — evita
-    # que AAA0001 ou LSN4149 (antigos válidos com 0/1/8 na pos-4) sejam
-    # incorretamente convertidos para Mercosul (AAA0O01, LSN4I49).
+    # Antigo direto tem prioridade sobre correção Mercosul de CARRO (single-line) — evita
+    # que um texto já CORRETAMENTE lido como antigo (ex: CDV2112) seja corrompido por um
+    # falso-positivo do detector de header por cor (ex: cartão de teste com borda colorida
+    # confundida com faixa Mercosul). Diferente da moto, aqui o hint vem só da cor — menos
+    # confiável — então um match direto e limpo tem prioridade sobre ele.
     if RE_ANTIGO.match(trecho):
         return trecho, "antigo"
+
+    # Com hint Mercosul (carro, ou moto que não bateu acima): tenta correção antes das
+    # correções genéricas por dígito ambíguo abaixo.
+    if formato_hint in ("mercosul", "mercosul_moto"):
+        c = _corrigir(trecho, POSICOES_MERCOSUL)
+        if RE_MERCOSUL.match(c):
+            return c, "mercosul"
     # Só aqui tenta correção Mercosul para dígitos ambíguos na pos-4 (8≈B, 0≈O, 1≈I).
     # Neste ponto sabemos que o texto não bate diretamente nem como Mercosul nem antigo.
     if trecho[4] in _AMBIGUOS_POS4:
@@ -113,7 +129,7 @@ def validar(texto: str, formato_hint: str = "") -> tuple[str, str] | None:
             return t, "antigo"
 
     # Com hint Mercosul: tenta correção Mercosul antes de aceitar antigo
-    if formato_hint == "mercosul":
+    if formato_hint in ("mercosul", "mercosul_moto"):
         for i in range(n - 6):
             t = bruto[i: i + 7]
             c = _corrigir(t, POSICOES_MERCOSUL)

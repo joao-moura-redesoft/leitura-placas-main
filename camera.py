@@ -202,50 +202,6 @@ class Camera:
         return False
 
 
-def capturar_multiplos_frames(
-    tipo: str,
-    indice: str,
-    n: int = 3,
-    intervalo: float = 0.5,
-    largura: int = 1280,
-    altura: int = 720,
-    fps: int = 15,
-    intelbras: dict | None = None,
-) -> list:
-    """Conecta, captura N frames com intervalo entre eles e desconecta.
-
-    Retorna lista de numpy arrays (pode ter menos que N se câmera falhar).
-    """
-    cam = Camera(tipo=tipo, indice=indice, largura=largura, altura=altura, fps=fps, intelbras=intelbras)
-    try:
-        cam.abrir()
-    except Exception as e:
-        log.error("capturar_multiplos_frames: falha ao abrir câmera: %s", e)
-        raise
-
-    # Aguarda primeiro frame válido
-    frame = None
-    for _ in range(150):
-        frame = cam.ler()
-        if frame is not None:
-            break
-        time.sleep(0.1)
-
-    if frame is None:
-        cam.fechar()
-        raise RuntimeError("Câmera abriu mas não enviou frames — verifique conexão/credenciais")
-
-    frames = [frame]
-    for _ in range(max(0, n - 1)):
-        time.sleep(intervalo)
-        f = cam.ler()
-        if f is not None:
-            frames.append(f)
-
-    cam.fechar()
-    return frames
-
-
 def capturar_frame_unico(
     tipo: str,
     indice: str,

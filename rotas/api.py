@@ -427,11 +427,112 @@ def modelos_listar():
     return sorted(f.name for f in pasta.glob("*.onnx"))
 
 
+# Posições esperadas por formato (L=letra, D=dígito). Mercosul: pos-5 é LETRA.
+_PADRAO_POS = {"mercosul": "LLLDLDD", "antigo": "LLLDDDD"}
+
+
+def _consenso_caractere(leituras: list[tuple[str, float]], formato: str | None = None) -> str | None:
+    """Consenso por POSIÇÃO de caractere, ponderado por confiança (padrão de mercado ALPR).
+
+    Combina várias leituras (de múltiplos frames E engines) votando cada posição
+    separadamente — corrige erros de 1 caractere: se 2 frames leem 'ABC1D23' e 1 lê
+    'ABC1O23', a posição 5 elege 'D'. Considera só placas de 7 chars (padrão BR).
+
+    `formato` ('mercosul'/'antigo'): quando o tipo visual é conhecido (faixa azul do
+    Mercosul), restringe cada posição ao TIPO esperado — na posição 5 do Mercosul só
+    conta votos de LETRA, descartando dígitos como erro de OCR (em vez de chutar 2→Z).
+    Recupera a letra certa de outro frame. Se nenhuma leitura deu o tipo certo numa
+    posição, cai para o voto bruto daquela posição.
+    """
+    from collections import defaultdict
+
+    validas = [(p, max(w, 0.01)) for p, w in leituras if p and len(p) == 7]
+    if not validas:
+        return None
+    padrao = _PADRAO_POS.get(formato or "")
+    consenso = []
+    for i in range(7):
+        votos: dict[str, float] = defaultdict(float)
+        if padrao:
+            tipo = padrao[i]
+            for p, w in validas:
+                ch = p[i]
+                if tipo == "L" and not ch.isalpha():
+                    continue          # espera letra, veio dígito → descarta (erro)
+                if tipo == "D" and not ch.isdigit():
+                    continue          # espera dígito, veio letra → descarta
+                votos[ch] += w
+        if not votos:                 # sem formato, ou nenhum voto do tipo certo
+            for p, w in validas:
+                votos[p[i]] += w
+        consenso.append(max(votos.items(), key=lambda kv: kv[1])[0])
+    return "".join(consenso)
+
+
+def _eleger_placa(candidatos: list[dict]) -> dict | None:
+    """Elege a placa final por consenso de caractere entre TODOS os candidatos acumulados.
+
+    Reusada tanto pela checagem de parada antecipada do loop de leitura (a cada frame)
+    quanto pela decisão final — garante que o resultado não muda dependendo de quando o
+    loop parou, só a quantidade de evidência acumulada até ali.
+    Retorna None se `candidatos` estiver vazio. O dict retornado inclui as chaves extras
+    "acordo" (concordância 0-1 da placa eleita) e "n_votos_snap" (fotos que bateram nela).
+    """
+    from collections import Counter
+    from validador import validar
+
+    if not candidatos:
+        return None
+
+    # Pool de leituras: a placa final de cada candidato + cada engine individual,
+    # ponderadas por confiança. Vota-se cada posição de caractere separadamente.
+    leituras: list[tuple[str, float]] = []
+    for c in candidatos:
+        leituras.append((c["placa"], float(c["confianca"])))
+        for d in c.get("detalhes_ocr", []):
+            if d.get("placa"):
+                leituras.append((d["placa"], float(d.get("confianca", 0.5))))
+
+    # Formato visual predominante (Mercosul/antigo) detectado pelos engines — usado como
+    # prior para restringir o consenso por posição (posição 5 do Mercosul = letra).
+    fmt_votos = Counter(c["padrao"] for c in candidatos if c.get("padrao"))
+    formato_prior = fmt_votos.most_common(1)[0][0] if fmt_votos else None
+
+    placa_consenso = _consenso_caractere(leituras, formato=formato_prior)
+    votos_placa = Counter(c["placa"] for c in candidatos)
+    if placa_consenso and validar(placa_consenso):
+        placa_eleita = placa_consenso           # consenso por caractere (corrige 1-char)
+    else:
+        placa_eleita = votos_placa.most_common(1)[0][0]   # fallback: string mais votada
+
+    n_votos_snap = sum(1 for c in candidatos if c["placa"] == placa_eleita)
+    # Melhor candidato (p/ crop/bbox): o da placa eleita, senão o de maior confiança
+    cands_eleita = [c for c in candidatos if c["placa"] == placa_eleita]
+    melhor = dict(max(cands_eleita or candidatos, key=lambda c: c["confianca"]))
+    melhor["placa"] = placa_eleita
+    _v = validar(placa_eleita)
+    if _v:
+        melhor["padrao"] = _v[1]
+
+    # Concordância: fração do peso das leituras que bateu com a placa eleita — usada tanto
+    # para escalar a confiança final quanto como sinal de parada antecipada do loop.
+    peso_total = sum(w for _, w in leituras)
+    acordo = sum(w for p, w in leituras if p == placa_eleita) / max(peso_total, 1e-6)
+    melhor["confianca"] = round(melhor["confianca"] * max(acordo, 0.34), 3)
+    melhor["acordo"] = round(acordo, 3)
+    melhor["n_votos_snap"] = n_votos_snap
+    return melhor
+
+
 @router.post("/cameras/{id_}/ler-placa")
 def cameras_ler_placa(id_: int):
-    """Captura N frames, roda detecção+OCR em cada um e elege a placa por votação."""
+    """Loop de leitura por confiança ("reject-retry", padrão de mercado ALPR): tira fotos
+    incrementalmente e para assim que o consenso entre as leituras ficar forte o bastante
+    (ou ao atingir o máximo de tentativas/timeout) — em vez de um número fixo de fotos.
+    """
     import cv2
-    from collections import Counter
+    import time as _time
+    from camera import Camera
     from datetime import datetime, timezone
     from pathlib import Path
     from validador import validar
@@ -442,23 +543,28 @@ def cameras_ler_placa(id_: int):
 
     cfg = config.carregar()
     deteccao_auto = cfg.get("deteccao_automatica", "sim").lower() in ("sim", "true", "1")
-    n_snapshots = max(1, int(cfg.get("snapshots_votacao", "3")))
+    n_min = max(1, int(cfg.get("snapshots_votacao", "3")))
+    n_max = max(n_min, int(cfg.get("leitura_max_tentativas", "12")))
+    timeout_seg = float(cfg.get("leitura_timeout_seg", "6"))
+    acordo_min = float(cfg.get("leitura_acordo_minimo", "0.80"))
 
     p = pipeline._instancias.get(id_)
+    usar_pipeline = p is not None and deteccao_auto
 
-    # ── Coleta frames ─────────────────────────────────────────────────────────
-    frames: list = []
+    # ── Primeiro frame + fonte da captura ───────────────────────────────────────
+    # Tenta o pipeline ativo primeiro (frame LIMPO — sem overlay, senão o OCR leria o
+    # próprio bbox/label desenhado). Se o pipeline ainda não tiver frame pronto, cai para
+    # conexão direta (mesmo fallback que já existia).
+    frame_inicial = None
+    if usar_pipeline:
+        frame_inicial = estado.obter_frame_camera_limpo(id_)
+        if frame_inicial is None:
+            frame_inicial = estado.obter_frame_camera(id_)
+        if frame_inicial is None:
+            usar_pipeline = False
 
-    if p is not None and deteccao_auto:
-        # Pipeline ativo em modo auto: usa o frame LIMPO já disponível (sem reconectar).
-        # Frame limpo = sem bboxes/labels desenhados, senão o OCR leria o próprio overlay.
-        f = estado.obter_frame_camera_limpo(id_)
-        if f is None:
-            f = estado.obter_frame_camera(id_)
-        if f is not None:
-            frames = [f]
-
-    if not frames:
+    camera_direta: Camera | None = None
+    if not usar_pipeline:
         intelbras = {
             "host":     cam.get("intelbras_host", ""),
             "porta":    cam.get("intelbras_porta", "554"),
@@ -472,16 +578,15 @@ def cameras_ler_placa(id_: int):
         if cam.get("rtsp_url_custom"):
             intelbras["host"] = ""
         try:
-            frames = camera_mod.capturar_multiplos_frames(
+            camera_direta = Camera(
                 tipo=cam["camera_tipo"],
                 indice=cam.get("rtsp_url_custom") or cam.get("camera_indice", "0"),
-                n=n_snapshots,
-                intervalo=0.5,
                 largura=int(cfg.get("camera_largura", "1280")),
                 altura=int(cfg.get("camera_altura", "720")),
                 fps=int(cfg.get("camera_fps", "15")),
                 intelbras=intelbras,
             )
+            camera_direta.abrir()
         except Exception as e:
             import re as _re
             log.warning("ler-placa cam=%d: %s", id_, e)
@@ -498,85 +603,120 @@ def cameras_ler_placa(id_: int):
                 )
             raise HTTPException(503, "Falha ao abrir câmera.")
 
-    if not frames:
-        raise HTTPException(503, "Câmera conectou mas não enviou frames — verifique a conexão")
+        # Aguarda o primeiro frame válido (até 15s), como o fluxo anterior já fazia.
+        for _ in range(150):
+            frame_inicial = camera_direta.ler()
+            if frame_inicial is not None:
+                break
+            _time.sleep(0.1)
+        if frame_inicial is None:
+            camera_direta.fechar()
+            raise HTTPException(503, "Câmera conectou mas não enviou frames — verifique a conexão")
 
     # ── Detector e OCR ────────────────────────────────────────────────────────
-    # Detecção da leitura GET usa o modelo de ALTA PRECISÃO (s-608), independente do
-    # detector mais leve do stream ao vivo. O OCR reusa o do pipeline quando disponível.
+    # Leitura GET usa componentes de ALTA PRECISÃO, independentes do stream ao vivo:
+    #   - detecção: s-608 + 2 estágios veículo→placa (obter_detector_leitura)
+    #   - OCR: AutoOCRPaddle (reforço PaddleOCR p/ placa borrada) via obter_ocr_leitura
+    # Ambos toleram a latência maior porque o GET é sob demanda.
     from detector import obter_detector_leitura
+    from ocr import obter_ocr_leitura
     det_inst = obter_detector_leitura(cfg)
+    ocr_inst = obter_ocr_leitura(cfg)
 
-    if p is None:
-        from ocr import OCR, MultiOCR
-
-        _engine = cfg.get("ocr_engine", "tesseract")
-        _psm = int(cfg["tesseract_psm"])
-        extras_ocr = [e.strip() for e in cfg.get("ocr_engines_extra", "").split(",") if e.strip()]
-        if _engine == "auto":
-            from ocr import AutoOCR
-            ocr_inst = AutoOCR(tesseract_psm=_psm)
-        elif extras_ocr:
-            ocr_inst = MultiOCR(engines=[_engine] + extras_ocr, tesseract_psm=_psm)
-        else:
-            ocr_inst = OCR(engine=_engine, tesseract_psm=_psm)
-        ocr_inst.carregar()
-    else:
-        ocr_inst = p.ocr
-
-    # ── Análise de todos os frames ────────────────────────────────────────────
+    # ── Loop de leitura: acumula candidatos até o consenso ficar forte ─────────
     candidatos: list[dict] = []
-    frame_principal = frames[0]  # usado para o preview
+    frame_principal = None       # melhor (mais nítido) frame já visto — usado no preview
+    nitidez_principal = -1.0
+    tentativas = 0
+    parada_motivo = "max_tentativas"
+    inicio = _time.time()
 
-    for idx, frame in enumerate(frames):
-        bboxes = det_inst.detectar(frame)
-        if not bboxes:
-            continue
-        f_h, f_w = frame.shape[:2]
-        if idx == 0:
-            frame_principal = frame
+    try:
+        while tentativas < n_max:
+            if _time.time() - inicio > timeout_seg:
+                parada_motivo = "timeout"
+                break
 
-        for x, y, w, h, conf_det in bboxes:
-            x, y, w, h = pipeline._expandir_bbox(x, y, w, h, f_w, f_h)
-            crop = frame[y: y + h, x: x + w]
-            if crop.size == 0:
-                continue
-
-            if hasattr(ocr_inst, "ler_detalhado"):
-                ocr_res = ocr_inst.ler_detalhado(crop)
-                if not ocr_res["placa"]:
-                    continue
-                placa      = ocr_res["placa"]
-                padrao     = ocr_res["padrao"]
-                conf_ocr   = ocr_res["confianca"]
-                votos_ocr  = ocr_res["votos"]
-                total_eng  = ocr_res["total_engines"]
-                det_ocr    = ocr_res["detalhes"]
+            if tentativas == 0:
+                frame = frame_inicial
+            elif usar_pipeline:
+                frame_limpo = estado.obter_frame_camera_limpo(id_)
+                frame = frame_limpo if frame_limpo is not None else estado.obter_frame_camera(id_)
             else:
-                texto, conf_ocr = ocr_inst.ler(crop)
-                resultado = validar(texto)
-                if not resultado:
+                frame = camera_direta.ler()
+
+            if frame is None:
+                _time.sleep(0.1)
+                continue
+            tentativas += 1
+
+            # Melhor frame p/ preview = o mais nítido entre os capturados (Laplaciano).
+            cinza = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            nitidez = cv2.Laplacian(cinza, cv2.CV_64F).var()
+            if nitidez > nitidez_principal:
+                nitidez_principal = nitidez
+                frame_principal = frame
+
+            bboxes = det_inst.detectar(frame)
+            f_h, f_w = frame.shape[:2]
+            for x, y, w, h, conf_det in bboxes:
+                x, y, w, h = pipeline._expandir_bbox(x, y, w, h, f_w, f_h)
+                crop = frame[y: y + h, x: x + w]
+                if crop.size == 0:
                     continue
-                placa, padrao = resultado
-                votos_ocr = 1
-                total_eng = 1
-                det_ocr   = [{"engine": getattr(ocr_inst, "engine", "?"), "placa": placa,
-                               "padrao": padrao, "confianca": round(conf_ocr, 3)}]
 
-            candidatos.append({
-                "placa":         placa,
-                "padrao":        padrao,
-                "confianca":     round((conf_det + conf_ocr) / 2, 3),
-                "votos_ocr":     votos_ocr,
-                "total_engines": total_eng,
-                "detalhes_ocr":  det_ocr,
-                "crop":          crop,
-                "bbox":          {"x": x, "y": y, "w": w, "h": h},
-                "frame":         frame,
-                "snapshot_idx":  idx,
-            })
+                if hasattr(ocr_inst, "ler_detalhado"):
+                    ocr_res = ocr_inst.ler_detalhado(crop)
+                    if not ocr_res["placa"]:
+                        continue
+                    placa      = ocr_res["placa"]
+                    padrao     = ocr_res["padrao"]
+                    conf_ocr   = ocr_res["confianca"]
+                    votos_ocr  = ocr_res["votos"]
+                    total_eng  = ocr_res["total_engines"]
+                    det_ocr    = ocr_res["detalhes"]
+                else:
+                    texto, conf_ocr = ocr_inst.ler(crop)
+                    resultado = validar(texto)
+                    if not resultado:
+                        continue
+                    placa, padrao = resultado
+                    votos_ocr = 1
+                    total_eng = 1
+                    det_ocr   = [{"engine": getattr(ocr_inst, "engine", "?"), "placa": placa,
+                                   "padrao": padrao, "confianca": round(conf_ocr, 3)}]
 
-    # ── Salva preview do primeiro frame com bboxes ────────────────────────────
+                candidatos.append({
+                    "placa":         placa,
+                    "padrao":        padrao,
+                    "confianca":     round((conf_det + conf_ocr) / 2, 3),
+                    "votos_ocr":     votos_ocr,
+                    "total_engines": total_eng,
+                    "detalhes_ocr":  det_ocr,
+                    "crop":          crop,
+                    "bbox":          {"x": x, "y": y, "w": w, "h": h},
+                    "frame":         frame,
+                    "snapshot_idx":  tentativas - 1,
+                })
+
+            # Parada antecipada: só depois do mínimo de fotos, e só se o consenso for forte
+            # o bastante (evita parar num acerto isolado de sorte na 1ª foto).
+            if tentativas >= n_min and candidatos:
+                eleito_parcial = _eleger_placa(candidatos)
+                if eleito_parcial and eleito_parcial["acordo"] >= acordo_min:
+                    parada_motivo = "acordo"
+                    break
+
+            if tentativas < n_max:
+                _time.sleep(0.15 if usar_pipeline else 0.5)
+    finally:
+        if camera_direta is not None:
+            camera_direta.fechar()
+
+    if frame_principal is None:
+        raise HTTPException(503, "Câmera conectou mas não enviou frames — verifique a conexão")
+
+    # ── Salva preview (frame mais nítido) com bboxes ────────────────────────────
     snap_dir = Path("static/snapshots")
     snap_dir.mkdir(parents=True, exist_ok=True)
     frame_preview = frame_principal.copy()
@@ -590,22 +730,15 @@ def cameras_ler_placa(id_: int):
 
     if not candidatos:
         return {"placa": None, "mensagem": "Nenhuma placa detectada nos frames", "frame_url": frame_url,
-                "snapshots_analisados": len(frames)}
+                "snapshots_analisados": tentativas, "tentativas": tentativas, "parada_motivo": parada_motivo}
 
-    # ── Votação por snapshot ──────────────────────────────────────────────────
-    votos_placa = Counter(c["placa"] for c in candidatos)
-    placa_eleita, n_votos_snap = votos_placa.most_common(1)[0]
-    # Melhor candidato da placa eleita = maior confiança (modelo interno)
-    melhor = max((c for c in candidatos if c["placa"] == placa_eleita), key=lambda c: c["confianca"])
-    # Ponderar pela proporção de snapshots que concordaram:
-    # alta confiança do modelo com baixo acordo entre fotos = resultado pouco confiável
-    acordo_snap = n_votos_snap / max(len(frames), 1)
-    melhor = dict(melhor)
-    melhor["confianca"] = round(melhor["confianca"] * acordo_snap, 3)
-
+    melhor = _eleger_placa(candidatos)
     if not melhor:
         return {"placa": None, "mensagem": "Placa detectada mas texto não reconhecido", "frame_url": frame_url,
-                "snapshots_analisados": len(frames)}
+                "snapshots_analisados": tentativas, "tentativas": tentativas, "parada_motivo": parada_motivo}
+
+    n_votos_snap = melhor.pop("n_votos_snap")
+    acordo_final = melhor.pop("acordo")
 
     # ── Snapshot do crop ──────────────────────────────────────────────────────
     snapshot_rel = None
@@ -626,9 +759,9 @@ def cameras_ler_placa(id_: int):
         "confianca": melhor["confianca"], "snapshot": snapshot_rel,
         "criado_em": datetime.now(timezone.utc).isoformat(),
     })
-    log.info("Ler-placa: %s (%s, conf=%.2f, snap=%d/%d, ocr=%d/%d)",
-             melhor["placa"], melhor["padrao"], melhor["confianca"],
-             n_votos_snap, len(frames), melhor["votos_ocr"], melhor["total_engines"])
+    log.info("Ler-placa: %s (%s, conf=%.2f, acordo=%.2f, tentativas=%d/%d, parada=%s, ocr=%d/%d)",
+             melhor["placa"], melhor["padrao"], melhor["confianca"], acordo_final,
+             tentativas, n_max, parada_motivo, melhor["votos_ocr"], melhor["total_engines"])
 
     import json as _json
     resposta = {
@@ -638,12 +771,15 @@ def cameras_ler_placa(id_: int):
         "padrao":              melhor["padrao"],
         "confianca":           melhor["confianca"],
         "votos_snapshot":      n_votos_snap,
-        "total_snapshots":     len(frames),
+        "total_snapshots":     tentativas,
         "votos_ocr":           melhor["votos_ocr"],
         "total_engines":       melhor["total_engines"],
         "detalhes_ocr":        melhor["detalhes_ocr"],
         "snapshot":            snapshot_rel,
         "frame_url":           frame_url,
+        "tentativas":          tentativas,
+        "acordo":              acordo_final,
+        "parada_motivo":       parada_motivo,
     }
     print(_json.dumps(resposta, ensure_ascii=False, indent=2))
     return resposta

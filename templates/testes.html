@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block title %}Testes — ALPR{% endblock %}
 
 {% block conteudo %}
@@ -459,6 +459,28 @@ function renderizarResultado(dados) {
         <span>Total: ${stats.total}</span>
       </div>`;
 
+    // Crops processados — mostra antes/depois para todos os resultados com crop
+    const comCrop = (stats.detalhes || []).filter(r => r.crop_processado);
+    if (comCrop.length) {
+      html += `<details style="margin-bottom:10px;">
+        <summary style="cursor:pointer;font-size:13px;color:#64748b;user-select:none;">Ver ${comCrop.length} crop(s) pós-processado(s)</summary>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:10px;">`;
+      comCrop.forEach(r => {
+        const statusColor = r.status === 'ok' ? '#16a34a' : r.status === 'errou' ? '#dc2626' : '#ca8a04';
+        html += `<div style="background:#f8fafc;border-radius:8px;padding:8px;border:1px solid #e2e8f0;text-align:center;">
+          <div style="display:flex;gap:4px;justify-content:center;margin-bottom:6px;">
+            <img src="/${r.arquivo}" style="height:38px;border-radius:3px;" title="Original" loading="lazy">
+            <span style="color:#94a3b8;align-self:center;">→</span>
+            <img src="${r.crop_processado}" style="height:38px;border-radius:3px;border:1px solid #e2e8f0;" title="Pós-OCR" loading="lazy">
+          </div>
+          <div style="font-family:monospace;font-size:12px;font-weight:600;color:${statusColor};">
+            ${r.esperado} ${r.status === 'ok' ? '✓' : '→ ' + (r.lido || '∅')}
+          </div>
+        </div>`;
+      });
+      html += '</div></details>';
+    }
+
     // Por formato
     if (stats.por_formato && Object.keys(stats.por_formato).length) {
       html += '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;">';
@@ -493,14 +515,18 @@ function renderizarResultado(dados) {
         <summary style="cursor:pointer;font-size:13px;color:#64748b;user-select:none;">Ver ${erros.length} erro(s)</summary>
         <div style="margin-top:10px;overflow-x:auto;">
         <table style="font-size:12px;">
-          <thead><tr>
-            <th>Arquivo</th><th>Esperado</th><th>Lido</th><th>Status</th>
+           <thead><tr>
+            <th>Arquivo</th><th>Original</th><th>Pós-OCR</th><th>Esperado</th><th>Lido</th><th>Status</th>
           </tr></thead>
           <tbody>`;
       erros.forEach(r => {
         const arq = (r.arquivo || '').split('/').pop();
+        const imgOrig = r.arquivo ? `<img src="/${r.arquivo}" style="height:40px;border-radius:3px;" loading="lazy">` : '';
+        const imgProc = r.crop_processado ? `<img src="${r.crop_processado}" style="height:40px;border-radius:3px;border:1px solid #e2e8f0;" loading="lazy">` : '<span style="color:#94a3b8;font-size:11px;">—</span>';
         html += `<tr>
           <td style="color:#64748b;">${arq}</td>
+          <td>${imgOrig}</td>
+          <td>${imgProc}</td>
           <td style="font-family:monospace;color:#16a34a;">${r.esperado}</td>
           <td style="font-family:monospace;color:#b91c1c;">${r.lido || '(nada)'}</td>
           <td><span class="badge ${r.status === 'falhou' ? 'badge-warn' : 'badge-err'}" style="font-size:10px;">${r.status}</span></td>

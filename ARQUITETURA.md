@@ -105,6 +105,8 @@ Cada câmera cadastrada no banco recebe sua própria instância de `Pipeline` ro
      └─ NÃO expande para cima
         ▼
    [OCR.ler(crop)] — pipeline de pré-processamento multicamada:
+     ├─ _deskew(crop)                     ← correção de rotação 2D (minAreaRect)
+     ├─ _corrigir_perspectiva(crop)       ← warp de 4 pontos (se quadrilátero encontrado)
      ├─ _remover_header(crop)
      ├─ _remover_ruidos_mercosul(crop)  (se header detectado)
      ├─ _focar_caracteres(crop)
@@ -473,7 +475,7 @@ hls_encoder._Encoder._alimentar()
 - **WorkerSupervisor** — reinicia pipelines mortos com backoff; health panel no dashboard.
 - **HLS opcional** — encoda uma vez por câmera; N viewers sem custo extra.
 - **Arquitetura multi-câmera real** — pipeline, thread e stream independentes por câmera.
-- **Pré-processamento OCR em cadeia** — header removal → mascaramento QR/BR → foco nos caracteres.
+- **Pré-processamento OCR em cadeia** — deskew → perspectiva → header removal → mascaramento QR/BR → foco nos caracteres.
 - **Validador com janela deslizante** — recupera placa válida de texto > 7 chars.
 - **Rate-limit duplo** — loop travado em `camera_fps`; detecção limitada por `deteccao_fps_max`.
 - **Sem expansão para cima no bbox** — evita capturar faixa do cabeçalho Mercosul.
