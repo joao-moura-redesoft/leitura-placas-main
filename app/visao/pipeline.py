@@ -9,17 +9,17 @@ from pathlib import Path
 
 import cv2
 
-import banco
-import broadcaster as bc
-import estado
-from camera import Camera
-from detector import Detector
-from ocr import OCR
-from validador import validar
+from app.core import banco
+from app.core import broadcaster as bc
+from app.core import estado
+from app.visao.camera import Camera
+from app.visao.detector import Detector
+from app.visao.ocr import OCR
+from app.visao.validador import validar
 
 log = logging.getLogger(__name__)
 
-SNAPSHOT_DIR = Path("static/snapshots")
+SNAPSHOT_DIR = Path("app/web/static/snapshots")
 
 # Padding lateral/inferior do bbox YOLO antes do crop.
 # O YOLO detecta a área branca da placa (os números) — expandir para CIMA
@@ -65,7 +65,7 @@ class Pipeline:
                 "formato": cfg.get("intelbras_formato", "padrao"),
             },
         )
-        from detector import criar_detector
+        from app.visao.detector import criar_detector
         self.detector = criar_detector(cfg)
         _engine = cfg.get("ocr_engine", "tesseract")
         _psm = int(cfg["tesseract_psm"])
@@ -73,11 +73,11 @@ class Pipeline:
         _deskew_max = float(cfg.get("deskew_angulo_max", "30"))
         extras = [e.strip() for e in cfg.get("ocr_engines_extra", "").split(",") if e.strip()]
         if _engine == "auto":
-            from ocr import AutoOCR
+            from app.visao.ocr import AutoOCR
             self.ocr = AutoOCR(tesseract_psm=_psm,
                                deskew_ativo=_deskew_on, deskew_angulo_max=_deskew_max)
         elif extras:
-            from ocr import MultiOCR
+            from app.visao.ocr import MultiOCR
             self.ocr = MultiOCR(engines=[_engine] + extras, tesseract_psm=_psm,
                                 deskew_ativo=_deskew_on, deskew_angulo_max=_deskew_max)
         else:
@@ -96,7 +96,7 @@ class Pipeline:
         self.lado = int(cfg.get("lado", "0"))
 
         # Ajuste adaptativo de imagem por condição de ambiente (no-op se desativado).
-        from ambiente import AjustadorAmbiente
+        from app.visao.ambiente import AjustadorAmbiente
         self.ajustador = AjustadorAmbiente(cfg, camera_db_id=camera_db_id)
 
         import json as _json
@@ -106,12 +106,16 @@ class Pipeline:
         self._historico: deque = deque(maxlen=10)
         self._parar = threading.Event()
         self._thread: threading.Thread | None = None
+        # True enquanto `iniciar()` não terminou. A instância é publicada em `_instancias`
+        # antes disso (para sinalizar que a câmera já está ocupada), e sem esta marca o
+        # supervisor veria um pipeline sem thread e o reiniciaria em loop.
+        self.iniciando: bool = True
         self._ultima_deteccao: float = 0.0
 
         # ByteTrack — instanciado sempre; ativo só se boxmot estiver instalado
         _tracker_on = cfg.get("tracker_ativo", "sim").lower() in ("sim", "true", "1")
         if _tracker_on:
-            from tracker import Tracker as _Tracker
+            from app.visao.tracker import Tracker as _Tracker
             self.tracker: _Tracker | None = _Tracker(
                 ocr_a_cada_n_frames=int(cfg.get("tracker_ocr_intervalo", "5")),
                 votos_emitir=int(cfg.get("tracker_votos_emitir", "2")),
@@ -138,6 +142,7 @@ class Pipeline:
         self._parar.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="alpr-pipeline")
         self._thread.start()
+        self.iniciando = False
         estado.pipeline_rodando = True
         log.info("Pipeline iniciado (modo=%s)", "automático" if self.deteccao_automatica else "manual")
 
@@ -358,6 +363,7 @@ class Pipeline:
             snapshot=snapshot_rel,
             camera_id=self.cfg["camera_tipo"],
             bbox={"x": bbox[0], "y": bbox[1], "w": bbox[2], "h": bbox[3]},
+            origem="pipeline",
         )
         criado_em = datetime.now(timezone.utc).isoformat()
         estado.adicionar_deteccao({
@@ -449,8 +455,16 @@ def _cfg_para_camera(global_cfg: dict, cam: dict) -> dict:
 
 def iniciar_camera(camera_db_id: int, cfg: dict[str, str]) -> None:
     p = Pipeline(cfg, camera_db_id=camera_db_id)
-    p.iniciar()
+    # Registra ANTES de iniciar: `iniciar()` já abre o RTSP e demora dezenas de segundos
+    # (conexão + carga dos modelos). Nessa janela a câmera está ocupada, e quem consultar
+    # `_instancias` precisa saber disso — senão tenta uma segunda conexão que vai falhar,
+    # porque a câmera aceita só uma.
     _instancias[camera_db_id] = p
+    try:
+        p.iniciar()
+    except Exception:
+        _instancias.pop(camera_db_id, None)
+        raise
 
 
 def iniciar_cameras_db(cfg: dict[str, str]) -> None:

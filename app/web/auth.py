@@ -6,11 +6,11 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-import auth as auth_mod
-import banco
+from app.core import banco
+from app.seguranca import sessao as auth_mod
 
 router = APIRouter()
-templates = Jinja2Templates(directory="templates")
+templates = Jinja2Templates(directory="app/web/templates")
 
 
 # ── Criar administrador (primeiro acesso — sem usuários no banco) ─────────────
@@ -72,7 +72,9 @@ async def criar_admin_post(
         return resp
 
     token = auth_mod.criar_sessao(uid)
-    resp = RedirectResponse("/", status_code=303)
+    # Cai em /postos: é onde o trabalho começa (implantação e diagnóstico por cliente).
+    # "Ao Vivo" só é útil com o pipeline contínuo, que o servidor central não usa.
+    resp = RedirectResponse("/postos", status_code=303)
     resp.set_cookie("sessao", token, httponly=True, samesite="lax", max_age=86400 * 7)
     return resp
 
@@ -113,7 +115,7 @@ async def login_post(request: Request, email: str = Form(...), senha: str = Form
         })
 
     token = auth_mod.criar_sessao(user["id"])
-    resp = RedirectResponse("/", status_code=303)
+    resp = RedirectResponse("/postos", status_code=303)
     resp.set_cookie("sessao", token, httponly=True, samesite="lax", max_age=86400 * 7)
     return resp
 

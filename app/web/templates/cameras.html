@@ -1,7 +1,17 @@
 {% extends "base.html" %}
 {% block title %}Câmeras — ALPR{% endblock %}
 {% block conteudo %}
-<h1>Câmeras por Bomba / Lado</h1>
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap">
+  <h1 style="margin:0">Câmeras</h1>
+  <span id="filtro-badge" style="display:none;background:#dcfce7;color:#15803d;padding:4px 12px;
+        border-radius:20px;font-size:13px;font-weight:600"></span>
+  <a href="/postos" style="color:#64748b;font-size:13px;margin-left:auto">← Postos</a>
+</div>
+<p style="color:#64748b;margin:0 0 20px;font-size:14px">
+  Cada câmera pertence a um posto (empresa) e o campo <strong>Local</strong> diz onde ela
+  está instalada. Bomba/lado e área de captura pertencem ao
+  <a href="/bicos" style="color:#16a34a">bico</a> — uma câmera pode servir vários bicos.
+</p>
 
 <div class="card" style="margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
   <button onclick="abrirModal()">+ Nova Câmera</button>
@@ -39,7 +49,7 @@
   <table id="tabela-cameras">
     <thead>
       <tr>
-        <th>Bomba</th><th>Lado</th><th>Nome</th><th>Tipo</th><th>Host / Índice</th><th>Ativo</th><th>Ações</th>
+        <th>Posto</th><th>Local</th><th>Nome</th><th>Tipo</th><th>Host / Índice</th><th>Ativo</th><th>Ações</th>
       </tr>
     </thead>
     <tbody id="tbody"></tbody>
@@ -54,25 +64,18 @@
     <form id="form-camera" onsubmit="salvarCamera(event)">
       <input type="hidden" id="cam-id" value="">
 
+      <label style="display:block;margin-bottom:12px">Posto
+        <select id="cam-empresa" required style="width:100%;margin-top:4px"></select>
+      </label>
+
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-        <label>Bomba
-          <select id="cam-bomba" required style="width:100%;margin-top:4px">
-            <option value="1">Bomba 1</option>
-            <option value="2">Bomba 2</option>
-            <option value="3">Bomba 3</option>
-          </select>
+        <label>Nome / Descrição
+          <input id="cam-nome" type="text" placeholder="ex: DVR canal 3" required style="width:100%;box-sizing:border-box;margin-top:4px">
         </label>
-        <label>Lado da Bomba
-          <select id="cam-lado" required style="width:100%;margin-top:4px">
-            <option value="1">Lado 01</option>
-            <option value="2">Lado 02</option>
-          </select>
+        <label>Local da câmera
+          <input id="cam-local" type="text" placeholder="ex: Cobertura bomba 2, vista pista" style="width:100%;box-sizing:border-box;margin-top:4px">
         </label>
       </div>
-
-      <label style="display:block;margin-bottom:12px">Nome / Descrição
-        <input id="cam-nome" type="text" placeholder="ex: Bomba 1 - Lado 1 (traseira)" required style="width:100%;box-sizing:border-box;margin-top:4px">
-      </label>
 
       <label style="display:block;margin-bottom:12px">Tipo de Câmera
         <select id="cam-tipo" required style="width:100%;margin-top:4px" onchange="atualizarCampos()">
@@ -157,6 +160,10 @@
   <div style="background:#fff;border-radius:12px;padding:28px;width:1060px;max-width:98vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
     <h2 style="margin-top:0">Adicionar Câmeras em Lote</h2>
 
+    <label style="display:block;margin-bottom:16px;max-width:420px">Posto — aplica a todas as linhas
+      <select id="lote-empresa" required style="width:100%;margin-top:4px"></select>
+    </label>
+
     <!-- Valores padrão para preenchimento -->
     <details style="margin-bottom:16px">
       <summary style="cursor:pointer;font-size:13px;color:#64748b;padding:10px 14px;background:#f8fafc;border-radius:8px;user-select:none;border:1px solid #e2e8f0">
@@ -203,45 +210,13 @@
       </div>
     </details>
 
-    <!-- Gerador automático de grade -->
-    <details style="margin-bottom:16px">
-      <summary style="cursor:pointer;font-size:13px;color:#64748b;padding:10px 14px;background:#f8fafc;border-radius:8px;user-select:none;border:1px solid #e2e8f0">
-        &#9889; Gerar grade automaticamente
-      </summary>
-      <div style="background:#f8fafc;border-radius:0 0 8px 8px;padding:14px;border:1px solid #e2e8f0;border-top:none">
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px;margin-bottom:12px">
-          <label>N° de Bombas
-            <input id="lote-gen-bombas" type="number" value="3" min="1" max="20" style="width:100%;box-sizing:border-box;margin-top:4px">
-          </label>
-          <label>Lados / Bomba
-            <input id="lote-gen-lados" type="number" value="2" min="1" max="8" style="width:100%;box-sizing:border-box;margin-top:4px">
-          </label>
-          <label>Modo
-            <select id="lote-gen-modo" style="width:100%;margin-top:4px" onchange="atualizarModoGrade()">
-              <option value="dvr">DVR (mesmo IP)</option>
-              <option value="individual">IPs individuais</option>
-            </select>
-          </label>
-          <label><span id="lote-gen-host-label">IP do DVR</span>
-            <input id="lote-gen-host" type="text" placeholder="192.168.1.108" style="width:100%;box-sizing:border-box;margin-top:4px">
-          </label>
-          <label>Canal inicial
-            <input id="lote-gen-canal" type="number" value="1" min="1" max="32" style="width:100%;box-sizing:border-box;margin-top:4px">
-          </label>
-        </div>
-        <button onclick="gerarGradeLote()" style="background:#7c3aed">Gerar linhas</button>
-        <small style="color:#94a3b8;margin-left:10px">Substitui as linhas existentes</small>
-      </div>
-    </details>
-
     <!-- Tabela de câmeras -->
     <div style="overflow-x:auto;margin-bottom:14px">
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead>
           <tr style="background:#f8fafc">
-            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0;white-space:nowrap">Bomba</th>
-            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0;white-space:nowrap">Lado</th>
             <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Nome</th>
+            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Local</th>
             <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0;white-space:nowrap">Host / IP</th>
             <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Usuário</th>
             <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Senha</th>
@@ -254,7 +229,7 @@
         <tbody id="lote-tbody"></tbody>
       </table>
       <p id="lote-sem-linhas" style="color:#64748b;font-size:13px;text-align:center;padding:16px 0;margin:0">
-        Nenhuma câmera adicionada. Use o gerador acima ou clique em "+ Adicionar Linha".
+        Nenhuma câmera adicionada. Clique em "+ Adicionar Linha".
       </p>
     </div>
 
@@ -289,12 +264,35 @@
 
 {% block scripts %}
 <script>
+const params = new URLSearchParams(location.search);
+const FILTRO_EMPRESA = params.get('empresa_id') ? parseInt(params.get('empresa_id')) : null;
+
 let _cameras = [];
+let _empresas = [];
 let _editandoId = null;
 
+function nomeEmpresa(id) {
+  if (!id) return '— sem posto —';
+  const e = _empresas.find(x => x.id === id);
+  return e ? e.nome : `#${id}`;
+}
+
+async function carregarEmpresas() {
+  _empresas = await fetch('/api/empresas').then(r => r.json()).catch(() => []);
+  document.getElementById('cam-empresa').innerHTML =
+    _empresas.map(e => `<option value="${e.id}">${esc(e.nome)} (${esc(e.cnpj)})</option>`).join('')
+    || '<option value="">— cadastre uma empresa primeiro —</option>';
+}
+
 async function carregarCameras() {
-  const res = await fetch('/api/cameras');
+  const url = FILTRO_EMPRESA ? `/api/cameras?empresa_id=${FILTRO_EMPRESA}` : '/api/cameras';
+  const res = await fetch(url);
   _cameras = await res.json();
+  if (FILTRO_EMPRESA) {
+    const badge = document.getElementById('filtro-badge');
+    badge.style.display = '';
+    badge.textContent = 'Filtrando por: ' + nomeEmpresa(FILTRO_EMPRESA);
+  }
   renderTabela();
 }
 
@@ -311,18 +309,19 @@ function renderTabela() {
     const ativo = cam.ativo
       ? '<span class="badge badge-ok">Ativo</span>'
       : '<span class="badge badge-err">Inativo</span>';
+    const semEmpresa = !cam.empresa_id;
     tbody.innerHTML += `<tr>
-      <td>Bomba ${cam.bomba}</td>
-      <td>Lado ${String(cam.lado).padStart(2,'0')}</td>
+      <td${semEmpresa ? ' style="color:#b91c1c"' : ''}>${esc(nomeEmpresa(cam.empresa_id))}</td>
+      <td>${esc(cam.local || '—')}</td>
       <td>${esc(cam.nome)}</td>
       <td>${cam.camera_tipo}</td>
       <td>${esc(hostOuIndice)}</td>
       <td>${ativo}</td>
-      <td>
-        <button onclick="editarCamera(${cam.id})" style="background:#16a34a;margin-right:4px">Editar</button>
-        <a href="/roi/${cam.id}" style="display:inline-flex;align-items:center;padding:8px 12px;
+      <td style="white-space:nowrap">
+        <a href="/roi-camera/${cam.id}" style="display:inline-flex;align-items:center;padding:8px 12px;
            border-radius:7px;background:#0f172a;color:#fff;font-size:14px;font-weight:500;
-           text-decoration:none;margin-right:4px">Área</a>
+           text-decoration:none;margin-right:4px">Abrir</a>
+        <button onclick="editarCamera(${cam.id})" style="background:#16a34a;margin-right:4px">Editar</button>
         <button onclick="removerCamera(${cam.id})" style="background:#dc2626">Remover</button>
       </td>
     </tr>`;
@@ -333,8 +332,8 @@ function abrirModal(cam = null) {
   _editandoId = cam ? cam.id : null;
   document.getElementById('modal-titulo').textContent = cam ? 'Editar Câmera' : 'Nova Câmera';
   document.getElementById('cam-id').value = cam ? cam.id : '';
-  document.getElementById('cam-bomba').value = cam ? cam.bomba : '1';
-  document.getElementById('cam-lado').value = cam ? cam.lado : '1';
+  document.getElementById('cam-empresa').value = cam ? (cam.empresa_id || '') : (FILTRO_EMPRESA || '');
+  document.getElementById('cam-local').value = cam ? (cam.local || '') : '';
   document.getElementById('cam-nome').value = cam ? cam.nome : '';
   document.getElementById('cam-tipo').value = cam ? cam.camera_tipo : 'intelbras';
   document.getElementById('cam-host').value = cam ? cam.intelbras_host : '';
@@ -376,8 +375,8 @@ async function salvarCamera(e) {
   const senha = document.getElementById('cam-senha').value;
   const payload = {
     nome: document.getElementById('cam-nome').value.trim(),
-    bomba: parseInt(document.getElementById('cam-bomba').value),
-    lado: parseInt(document.getElementById('cam-lado').value),
+    empresa_id: parseInt(document.getElementById('cam-empresa').value) || null,
+    local: document.getElementById('cam-local').value.trim(),
     camera_tipo: tipo,
     camera_indice: document.getElementById('cam-indice').value || '0',
     intelbras_host: document.getElementById('cam-host').value.trim(),
@@ -403,8 +402,7 @@ async function salvarCamera(e) {
       fecharModal();
       await carregarCameras();
     } else {
-      const err = await res.json().catch(() => ({}));
-      alert('Erro: ' + (err.detail || res.status));
+      await avisarResposta(res);
     }
   } finally {
     btnSalvar.disabled = false;
@@ -569,7 +567,13 @@ function usarIpScan(ip, porta) {
   document.getElementById('cam-nome').focus();
 }
 
-carregarCameras();
+(async () => {
+  await carregarEmpresas();
+  const selLote = document.getElementById('lote-empresa');
+  selLote.innerHTML = document.getElementById('cam-empresa').innerHTML;
+  if (FILTRO_EMPRESA) selLote.value = FILTRO_EMPRESA;
+  await carregarCameras();
+})();
 
 // ── Modal Lote ────────────────────────────────────────────────────────────────
 
@@ -602,25 +606,18 @@ function adicionarLinhaLote(dados = {}) {
   const tbody = document.getElementById('lote-tbody');
   const pad = _padroesAtuais();
 
-  const opsBomba = [1,2,3,4,5,6,7,8,9,10].map(n =>
-    `<option value="${n}" ${dados.bomba == n ? 'selected' : ''}>${n}</option>`).join('');
-  const opsLado = [1,2,3,4,5,6].map(n =>
-    `<option value="${n}" ${dados.lado == n ? 'selected' : ''}>${n}</option>`).join('');
-
   const tr = document.createElement('tr');
   tr.id = `lote-row-${id}`;
   tr.dataset.id = id;
   tr.style.borderBottom = '1px solid #f1f5f9';
   tr.innerHTML = `
     <td style="padding:4px 5px">
-      <select class="lote-bomba lote-input" style="width:54px">${opsBomba}</select>
-    </td>
-    <td style="padding:4px 5px">
-      <select class="lote-lado lote-input" style="width:54px">${opsLado}</select>
-    </td>
-    <td style="padding:4px 5px">
       <input class="lote-nome lote-input" type="text" value="${esc(dados.nome || '')}"
-             placeholder="auto" style="width:130px">
+             placeholder="Nome da câmera" style="width:140px">
+    </td>
+    <td style="padding:4px 5px">
+      <input class="lote-local lote-input" type="text" value="${esc(dados.local || '')}"
+             placeholder="onde está" style="width:130px">
     </td>
     <td style="padding:4px 5px">
       <input class="lote-host lote-input" type="text" value="${esc(dados.host || '')}"
@@ -664,53 +661,13 @@ function aplicarPadroesTodas() {
   });
 }
 
-function atualizarModoGrade() {
-  const dvr = document.getElementById('lote-gen-modo').value === 'dvr';
-  document.getElementById('lote-gen-host-label').textContent = dvr ? 'IP do DVR' : 'Base IP (ex: 192.168.1.)';
-  document.getElementById('lote-gen-host').placeholder = dvr ? '192.168.1.108' : '192.168.1.';
-}
-
-function gerarGradeLote() {
-  const tbody = document.getElementById('lote-tbody');
-  if (tbody.querySelectorAll('tr').length > 0 && !confirm('Substituir linhas existentes?')) return;
-  tbody.innerHTML = '';
-  _loteId = 0;
-
-  const nbombas  = parseInt(document.getElementById('lote-gen-bombas').value) || 1;
-  const nlados   = parseInt(document.getElementById('lote-gen-lados').value)  || 1;
-  const hostBase = document.getElementById('lote-gen-host').value.trim();
-  const canalIni = parseInt(document.getElementById('lote-gen-canal').value)  || 1;
-  const dvr      = document.getElementById('lote-gen-modo').value === 'dvr';
-  const pad      = _padroesAtuais();
-
-  let canal = canalIni;
-  let ipOff = 0;
-
-  for (let b = 1; b <= nbombas; b++) {
-    for (let lado = 1; lado <= nlados; lado++) {
-      const host = dvr
-        ? hostBase
-        : (hostBase ? hostBase + (ipOff + 1) : '');
-      adicionarLinhaLote({
-        bomba: b,
-        lado,
-        nome: `Bomba ${b} - Lado ${lado}`,
-        host,
-        canal: String(canal),
-        usuario: pad.usuario,
-        senha: pad.senha,
-        ativo: true,
-      });
-      canal++;
-      ipOff++;
-    }
-  }
-}
-
 async function salvarLote() {
   const tbody = document.getElementById('lote-tbody');
   const rows  = Array.from(tbody.querySelectorAll('tr'));
-  if (!rows.length) { alert('Adicione ao menos uma câmera.'); return; }
+  if (!rows.length) { avisar('Adicione ao menos uma câmera.', 'err'); return; }
+
+  const empresaId = parseInt(document.getElementById('lote-empresa').value) || null;
+  if (!empresaId) { avisar('Selecione a empresa (posto) das câmeras.', 'err'); return; }
 
   const tipo    = document.getElementById('lote-tipo').value;
   const porta   = document.getElementById('lote-porta').value   || '554';
@@ -732,10 +689,8 @@ async function salvarLote() {
     const id  = row.dataset.id;
     const statusEl = document.getElementById(`lote-status-${id}`);
 
-    const bomba   = parseInt(row.querySelector('.lote-bomba').value);
-    const lado    = parseInt(row.querySelector('.lote-lado').value);
-    const nomeRaw = row.querySelector('.lote-nome').value.trim();
-    const nome    = nomeRaw || `Bomba ${bomba} - Lado ${lado}`;
+    const nome    = row.querySelector('.lote-nome').value.trim() || `Câmera ${i + 1}`;
+    const local   = row.querySelector('.lote-local').value.trim();
     const host    = row.querySelector('.lote-host').value.trim();
     const usuario = row.querySelector('.lote-usuario').value.trim() || 'admin';
     const senha   = row.querySelector('.lote-senha').value;
@@ -747,7 +702,9 @@ async function salvarLote() {
     barra.style.width = `${((i + 1) / rows.length) * 100}%`;
 
     const payload = {
-      nome, bomba, lado,
+      nome,
+      empresa_id: empresaId,
+      local,
       camera_tipo: tipo,
       camera_indice: '0',
       intelbras_host: host,

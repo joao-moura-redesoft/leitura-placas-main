@@ -15,27 +15,26 @@
   </div>
   <p style="color:#94a3b8;margin-top:0;font-size:13px;">Faça upload de fotos ou use as salvas pelo ALPR. Clique em "Adicionar" para rotular e incluir no dataset.</p>
 
-  <!-- Capturar da câmera -->
+  <!-- Capturar de um bico (mesma entrada que a produção analisa) -->
   <div style="background:#f8fafc;border-radius:8px;padding:14px;margin-bottom:16px;border:1px solid #e2e8f0;">
-    <div style="font-size:13px;color:#94a3b8;margin-bottom:10px;font-weight:600;">Capturar da câmera CFTV</div>
+    <div style="font-size:13px;color:#94a3b8;margin-bottom:4px;font-weight:600;">Capturar de um bico</div>
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:10px;">
+      A imagem é salva já recortada pela área do bico — é exatamente o que o detector
+      recebe na leitura reativa, então o teste mede o caminho real.
+    </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
-      <div style="flex:1;min-width:180px;">
-        <div style="font-size:11px;color:#64748b;margin-bottom:4px;">Câmera</div>
-        <select id="sel-camera" style="width:100%;">
-          <option value="">Carregando câmeras...</option>
+      <div style="flex:1;min-width:240px;">
+        <div style="font-size:11px;color:#64748b;margin-bottom:4px;">Bico</div>
+        <select id="sel-bico" style="width:100%;">
+          <option value="">Carregando…</option>
         </select>
       </div>
-      <div>
-        <div style="font-size:11px;color:#64748b;margin-bottom:4px;">Tipo</div>
-        <select id="sel-tipo-cap" style="min-width:140px;">
-          <option value="frame">frame (cena completa)</option>
-          <option value="crop">crop (recorte)</option>
-        </select>
-      </div>
-      <button id="btn-capturar" onclick="capturarCamera()" style="padding:8px 18px;white-space:nowrap;">
-        Capturar Frame
+      <button id="btn-capturar" onclick="capturarBico()" style="padding:8px 18px;white-space:nowrap;">
+        Capturar
       </button>
     </div>
+    <div id="aviso-roi" style="display:none;margin-top:10px;font-size:12px;color:#a16207;
+         background:#fef9c3;border:1px solid #fde68a;border-radius:6px;padding:8px 10px"></div>
     <div id="cap-status" style="display:none;margin-top:10px;font-size:13px;"></div>
   </div>
 
@@ -171,49 +170,75 @@
 // ===== ESTADO =====
 let _snapshotsNoDataset = new Set();
 
-// ===== CÂMERAS =====
-async function carregarCameras() {
-  const sel = document.getElementById('sel-camera');
+// ===== BICOS =====
+let _bicos = [];
+
+async function carregarBicos() {
+  const sel = document.getElementById('sel-bico');
   try {
-    const cameras = await fetch('/api/testes/cameras').then(r => r.json());
-    if (!cameras.length) {
-      sel.innerHTML = '<option value="">Nenhuma câmera cadastrada</option>';
+    _bicos = await fetch('/api/testes/bicos').then(r => r.json());
+    if (!_bicos.length) {
+      sel.innerHTML = '<option value="">Nenhum bico cadastrado</option>';
       document.getElementById('btn-capturar').disabled = true;
       return;
     }
-    sel.innerHTML = cameras.map(c =>
-      `<option value="${c.id}">📷 ${c.nome} (bomba ${c.bomba} / lado ${c.lado})</option>`
+    // Agrupa por posto: o dataset agora mistura clientes diferentes
+    const grupos = {};
+    _bicos.forEach(b => { (grupos[b.posto] ??= []).push(b); });
+    sel.innerHTML = Object.entries(grupos).map(([posto, bs]) =>
+      `<optgroup label="${posto}">` + bs.map(b =>
+        `<option value="${b.id}">${b.automacao_codigo}/${b.codigo}` +
+        `${b.nome ? ' — ' + b.nome : ''} · ${b.camera_local || b.camera_nome}` +
+        `${b.tem_roi ? '' : '  (sem área)'}</option>`).join('') + '</optgroup>'
     ).join('');
+    avisarRoi();
   } catch {
-    sel.innerHTML = '<option value="">Erro ao carregar câmeras</option>';
+    sel.innerHTML = '<option value="">Erro ao carregar bicos</option>';
   }
 }
 
-async function capturarCamera() {
-  const cameraId = document.getElementById('sel-camera').value;
-  if (!cameraId) { alert('Selecione uma câmera.'); return; }
-  const tipo = document.getElementById('sel-tipo-cap').value;
+// Sem área definida a captura vira o frame inteiro — e aí o teste mede algo diferente
+// da produção. Melhor avisar antes do que gerar dataset enganoso.
+function avisarRoi() {
+  const b = _bicos.find(x => String(x.id) === document.getElementById('sel-bico').value);
+  const el = document.getElementById('aviso-roi');
+  if (b && !b.tem_roi) {
+    el.style.display = 'block';
+    el.innerHTML = `Este bico não tem área definida — a captura virá com o frame inteiro,
+      que <strong>não é</strong> o que a leitura reativa analisa.
+      <a href="/roi-camera/${b.camera_id}?bico=${b.id}" style="color:#a16207;font-weight:600">Definir a área</a>.`;
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+async function capturarBico() {
+  const bicoId = document.getElementById('sel-bico').value;
+  if (!bicoId) { avisar('Selecione um bico.', 'err'); return; }
   const btn = document.getElementById('btn-capturar');
   const status = document.getElementById('cap-status');
 
   btn.disabled = true;
   status.style.display = 'block';
-  status.innerHTML = '<span style="color:#94a3b8;">Conectando à câmera e capturando frame...</span>';
+  status.innerHTML = '<span style="color:#94a3b8;">Conectando à câmera e capturando…</span>';
 
   try {
-    const r = await fetch(`/api/testes/capturar-camera/${cameraId}`, {
+    const r = await fetch(`/api/testes/capturar-bico/${bicoId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({tipo}),
+      body: JSON.stringify({aplicar_roi: true}),
     });
     if (!r.ok) {
-      const txt = await r.text();
-      status.innerHTML = `<span style="color:#b91c1c;">Erro: ${txt}</span>`;
+      const d = await r.json().catch(() => ({}));
+      status.innerHTML = `<span style="color:#b91c1c;">Erro: ${d.detail || r.status}</span>`;
       return;
     }
-    const dados = await r.json();
-    status.innerHTML = `<span style="color:#15803d;">Frame capturado: ${dados.nome}</span>`;
-    setTimeout(() => { status.style.display = 'none'; }, 4000);
+    const d = await r.json();
+    status.innerHTML = `<span style="color:#15803d;">Capturado: ${d.nome}</span>
+      <span style="color:#94a3b8">· ${d.largura}×${d.altura}px
+      ${d.recortado_por_roi ? '(área do bico)' : '(frame inteiro — bico sem área)'}
+      · ${d.origem}</span>`;
+    setTimeout(() => { status.style.display = 'none'; }, 6000);
     await carregarSnapshots();
   } catch (e) {
     status.innerHTML = `<span style="color:#b91c1c;">Erro de rede: ${e.message}</span>`;
@@ -569,7 +594,8 @@ async function verResultado(nome) {
 
 // ===== INIT =====
 (async () => {
-  await Promise.all([carregarCameras(), carregarSnapshots(), carregarDataset(), carregarResultados()]);
+  document.getElementById('sel-bico').addEventListener('change', avisarRoi);
+  await Promise.all([carregarBicos(), carregarSnapshots(), carregarDataset(), carregarResultados()]);
 })();
 </script>
 {% endblock %}

@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/testes")
 
 _DATASET = Path("testes/dataset.json")
 _RESULTADOS = Path("testes/resultados")
-_SNAPSHOTS = Path("static/snapshots")
+_SNAPSHOTS = Path("app/web/static/snapshots")
 _FOTOS_TESTE = Path("testes/fotos")
 
 
@@ -100,6 +100,10 @@ def adicionar_foto(payload: dict):
 
     ds = _ler_dataset()
     # Atualiza se já existe, senão insere
+    # Origem (bico/posto) fica gravada para dar para saber de onde veio cada foto e,
+    # depois, medir acurácia por posto — o dataset agora mistura vários clientes.
+    origem = {k: payload[k] for k in ("bico_id", "origem") if payload.get(k)}
+
     existente = next((f for f in ds["fotos"] if f["arquivo"] == arquivo), None)
     if existente:
         existente.update({
@@ -107,6 +111,7 @@ def adicionar_foto(payload: dict):
             "formato": payload.get("formato") or _inferir_formato(placa),
             "tipo": payload.get("tipo", "crop"),
             "obs": payload.get("obs", existente.get("obs", "")),
+            **origem,
         })
     else:
         ds["fotos"].append({
@@ -116,6 +121,7 @@ def adicionar_foto(payload: dict):
             "formato": payload.get("formato") or _inferir_formato(placa),
             "tipo": payload.get("tipo", "crop"),
             "obs": payload.get("obs", ""),
+            **origem,
         })
     _salvar_dataset(ds)
     return {"ok": True, "total": len(ds["fotos"])}
@@ -149,7 +155,7 @@ def rodar_testes(payload: dict = {}):
         engines = payload.get("engines") or None
         salvar = bool(payload.get("salvar", False))
         if not engines:
-            import config as cfg_mod
+            from app.core import config as cfg_mod
             cfg = cfg_mod.carregar()
             engines = [cfg.get("ocr_engine", "auto")]
         resultado = mod.rodar(engines=engines, salvar=salvar)
@@ -160,76 +166,99 @@ def rodar_testes(payload: dict = {}):
         sys.path[:] = _sys_path_backup
 
 
-@router.get("/cameras")
-def listar_cameras():
-    """Retorna câmeras cadastradas para seleção no capturador."""
-    import banco
-    cameras = banco.cameras_listar()
-    return [
-        {"id": c["id"], "nome": c["nome"], "bomba": c["bomba"], "lado": c["lado"]}
-        for c in cameras if c.get("ativo", 1)
-    ]
+@router.get("/bicos")
+def listar_bicos():
+    """Bicos cadastrados, com posto e câmera — alvo de captura do dataset.
+
+    Capturar por BICO (e não por câmera) é o que faz o teste medir o mesmo que a
+    produção: a leitura reativa analisa o recorte da área do bico, não o frame inteiro.
+    """
+    from app.core import banco
+    empresas = {e["id"]: e for e in banco.empresas_listar()}
+    automacoes = {a["id"]: a for a in banco.automacoes_listar()}
+    cameras = {c["id"]: c for c in banco.cameras_listar()}
+    saida = []
+    for b in banco.bicos_listar():
+        a = automacoes.get(b["automacao_id"])
+        emp = empresas.get(a["empresa_id"]) if a else None
+        cam = cameras.get(b["camera_id"])
+        saida.append({
+            "id": b["id"],
+            "codigo": b["codigo"],
+            "nome": b["nome"],
+            "tem_roi": bool(b["roi"]),
+            "camera_id": b["camera_id"],
+            "camera_nome": cam["nome"] if cam else "?",
+            "camera_local": cam.get("local", "") if cam else "",
+            "automacao_codigo": a["codigo"] if a else "?",
+            "posto": emp["nome"] if emp else "(sem posto)",
+            "posto_id": emp["id"] if emp else None,
+        })
+    return saida
 
 
-@router.post("/capturar-camera/{camera_id}")
-def capturar_camera(camera_id: int, payload: dict = {}):
-    """Captura um frame da câmera, salva em testes/fotos/ e retorna info do arquivo."""
+@router.post("/capturar-bico/{bico_id}")
+def capturar_bico(bico_id: int, payload: dict = {}):
+    """Captura da câmera do bico e salva JÁ RECORTADO pela área dele.
+
+    É exatamente o que o detector recebe em produção — o dataset passa a medir o
+    caminho real em vez do frame inteiro.
+    """
     import cv2
-    import time as _time
-    import banco
-    import estado
-    import pipeline
-    import camera as camera_mod
-    import config as cfg_mod
+    import json as _json
+    from app.core import banco
+    from app.core import config as cfg_mod
+    from app.visao import camera as camera_mod
+    from app.visao import leitura as leitura_mod
 
-    cam = banco.cameras_obter(camera_id)
+    bico = banco.bicos_obter(bico_id)
+    if not bico:
+        raise HTTPException(404, "Bico não encontrado")
+    cam = banco.cameras_obter(bico["camera_id"])
     if not cam:
-        raise HTTPException(404, "Câmera não encontrada")
+        raise HTTPException(404, "Câmera do bico não encontrada")
 
-    frame = None
+    auto = banco.automacoes_obter(bico["automacao_id"])
+    emp = banco.empresas_obter(auto["empresa_id"]) if auto else None
+    origem = f"{emp['nome'] if emp else '?'} / bico {bico['codigo']}"
 
-    # Reusa frame do pipeline se estiver rodando
-    if camera_id in pipeline._instancias:
-        for _ in range(80):
-            frame = estado.obter_frame_camera(camera_id)
-            if frame is not None:
-                break
-            _time.sleep(0.1)
-
-    if frame is None:
-        cfg = cfg_mod.carregar()
-        intelbras = {
-            "host": cam["intelbras_host"],
-            "porta": cam["intelbras_porta"],
-            "usuario": cam["intelbras_usuario"],
-            "senha": cam["intelbras_senha"] or cfg.get("intelbras_senha", ""),
-            "canal": cam["intelbras_canal"],
-            "subtype": cam["intelbras_subtype"],
-            "formato": cam["intelbras_formato"],
-        }
-        ok, msg, jpg_bytes = camera_mod.capturar_teste(
+    cfg = cfg_mod.carregar()
+    with leitura_mod.lock_camera(cam["id"]):   # 1 conexão RTSP por câmera
+        frame = camera_mod.capturar_frame_unico(
             tipo=cam["camera_tipo"],
-            indice=cam["camera_indice"],
-            largura=1280, altura=720, fps=15,
-            intelbras=intelbras,
+            indice=cam.get("rtsp_url_custom") or cam.get("camera_indice", "0"),
+            largura=int(cfg.get("camera_largura", "1280")),
+            altura=int(cfg.get("camera_altura", "720")),
+            fps=int(cfg.get("camera_fps", "15")),
+            intelbras={
+                "host": "" if cam.get("rtsp_url_custom") else cam.get("intelbras_host", ""),
+                "porta": cam.get("intelbras_porta", "554"),
+                "usuario": cam.get("intelbras_usuario", "admin"),
+                "senha": cam.get("intelbras_senha") or cfg.get("intelbras_senha", ""),
+                "canal": cam.get("intelbras_canal", "1"),
+                "subtype": cam.get("intelbras_subtype", "1"),
+                "formato": cam.get("intelbras_formato", "padrao"),
+                "rtsp_transporte": cfg.get("rtsp_transporte", "tcp"),
+            },
         )
-        if not ok or jpg_bytes is None:
-            raise HTTPException(503, msg)
-        # Decodifica para numpy para salvar uniformemente
-        import numpy as np
-        arr = np.frombuffer(jpg_bytes, np.uint8)
-        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-
     if frame is None:
-        raise HTTPException(503, "Não foi possível capturar frame da câmera")
+        raise HTTPException(503, "Não foi possível capturar imagem da câmera")
+
+    recortado = False
+    if bico["roi"] and payload.get("aplicar_roi", True):
+        r = _json.loads(bico["roi"]) if isinstance(bico["roi"], str) else bico["roi"]
+        recorte = frame[r["y"]:r["y"] + r["h"], r["x"]:r["x"] + r["w"]]
+        if recorte.size:
+            frame, recortado = recorte, True
 
     _FOTOS_TESTE.mkdir(parents=True, exist_ok=True)
-    tipo_img = payload.get("tipo", "frame")
-    prefixo = "preview_" if tipo_img == "frame" else ""
     ts = datetime.now().strftime("%Y%m%dT%H%M%S")
-    nome = f"{prefixo}{ts}_cam{camera_id}_{uuid.uuid4().hex[:4]}.jpg"
+    # Nome com o CÓDIGO do bico (o que aparece na tela), não o id do banco — quem rotula
+    # o dataset lê o nome do arquivo e id != código confunde.
+    cod = re.sub(r"[^A-Za-z0-9_-]", "", bico["codigo"])[:12] or str(bico_id)
+    nome = f"bico-{cod}_{ts}_{uuid.uuid4().hex[:4]}.jpg"
     dest = _FOTOS_TESTE / nome
-    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
     if not ok:
         raise HTTPException(500, "Falha ao codificar imagem")
     dest.write_bytes(buf.tobytes())
@@ -239,7 +268,13 @@ def capturar_camera(camera_id: int, payload: dict = {}):
         "nome": nome,
         "arquivo": f"testes/fotos/{nome}",
         "url": f"/testes/fotos/{nome}",
-        "tipo": tipo_img,
+        "tipo": "frame",           # é o que o detector recebe: área do bico, sem recorte de placa
+        "recortado_por_roi": recortado,
+        "sem_roi": not recortado,
+        "largura": int(frame.shape[1]),
+        "altura": int(frame.shape[0]),
+        "bico_id": bico_id,
+        "origem": origem,
         "tamanho": dest.stat().st_size,
     }
 

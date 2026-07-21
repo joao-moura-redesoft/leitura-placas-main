@@ -67,11 +67,12 @@
       <h2>Funcionamento do Web</h2>
       <p>A interface web centraliza o monitoramento de câmeras, leitura manual de placas, consulta do histórico, listas de atenção, testes e configuração do pipeline.</p>
       <ul class="doc-list">
-        <li><strong>Ao Vivo:</strong> mostra câmeras ativas por bomba e lado, stream MJPEG quando a detecção automática está ligada e botão <strong>Ler Placa</strong> para captura manual.</li>
+        <li><strong>Postos:</strong> ponto de partida. Lista os postos por entidade dizendo o que falta em cada um, e cada posto tem câmeras, bicos, imagens ao vivo e leitura por bico numa tela só.</li>
         <li><strong>Dashboard:</strong> resume volume de leituras, placas mais frequentes, status do pipeline e logs recentes.</li>
         <li><strong>Histórico:</strong> consulta detecções gravadas no SQLite com filtro por placa, período e paginação.</li>
         <li><strong>Listas:</strong> cadastra placas em lista branca ou negra para acompanhamento operacional.</li>
-        <li><strong>Câmeras:</strong> cadastra bomba, lado, tipo de câmera, RTSP/Intelbras, teste de imagem e status ativo.</li>
+        <li><strong>Câmeras:</strong> cadastra a conexão física (tipo, RTSP/Intelbras, teste de imagem, status ativo). Bomba/lado e área de captura ficam em <strong>Bicos</strong>.</li>
+        <li><strong>Entidades / Empresas / Automações / Bicos:</strong> hierarquia multi-tenant (entidade → empresa/CNPJ → automação → bico) usada pela leitura reativa <span class="path">GET /api/leitura</span>.</li>
         <li><strong>Configuração:</strong> ajusta detector, OCR, snapshots, thresholds, RTSP e comportamento do pipeline.</li>
         <li><strong>Testes:</strong> permite validar imagens e OCR sem depender do fluxo ao vivo.</li>
       </ul>
@@ -96,7 +97,8 @@
       <div>
         <h3>Primeiro Uso</h3>
         <ul class="doc-list">
-          <li>Abra <span class="path">/cameras</span> e cadastre cada câmera com nome, bomba e lado.</li>
+          <li>Abra <span class="path">/cameras</span> e cadastre a conexão de cada câmera física (nome, RTSP/Intelbras).</li>
+          <li>Cadastre a hierarquia multi-tenant em <span class="path">/entidades</span> → <span class="path">/empresas</span> → <span class="path">/automacoes</span> → <span class="path">/bicos</span>, associando cada bico a uma câmera e desenhando sua área de captura.</li>
           <li>Use o teste de câmera antes de ativar o monitoramento.</li>
           <li>Configure modelo, OCR e thresholds em <span class="path">/configuracao</span>.</li>
           <li>Confira em <span class="path">/</span> se as câmeras ativas aparecem no grid ao vivo.</li>

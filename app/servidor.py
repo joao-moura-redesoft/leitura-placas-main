@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 # Deve ficar aqui (e não só em main.py) porque em modo --reload o uvicorn
-# importa "servidor:app" num subprocess separado, sem passar pelo main.py.
+# importa "app.servidor:app" num subprocess separado, sem passar pelo main.py.
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -20,20 +20,23 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-import auth as auth_mod
-import banco
-import broadcaster as bc
-import config
-import dns_server as dns_mod
-import estado
-import hls_encoder as hls_mod
 import mimetypes
-import pipeline
-import supervisor as sv
-from rotas import api, paginas
-from rotas import auth as auth_rotas
-from rotas import stream as stream_rotas
-from rotas import testes as testes_rotas
+
+from app.core import banco
+from app.core import broadcaster as bc
+from app.core import config
+from app.core import estado
+from app.operacao import dns_server as dns_mod
+from app.operacao import supervisor as sv
+from app.seguranca import sessao as auth_mod
+from app.streaming import hls_encoder as hls_mod
+from app.visao import pipeline
+from app.web import api, paginas
+from app.web import auth as auth_rotas
+from app.web import cadastro as cadastro_rotas
+from app.web import leitura as leitura_rotas
+from app.web import stream as stream_rotas
+from app.web import testes as testes_rotas
 
 # Garante MIME types corretos para servir arquivos HLS via StaticFiles
 mimetypes.add_type("application/vnd.apple.mpegurl", ".m3u8")
@@ -44,7 +47,9 @@ log = logging.getLogger(__name__)
 
 # Rotas que não exigem autenticação via middleware
 # /ws é público no middleware; a autenticação é feita dentro do endpoint.
-_PUBLICAS = frozenset({"/login", "/criar-admin", "/favicon.ico", "/ws"})
+# /api/leitura: sem auth por enquanto (rede interna do sidecar Java do posto, não exposta
+# ao público) — trocar pra api_key depois é só remover daqui, o mecanismo já existe abaixo.
+_PUBLICAS = frozenset({"/login", "/criar-admin", "/favicon.ico", "/ws", "/api/leitura"})
 
 
 class _AuthMiddleware(BaseHTTPMiddleware):
@@ -91,6 +96,28 @@ def _iniciar_pipeline_bg(cfg: dict) -> None:
         log.error("Falha ao iniciar pipelines: %s", e)
 
 
+def _aquecer_modelos_bg(cfg: dict) -> None:
+    """Carrega detector e OCR de leitura já no boot, em segundo plano.
+
+    Sem isso, a PRIMEIRA leitura paga 45-60s de carregamento e parece travamento — e,
+    pior, esse tempo já chegou a estourar o orçamento do laço e devolver erro. Aqui o
+    custo cai numa janela em que ninguém está esperando resposta.
+    """
+    import time as _t
+    try:
+        from app.visao.detector import obter_detector_leitura
+        from app.visao.ocr import obter_ocr_leitura
+        t0 = _t.time()
+        obter_detector_leitura(cfg)
+        obter_ocr_leitura(cfg)
+        log.info("Modelos de leitura prontos em %.1fs — primeira leitura já sai rápida",
+                 _t.time() - t0)
+    except Exception as e:
+        # Falhar aqui não pode derrubar o servidor: a leitura recarrega sob demanda.
+        log.warning("Não foi possível pré-carregar os modelos (%s) — serão carregados "
+                    "na primeira leitura", e)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     cfg = config.carregar()
@@ -108,6 +135,8 @@ async def lifespan(_app: FastAPI):
 
     # Inicia pipeline em background — servidor responde imediatamente
     _tarefa = loop.run_in_executor(None, _iniciar_pipeline_bg, cfg)
+    # Aquece os modelos em paralelo, para a primeira leitura não pagar a carga
+    _tarefa_modelos = loop.run_in_executor(None, _aquecer_modelos_bg, cfg)
 
     # Supervisor monitora threads de câmera e reinicia com backoff exponencial
     sv.supervisor.iniciar(cfg)
@@ -132,11 +161,12 @@ async def lifespan(_app: FastAPI):
     sv.supervisor.parar()
     pipeline.parar()
     await asyncio.shield(_tarefa)
+    await asyncio.shield(_tarefa_modelos)
 
 
 app = FastAPI(title="Leitura de Placas (ALPR)", lifespan=lifespan)
 app.add_middleware(_AuthMiddleware)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
 _FOTOS_TESTE_DIR = "testes/fotos"
 _CROPS_TESTE_DIR = "testes/resultados/crops"
 import os as _os; _os.makedirs(_FOTOS_TESTE_DIR, exist_ok=True); _os.makedirs(_CROPS_TESTE_DIR, exist_ok=True)
@@ -151,6 +181,8 @@ app.include_router(paginas.router)
 app.include_router(stream_rotas.router)
 app.include_router(api.router)
 app.include_router(testes_rotas.router)
+app.include_router(leitura_rotas.router)
+app.include_router(cadastro_rotas.router)
 
 
 @app.websocket("/ws")
@@ -237,16 +269,16 @@ def iniciar(reload: bool = False) -> None:
         )
         sys.exit(1)
     _banner(porta)
-    base = str(Path(__file__).parent)
+    raiz = str(Path(__file__).resolve().parent.parent)
     if reload:
         print("  Modo --reload ativo: reinicia ao detectar alterações em .py e .html\n", flush=True)
         uvicorn.run(
-            "servidor:app",
+            "app.servidor:app",
             host="0.0.0.0",
             port=porta,
             log_level=cfg["log_level"].lower(),
             reload=True,
-            reload_dirs=[base],
+            reload_dirs=[raiz],
             reload_includes=["*.py", "*.html"],
             reload_excludes=[".venv", "__pycache__", "testes", "*.pyc"],
         )

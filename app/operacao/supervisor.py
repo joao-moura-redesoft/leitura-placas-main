@@ -9,8 +9,8 @@ import logging
 import threading
 import time
 
-import banco
-import estado
+from app.core import banco
+from app.core import estado
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class WorkerSupervisor:
         cameras_status = []
 
         # Import lazy para evitar ciclo de importação
-        import pipeline as pl
+        from app.visao import pipeline as pl
 
         for cam in banco.cameras_listar():
             if not cam["ativo"]:
@@ -75,7 +75,7 @@ class WorkerSupervisor:
             backoff_restante = max(0.0, round(self._backoff_ate.get(cam_id, 0) - agora, 1))
             cameras_status.append({
                 "id":                cam_id,
-                "nome":              cam.get("nome") or f"Bomba {cam.get('bomba')} Lado {cam.get('lado')}",
+                "nome":              cam.get("nome") or f"Câmera {cam_id}",
                 "status":            st,
                 "thread_viva":       thread_viva,
                 "ultimo_frame_seg":  seg_sem_frame,
@@ -91,7 +91,7 @@ class WorkerSupervisor:
         else:
             status_geral = "ok"
 
-        import pipeline as pl  # noqa: F811
+        from app.visao import pipeline as pl  # noqa: F811
         return {
             "status":           status_geral,
             "cameras":          cameras_status,
@@ -111,12 +111,18 @@ class WorkerSupervisor:
             self._parar.wait(_INTERVALO_CHECK)
 
     def _verificar_workers(self) -> None:
-        import pipeline as pl
+        from app.visao import pipeline as pl
 
         agora = time.time()
         for cam_id, pinst in list(pl._instancias.items()):
             # Câmeras em modo manual não têm stream contínuo — não monitora freshness
             if not pinst.deteccao_automatica:
+                continue
+
+            # Ainda subindo (abrindo RTSP, carregando modelos): a instância já está
+            # publicada para marcar a câmera como ocupada, mas a thread só existe no fim.
+            # Sem esta guarda o supervisor a mata e reinicia em loop.
+            if getattr(pinst, "iniciando", False):
                 continue
 
             thread_viva = bool(pinst._thread and pinst._thread.is_alive())
@@ -168,7 +174,7 @@ class WorkerSupervisor:
             cam_id, n, delay,
         )
         try:
-            import pipeline as pl
+            from app.visao import pipeline as pl
             cam = next((c for c in banco.cameras_listar() if c["id"] == cam_id), None)
             if not cam or not cam["ativo"]:
                 log.warning("Camera %d: não encontrada ou inativa — cancelando reinício", cam_id)

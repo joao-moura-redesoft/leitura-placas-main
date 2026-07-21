@@ -3,16 +3,18 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+import time
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
-import banco
-import camera as camera_mod
-import config
-import estado
-import pipeline
-import supervisor as sv
+from app.core import banco
+from app.core import config
+from app.core import estado
+from app.operacao import supervisor as sv
+from app.visao import camera as camera_mod
+from app.visao import leitura
+from app.visao import pipeline
 
 log = logging.getLogger(__name__)
 
@@ -33,8 +35,30 @@ def listar_deteccoes(
     ate: str | None = None,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    empresa_id: int | None = None,
+    bico_id: int | None = None,
+    incluir_testes: bool = False,
 ):
-    return banco.listar_deteccoes(placa=placa, desde=desde, ate=ate, limit=limit, offset=offset)
+    return banco.listar_deteccoes(placa=placa, desde=desde, ate=ate, limit=limit,
+                                  offset=offset, empresa_id=empresa_id, bico_id=bico_id,
+                                  incluir_testes=incluir_testes)
+
+
+@router.get("/chamadas")
+def chamadas_listar(
+    limit: int = Query(50, ge=1, le=500),
+    empresa_id: int | None = None,
+    status: str | None = None,
+    apenas_erros: bool = False,
+):
+    """Chamadas do roteador ao endpoint reativo — inclusive as recusadas."""
+    return banco.chamadas_listar(limit=limit, empresa_id=empresa_id,
+                                 status=status, apenas_erros=apenas_erros)
+
+
+@router.get("/chamadas/resumo")
+def chamadas_resumo(horas: int = Query(24, ge=1, le=720)):
+    return banco.chamadas_resumo(horas=horas)
 
 
 @router.delete("/deteccoes/{id_}")
@@ -201,25 +225,32 @@ def camera_teste(payload: dict):
 
 
 @router.get("/cameras")
-def cameras_listar():
-    return banco.cameras_listar()
+def cameras_listar(empresa_id: int | None = None):
+    return banco.cameras_listar(empresa_id=empresa_id)
+
+
+def _validar_camera(payload: dict) -> dict:
+    """Valida nome/empresa da câmera. A câmera pertence a um posto (empresa) e o campo
+    `local` diz onde ela está fisicamente instalada — sem o vínculo, num servidor central
+    a lista de câmeras vira uma lista global sem dono.
+    """
+    nome = (payload.get("nome") or "").strip()
+    if not nome:
+        raise HTTPException(400, "nome é obrigatório")
+    empresa_id = payload.get("empresa_id")
+    if not empresa_id:
+        raise HTTPException(400, "empresa_id é obrigatório — toda câmera pertence a um posto")
+    if not banco.empresas_obter(int(empresa_id)):
+        raise HTTPException(400, f"Empresa {empresa_id} não encontrada")
+    return {**payload, "nome": nome, "local": (payload.get("local") or "").strip()}
 
 
 @router.post("/cameras")
 def cameras_inserir(payload: dict):
-    nome = (payload.get("nome") or "").strip()
-    try:
-        bomba = int(payload.get("bomba") or 0)
-        lado = int(payload.get("lado") or 0)
-    except (TypeError, ValueError):
-        raise HTTPException(400, "bomba e lado devem ser numéricos")
-    if not nome or bomba < 1 or lado < 1:
-        raise HTTPException(400, "nome, bomba e lado são obrigatórios")
+    payload = _validar_camera(payload)
     try:
         id_ = banco.cameras_inserir(payload)
     except Exception as e:
-        if "UNIQUE" in str(e):
-            raise HTTPException(409, f"Bomba {bomba} / Lado {lado} já cadastrada")
         raise HTTPException(500, str(e))
     # Inicia pipeline em background sem bloquear a resposta
     cam = banco.cameras_obter(id_)
@@ -234,19 +265,10 @@ def cameras_inserir(payload: dict):
 
 @router.put("/cameras/{id_}")
 def cameras_atualizar(id_: int, payload: dict):
-    nome = (payload.get("nome") or "").strip()
-    try:
-        bomba = int(payload.get("bomba") or 0)
-        lado = int(payload.get("lado") or 0)
-    except (TypeError, ValueError):
-        raise HTTPException(400, "bomba e lado devem ser numéricos")
-    if not nome or bomba < 1 or lado < 1:
-        raise HTTPException(400, "nome, bomba e lado são obrigatórios")
+    payload = _validar_camera(payload)
     try:
         ok = banco.cameras_atualizar(id_, payload)
     except Exception as e:
-        if "UNIQUE" in str(e):
-            raise HTTPException(409, f"Bomba {bomba} / Lado {lado} já cadastrada")
         raise HTTPException(500, str(e))
     if not ok:
         raise HTTPException(404, "Câmera não encontrada")
@@ -262,55 +284,98 @@ def cameras_atualizar(id_: int, payload: dict):
 
 @router.delete("/cameras/{id_}")
 def cameras_remover(id_: int):
+    # bicos.camera_id é RESTRICT: a câmera não some enquanto algum bico depender dela.
+    usos = banco.bicos_listar(camera_id=id_)
+    if usos:
+        codigos = ", ".join(b["codigo"] for b in usos[:5])
+        raise HTTPException(
+            409,
+            f"Câmera em uso por {len(usos)} bico(s) ({codigos}) — remova ou realoque esses bicos antes.",
+        )
     if not banco.cameras_remover(id_):
         raise HTTPException(404, "Câmera não encontrada")
     pipeline.parar_camera(id_)
     return {"removido": True}
 
 
+@router.get("/cameras/{id_}/detalhe")
+def cameras_detalhe(id_: int):
+    """Câmera + posto + bicos + estado da transmissão, para a página da câmera."""
+    cam = banco.cameras_obter(id_)
+    if not cam:
+        raise HTTPException(404, "Câmera não encontrada")
+
+    emp = banco.empresas_obter(cam["empresa_id"]) if cam.get("empresa_id") else None
+    ent = banco.entidades_obter(emp["entidade_id"]) if emp else None
+
+    automacoes = {a["id"]: a for a in banco.automacoes_listar()}
+    bicos = [{**b, "automacao_codigo": (automacoes.get(b["automacao_id"]) or {}).get("codigo", "?")}
+             for b in banco.bicos_listar(camera_id=id_)]
+
+    ao_vivo = id_ in pipeline._instancias
+    # Nada de `a or b` aqui: com arrays numpy o `or` avalia o array inteiro como
+    # booleano e levanta ValueError. Tem que ser comparação explícita com None.
+    frame = estado.obter_frame_camera_limpo(id_)
+    if frame is None:
+        frame = estado.obter_frame_camera(id_)
+    idade = None
+    if estado.ultimo_frame_ts.get(id_):
+        idade = round(time.time() - estado.ultimo_frame_ts[id_], 1)
+
+    return {
+        "camera": cam,
+        "posto": emp,
+        "entidade": ent,
+        "bicos": bicos,
+        "ao_vivo": ao_vivo,
+        "ultimo_frame_seg": idade,
+        # A sobreposição das áreas precisa das dimensões reais do frame; o MJPEG nem
+        # sempre expõe naturalWidth a tempo no navegador.
+        "frame_largura": int(frame.shape[1]) if frame is not None else None,
+        "frame_altura": int(frame.shape[0]) if frame is not None else None,
+    }
+
+
 @router.get("/cameras/{id_}/snapshot")
 def cameras_snapshot(id_: int):
-    """Frame atual da câmera como JPEG — usado pelo editor de área de captura."""
+    """Frame atual da câmera como JPEG — usado pelo editor de área de captura.
+
+    No modo reativo não há pipeline contínuo alimentando `estado`, então cai para uma
+    captura direta (conecta, pega 1 frame, desconecta). Sem esse fallback o editor de ROI
+    fica inutilizável justamente na configuração que o servidor central usa.
+    """
     import cv2
+
     frame = estado.obter_frame_camera(id_)
     if frame is None:
-        raise HTTPException(503, "Câmera sem frame disponível — inicie o pipeline primeiro")
+        cam = banco.cameras_obter(id_)
+        if not cam:
+            raise HTTPException(404, "Câmera não encontrada")
+        cfg = config.carregar()
+        with leitura.lock_camera(id_):     # respeita o limite de 1 conexão RTSP por câmera
+            frame = camera_mod.capturar_frame_unico(
+                tipo=cam["camera_tipo"],
+                indice=cam.get("rtsp_url_custom") or cam.get("camera_indice", "0"),
+                largura=int(cfg.get("camera_largura", "1280")),
+                altura=int(cfg.get("camera_altura", "720")),
+                fps=int(cfg.get("camera_fps", "15")),
+                intelbras={
+                    "host": "" if cam.get("rtsp_url_custom") else cam.get("intelbras_host", ""),
+                    "porta": cam.get("intelbras_porta", "554"),
+                    "usuario": cam.get("intelbras_usuario", "admin"),
+                    "senha": cam.get("intelbras_senha") or cfg.get("intelbras_senha", ""),
+                    "canal": cam.get("intelbras_canal", "1"),
+                    "subtype": cam.get("intelbras_subtype", "1"),
+                    "formato": cam.get("intelbras_formato", "padrao"),
+                    "rtsp_transporte": cfg.get("rtsp_transporte", "tcp"),
+                },
+            )
+        if frame is None:
+            raise HTTPException(503, "Não foi possível capturar imagem da câmera — verifique a conexão")
     ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     if not ok:
         raise HTTPException(500, "Falha ao codificar frame")
     return Response(content=jpg.tobytes(), media_type="image/jpeg")
-
-
-@router.put("/cameras/{id_}/roi")
-def cameras_salvar_roi(id_: int, payload: dict):
-    """Salva a área de captura (ROI) da câmera. Aplica imediatamente ao pipeline."""
-    try:
-        x, y, w, h = int(payload["x"]), int(payload["y"]), int(payload["w"]), int(payload["h"])
-    except (KeyError, TypeError, ValueError):
-        raise HTTPException(400, "x, y, w, h são obrigatórios e devem ser inteiros")
-    if w <= 0 or h <= 0:
-        raise HTTPException(400, "w e h devem ser positivos")
-    if not banco.cameras_obter(id_):
-        raise HTTPException(404, "Câmera não encontrada")
-    roi = {"x": x, "y": y, "w": w, "h": h}
-    banco.camera_salvar_roi(id_, roi)
-    # Aplica ao pipeline em execução sem reiniciar
-    pinst = pipeline._instancias.get(id_)
-    if pinst:
-        pinst.roi = roi
-    return {"salvo": True}
-
-
-@router.delete("/cameras/{id_}/roi")
-def cameras_limpar_roi(id_: int):
-    """Remove a área de captura — câmera volta a usar o frame completo."""
-    if not banco.cameras_obter(id_):
-        raise HTTPException(404, "Câmera não encontrada")
-    banco.camera_limpar_roi(id_)
-    pinst = pipeline._instancias.get(id_)
-    if pinst:
-        pinst.roi = None
-    return {"limpo": True}
 
 
 @router.post("/cameras/{id_}/teste")
@@ -427,371 +492,32 @@ def modelos_listar():
     return sorted(f.name for f in pasta.glob("*.onnx"))
 
 
-# Posições esperadas por formato (L=letra, D=dígito). Mercosul: pos-5 é LETRA.
-_PADRAO_POS = {"mercosul": "LLLDLDD", "antigo": "LLLDDDD"}
-
-
-def _consenso_caractere(leituras: list[tuple[str, float]], formato: str | None = None) -> str | None:
-    """Consenso por POSIÇÃO de caractere, ponderado por confiança (padrão de mercado ALPR).
-
-    Combina várias leituras (de múltiplos frames E engines) votando cada posição
-    separadamente — corrige erros de 1 caractere: se 2 frames leem 'ABC1D23' e 1 lê
-    'ABC1O23', a posição 5 elege 'D'. Considera só placas de 7 chars (padrão BR).
-
-    `formato` ('mercosul'/'antigo'): quando o tipo visual é conhecido (faixa azul do
-    Mercosul), restringe cada posição ao TIPO esperado — na posição 5 do Mercosul só
-    conta votos de LETRA, descartando dígitos como erro de OCR (em vez de chutar 2→Z).
-    Recupera a letra certa de outro frame. Se nenhuma leitura deu o tipo certo numa
-    posição, cai para o voto bruto daquela posição.
-    """
-    from collections import defaultdict
-
-    validas = [(p, max(w, 0.01)) for p, w in leituras if p and len(p) == 7]
-    if not validas:
-        return None
-    padrao = _PADRAO_POS.get(formato or "")
-    consenso = []
-    for i in range(7):
-        votos: dict[str, float] = defaultdict(float)
-        if padrao:
-            tipo = padrao[i]
-            for p, w in validas:
-                ch = p[i]
-                if tipo == "L" and not ch.isalpha():
-                    continue          # espera letra, veio dígito → descarta (erro)
-                if tipo == "D" and not ch.isdigit():
-                    continue          # espera dígito, veio letra → descarta
-                votos[ch] += w
-        if not votos:                 # sem formato, ou nenhum voto do tipo certo
-            for p, w in validas:
-                votos[p[i]] += w
-        consenso.append(max(votos.items(), key=lambda kv: kv[1])[0])
-    return "".join(consenso)
-
-
-def _eleger_placa(candidatos: list[dict]) -> dict | None:
-    """Elege a placa final por consenso de caractere entre TODOS os candidatos acumulados.
-
-    Reusada tanto pela checagem de parada antecipada do loop de leitura (a cada frame)
-    quanto pela decisão final — garante que o resultado não muda dependendo de quando o
-    loop parou, só a quantidade de evidência acumulada até ali.
-    Retorna None se `candidatos` estiver vazio. O dict retornado inclui as chaves extras
-    "acordo" (concordância 0-1 da placa eleita) e "n_votos_snap" (fotos que bateram nela).
-    """
-    from collections import Counter
-    from validador import validar
-
-    if not candidatos:
-        return None
-
-    # Pool de leituras: a placa final de cada candidato + cada engine individual,
-    # ponderadas por confiança. Vota-se cada posição de caractere separadamente.
-    leituras: list[tuple[str, float]] = []
-    for c in candidatos:
-        leituras.append((c["placa"], float(c["confianca"])))
-        for d in c.get("detalhes_ocr", []):
-            if d.get("placa"):
-                leituras.append((d["placa"], float(d.get("confianca", 0.5))))
-
-    # Formato visual predominante (Mercosul/antigo) detectado pelos engines — usado como
-    # prior para restringir o consenso por posição (posição 5 do Mercosul = letra).
-    fmt_votos = Counter(c["padrao"] for c in candidatos if c.get("padrao"))
-    formato_prior = fmt_votos.most_common(1)[0][0] if fmt_votos else None
-
-    placa_consenso = _consenso_caractere(leituras, formato=formato_prior)
-    votos_placa = Counter(c["placa"] for c in candidatos)
-    if placa_consenso and validar(placa_consenso):
-        placa_eleita = placa_consenso           # consenso por caractere (corrige 1-char)
-    else:
-        placa_eleita = votos_placa.most_common(1)[0][0]   # fallback: string mais votada
-
-    n_votos_snap = sum(1 for c in candidatos if c["placa"] == placa_eleita)
-    # Melhor candidato (p/ crop/bbox): o da placa eleita, senão o de maior confiança
-    cands_eleita = [c for c in candidatos if c["placa"] == placa_eleita]
-    melhor = dict(max(cands_eleita or candidatos, key=lambda c: c["confianca"]))
-    melhor["placa"] = placa_eleita
-    _v = validar(placa_eleita)
-    if _v:
-        melhor["padrao"] = _v[1]
-
-    # Concordância: fração do peso das leituras que bateu com a placa eleita — usada tanto
-    # para escalar a confiança final quanto como sinal de parada antecipada do loop.
-    peso_total = sum(w for _, w in leituras)
-    acordo = sum(w for p, w in leituras if p == placa_eleita) / max(peso_total, 1e-6)
-    melhor["confianca"] = round(melhor["confianca"] * max(acordo, 0.34), 3)
-    melhor["acordo"] = round(acordo, 3)
-    melhor["n_votos_snap"] = n_votos_snap
-    return melhor
-
-
 @router.post("/cameras/{id_}/ler-placa")
 def cameras_ler_placa(id_: int):
-    """Loop de leitura por confiança ("reject-retry", padrão de mercado ALPR): tira fotos
-    incrementalmente e para assim que o consenso entre as leituras ficar forte o bastante
-    (ou ao atingir o máximo de tentativas/timeout) — em vez de um número fixo de fotos.
+    """Loop de leitura por confiança ("reject-retry"): delega para app.visao.leitura.ler_placa
+    (compartilhado com o endpoint reativo multi-tenant GET /api/leitura), reusando o frame do
+    pipeline contínuo quando disponível para essa câmera (evita 2ª conexão RTSP).
     """
-    import cv2
-    import time as _time
-    from camera import Camera
-    from datetime import datetime, timezone
-    from pathlib import Path
-    from validador import validar
-
     cam = banco.cameras_obter(id_)
     if not cam:
         raise HTTPException(404, "Câmera não encontrada")
 
     cfg = config.carregar()
-    deteccao_auto = cfg.get("deteccao_automatica", "sim").lower() in ("sim", "true", "1")
-    n_min = max(1, int(cfg.get("snapshots_votacao", "3")))
-    n_max = max(n_min, int(cfg.get("leitura_max_tentativas", "12")))
-    timeout_seg = float(cfg.get("leitura_timeout_seg", "6"))
-    acordo_min = float(cfg.get("leitura_acordo_minimo", "0.80"))
+    especificacao = leitura.EspecificacaoCamera.de_camera_db(cam, cfg)
 
-    p = pipeline._instancias.get(id_)
-    usar_pipeline = p is not None and deteccao_auto
+    def _frame_pipeline():
+        frame = estado.obter_frame_camera_limpo(id_)
+        return frame if frame is not None else estado.obter_frame_camera(id_)
 
-    # ── Primeiro frame + fonte da captura ───────────────────────────────────────
-    # Tenta o pipeline ativo primeiro (frame LIMPO — sem overlay, senão o OCR leria o
-    # próprio bbox/label desenhado). Se o pipeline ainda não tiver frame pronto, cai para
-    # conexão direta (mesmo fallback que já existia).
-    frame_inicial = None
-    if usar_pipeline:
-        frame_inicial = estado.obter_frame_camera_limpo(id_)
-        if frame_inicial is None:
-            frame_inicial = estado.obter_frame_camera(id_)
-        if frame_inicial is None:
-            usar_pipeline = False
-
-    camera_direta: Camera | None = None
-    if not usar_pipeline:
-        intelbras = {
-            "host":     cam.get("intelbras_host", ""),
-            "porta":    cam.get("intelbras_porta", "554"),
-            "usuario":  cam.get("intelbras_usuario", "admin"),
-            "senha":    cam.get("intelbras_senha") or cfg.get("intelbras_senha", ""),
-            "canal":    cam.get("intelbras_canal", "1"),
-            "subtype":  cam.get("intelbras_subtype", "1"),
-            "formato":         cam.get("intelbras_formato", "padrao"),
-            "rtsp_transporte": cfg.get("rtsp_transporte", "tcp"),
-        }
-        if cam.get("rtsp_url_custom"):
-            intelbras["host"] = ""
-        try:
-            camera_direta = Camera(
-                tipo=cam["camera_tipo"],
-                indice=cam.get("rtsp_url_custom") or cam.get("camera_indice", "0"),
-                largura=int(cfg.get("camera_largura", "1280")),
-                altura=int(cfg.get("camera_altura", "720")),
-                fps=int(cfg.get("camera_fps", "15")),
-                intelbras=intelbras,
-            )
-            camera_direta.abrir()
-        except Exception as e:
-            import re as _re
-            log.warning("ler-placa cam=%d: %s", id_, e)
-            tipo_cam = cam.get("camera_tipo", "")
-            host = cam.get("intelbras_host") or cam.get("rtsp_url_custom", "")
-            # Remove credenciais de URLs RTSP antes de expor na mensagem de erro
-            host_safe = _re.sub(r"(rtsp?://)[^@]+@", r"\1***:***@", host)
-            if tipo_cam in ("rtsp", "intelbras") or host:
-                detalhe = f" ({host_safe})" if host_safe else ""
-                raise HTTPException(
-                    503,
-                    f"Não foi possível conectar à câmera via RTSP{detalhe}. "
-                    "Verifique o IP/host, porta, usuário e senha.",
-                )
-            raise HTTPException(503, "Falha ao abrir câmera.")
-
-        # Aguarda o primeiro frame válido (até 15s), como o fluxo anterior já fazia.
-        for _ in range(150):
-            frame_inicial = camera_direta.ler()
-            if frame_inicial is not None:
-                break
-            _time.sleep(0.1)
-        if frame_inicial is None:
-            camera_direta.fechar()
-            raise HTTPException(503, "Câmera conectou mas não enviou frames — verifique a conexão")
-
-    # ── Detector e OCR ────────────────────────────────────────────────────────
-    # Leitura GET usa componentes de ALTA PRECISÃO, independentes do stream ao vivo:
-    #   - detecção: s-608 + 2 estágios veículo→placa (obter_detector_leitura)
-    #   - OCR: AutoOCRPaddle (reforço PaddleOCR p/ placa borrada) via obter_ocr_leitura
-    # Ambos toleram a latência maior porque o GET é sob demanda.
-    from detector import obter_detector_leitura, detector_leitura_lock
-    from ocr import obter_ocr_leitura, ocr_leitura_lock
-    det_inst = obter_detector_leitura(cfg)
-    ocr_inst = obter_ocr_leitura(cfg)
-
-    # ── Loop de leitura: acumula candidatos até o consenso ficar forte ─────────
-    candidatos: list[dict] = []
-    frame_principal = None       # melhor (mais nítido) frame já visto — usado no preview
-    nitidez_principal = -1.0
-    tentativas = 0
-    parada_motivo = "max_tentativas"
-    inicio = _time.time()
+    provider = _frame_pipeline if id_ in pipeline._instancias else None
 
     try:
-        while tentativas < n_max:
-            if _time.time() - inicio > timeout_seg:
-                parada_motivo = "timeout"
-                break
-
-            if tentativas == 0:
-                frame = frame_inicial
-            elif usar_pipeline:
-                frame_limpo = estado.obter_frame_camera_limpo(id_)
-                frame = frame_limpo if frame_limpo is not None else estado.obter_frame_camera(id_)
-            else:
-                frame = camera_direta.ler()
-
-            if frame is None:
-                _time.sleep(0.1)
-                continue
-            tentativas += 1
-
-            # Melhor frame p/ preview = o mais nítido entre os capturados (Laplaciano).
-            cinza = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            nitidez = cv2.Laplacian(cinza, cv2.CV_64F).var()
-            if nitidez > nitidez_principal:
-                nitidez_principal = nitidez
-                frame_principal = frame
-
-            # Locks: det_inst/ocr_inst são instâncias CACHEADAS compartilhadas entre
-            # requests concorrentes (2+ câmeras podem "Ler Placa" ao mesmo tempo). Em
-            # CUDAExecutionProvider (GPU), chamadas concorrentes na mesma sessão onnxruntime
-            # podem travar/crashar — o lock serializa só a chamada individual, não o loop
-            # inteiro, pra não bloquear uma câmera pela duração toda da leitura da outra.
-            with detector_leitura_lock:
-                bboxes = det_inst.detectar(frame)
-            f_h, f_w = frame.shape[:2]
-            for x, y, w, h, conf_det in bboxes:
-                x, y, w, h = pipeline._expandir_bbox(x, y, w, h, f_w, f_h)
-                crop = frame[y: y + h, x: x + w]
-                if crop.size == 0:
-                    continue
-
-                if hasattr(ocr_inst, "ler_detalhado"):
-                    with ocr_leitura_lock:
-                        ocr_res = ocr_inst.ler_detalhado(crop)
-                    if not ocr_res["placa"]:
-                        continue
-                    placa      = ocr_res["placa"]
-                    padrao     = ocr_res["padrao"]
-                    conf_ocr   = ocr_res["confianca"]
-                    votos_ocr  = ocr_res["votos"]
-                    total_eng  = ocr_res["total_engines"]
-                    det_ocr    = ocr_res["detalhes"]
-                else:
-                    with ocr_leitura_lock:
-                        texto, conf_ocr = ocr_inst.ler(crop)
-                    resultado = validar(texto)
-                    if not resultado:
-                        continue
-                    placa, padrao = resultado
-                    votos_ocr = 1
-                    total_eng = 1
-                    det_ocr   = [{"engine": getattr(ocr_inst, "engine", "?"), "placa": placa,
-                                   "padrao": padrao, "confianca": round(conf_ocr, 3)}]
-
-                candidatos.append({
-                    "placa":         placa,
-                    "padrao":        padrao,
-                    "confianca":     round((conf_det + conf_ocr) / 2, 3),
-                    "votos_ocr":     votos_ocr,
-                    "total_engines": total_eng,
-                    "detalhes_ocr":  det_ocr,
-                    "crop":          crop,
-                    "bbox":          {"x": x, "y": y, "w": w, "h": h},
-                    "frame":         frame,
-                    "snapshot_idx":  tentativas - 1,
-                })
-
-            # Parada antecipada: só depois do mínimo de fotos, e só se o consenso for forte
-            # o bastante (evita parar num acerto isolado de sorte na 1ª foto).
-            if tentativas >= n_min and candidatos:
-                eleito_parcial = _eleger_placa(candidatos)
-                if eleito_parcial and eleito_parcial["acordo"] >= acordo_min:
-                    parada_motivo = "acordo"
-                    break
-
-            if tentativas < n_max:
-                _time.sleep(0.15 if usar_pipeline else 0.5)
-    finally:
-        if camera_direta is not None:
-            camera_direta.fechar()
-
-    if frame_principal is None:
-        raise HTTPException(503, "Câmera conectou mas não enviou frames — verifique a conexão")
-
-    # ── Salva preview (frame mais nítido) com bboxes ────────────────────────────
-    snap_dir = Path("static/snapshots")
-    snap_dir.mkdir(parents=True, exist_ok=True)
-    frame_preview = frame_principal.copy()
-    with detector_leitura_lock:
-        bboxes_preview = det_inst.detectar(frame_principal)
-    f_h, f_w = frame_principal.shape[:2]
-    for xb, yb, wb, hb, _ in bboxes_preview:
-        xb, yb, wb, hb = pipeline._expandir_bbox(xb, yb, wb, hb, f_w, f_h)
-        cv2.rectangle(frame_preview, (xb, yb), (xb + wb, yb + hb), (0, 200, 255), 2)
-    cv2.imwrite(str(snap_dir / f"preview_{id_}.jpg"), frame_preview, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-    frame_url = f"/static/snapshots/preview_{id_}.jpg"
-
-    if not candidatos:
-        return {"placa": None, "mensagem": "Nenhuma placa detectada nos frames", "frame_url": frame_url,
-                "snapshots_analisados": tentativas, "tentativas": tentativas, "parada_motivo": parada_motivo}
-
-    melhor = _eleger_placa(candidatos)
-    if not melhor:
-        return {"placa": None, "mensagem": "Placa detectada mas texto não reconhecido", "frame_url": frame_url,
-                "snapshots_analisados": tentativas, "tentativas": tentativas, "parada_motivo": parada_motivo}
-
-    n_votos_snap = melhor.pop("n_votos_snap")
-    acordo_final = melhor.pop("acordo")
-
-    # ── Snapshot do crop ──────────────────────────────────────────────────────
-    snapshot_rel = None
-    if cfg.get("salvar_snapshot", "").lower() in ("sim", "true", "1"):
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        nome = f"{ts}_{melhor['placa']}.jpg"
-        cv2.imwrite(str(snap_dir / nome), melhor["crop"],
-                    [int(cv2.IMWRITE_JPEG_QUALITY), int(cfg.get("snapshot_qualidade", "85"))])
-        snapshot_rel = f"/static/snapshots/{nome}"
-
-    # ── Persiste ──────────────────────────────────────────────────────────────
-    det_id = banco.registrar_deteccao(
-        placa=melhor["placa"], padrao=melhor["padrao"], confianca=melhor["confianca"],
-        snapshot=snapshot_rel, camera_id=cam["camera_tipo"], bbox=melhor["bbox"],
-    )
-    estado.adicionar_deteccao({
-        "id": det_id, "placa": melhor["placa"], "padrao": melhor["padrao"],
-        "confianca": melhor["confianca"], "snapshot": snapshot_rel,
-        "criado_em": datetime.now(timezone.utc).isoformat(),
-    })
-    log.info("Ler-placa: %s (%s, conf=%.2f, acordo=%.2f, tentativas=%d/%d, parada=%s, ocr=%d/%d)",
-             melhor["placa"], melhor["padrao"], melhor["confianca"], acordo_final,
-             tentativas, n_max, parada_motivo, melhor["votos_ocr"], melhor["total_engines"])
-
-    import json as _json
-    resposta = {
-        "bomba":               cam.get("bomba"),
-        "lado":                cam.get("lado"),
-        "placa":               melhor["placa"],
-        "padrao":              melhor["padrao"],
-        "confianca":           melhor["confianca"],
-        "votos_snapshot":      n_votos_snap,
-        "total_snapshots":     tentativas,
-        "votos_ocr":           melhor["votos_ocr"],
-        "total_engines":       melhor["total_engines"],
-        "detalhes_ocr":        melhor["detalhes_ocr"],
-        "snapshot":            snapshot_rel,
-        "frame_url":           frame_url,
-        "tentativas":          tentativas,
-        "acordo":              acordo_final,
-        "parada_motivo":       parada_motivo,
-    }
-    print(_json.dumps(resposta, ensure_ascii=False, indent=2))
-    return resposta
+        return leitura.ler_placa(
+            camera_id=id_, especificacao=especificacao, roi=None, cfg=cfg,
+            pipeline_frame_provider=provider, preview_nome=f"preview_{id_}", origem="teste",
+        )
+    except leitura.LeituraError as e:
+        raise HTTPException(e.status, e.mensagem)
 
 
 @router.get("/debug/ocr_crop")

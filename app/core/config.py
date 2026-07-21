@@ -107,6 +107,11 @@ PADROES: dict[str, str] = {
     # nao = stream ativo mas detecção só pelo botão "Ler Placa"
     "deteccao_automatica": "sim",
     "salvar_snapshot": "sim",
+    # Guarda também o QUADRO INTEIRO de cada detecção (com a marcação da placa), além do
+    # recorte. É o que permite conferir depois se pegou o veículo certo e se a área do
+    # bico está bem posicionada. Custa ~200x mais disco que o recorte (~150KB contra ~1KB),
+    # por isso tem interruptor próprio.
+    "salvar_frame_deteccao": "sim",
     "snapshot_qualidade": "85",
     "alerta_lista_negra": "sim",
     "webhook_todas": "nao",       # sim = dispara webhook para TODA placa detectada

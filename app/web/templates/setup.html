@@ -84,7 +84,7 @@
 
     <ul class="checklist">
       <li><span style="color:#4ade80;font-size:18px">✓</span> Configurações gerais (porta, engine OCR, detecção)</li>
-      <li><span style="color:#4ade80;font-size:18px">✓</span> Cadastro das câmeras por bomba e lado</li>
+      <li><span style="color:#4ade80;font-size:18px">✓</span> Cadastro das câmeras de conexão</li>
       <li><span style="color:#4ade80;font-size:18px">✓</span> Sistema marcado como implantado e pronto para uso</li>
     </ul>
 
@@ -167,7 +167,20 @@
 <div id="etapa-3" class="etapa">
   <div class="etapa-card" style="max-width:1040px">
     <h2 class="etapa-titulo">Cadastro de Câmeras</h2>
-    <p class="etapa-subtitulo">Adicione todas as câmeras do estabelecimento. Cada câmera é associada a uma bomba e um lado.</p>
+    <p class="etapa-subtitulo">Toda câmera pertence a um posto (empresa). Bomba/lado e área de captura
+      são configurados depois, por bico, em <a href="/bicos" style="color:#93c5fd">Bicos</a>.</p>
+
+    <div id="setup-sem-empresa" class="alerta alerta-info" style="display:none">
+      Nenhuma empresa cadastrada ainda. Como a câmera precisa pertencer a um posto, crie primeiro a
+      hierarquia em <a href="/entidades" style="color:#93c5fd">Entidades</a> →
+      <a href="/empresas" style="color:#93c5fd">Empresas</a>. Você pode
+      <strong>pular esta etapa</strong> e cadastrar as câmeras depois.
+    </div>
+
+    <label class="setup-label" id="setup-empresa-wrap" style="max-width:420px;margin-bottom:16px">
+      Empresa (posto) — aplica a todas as linhas
+      <select id="s-empresa"></select>
+    </label>
 
     <!-- Valores padrão -->
     <details open style="margin-bottom:16px">
@@ -211,45 +224,13 @@
       </div>
     </details>
 
-    <!-- Gerador de grade -->
-    <details style="margin-bottom:16px">
-      <summary style="cursor:pointer;font-size:13px;color:#94a3b8;padding:10px 14px;background:#111827;border-radius:8px;user-select:none">
-        &#9889; Gerar grade automaticamente
-      </summary>
-      <div style="background:#111827;border-radius:0 0 8px 8px;padding:14px;border-top:1px solid #1e293b">
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px;margin-bottom:12px">
-          <label class="setup-label">N° de Bombas
-            <input id="g-bombas" type="number" value="3" min="1" max="20">
-          </label>
-          <label class="setup-label">Lados / Bomba
-            <input id="g-lados" type="number" value="2" min="1" max="8">
-          </label>
-          <label class="setup-label">Modo
-            <select id="g-modo" onchange="atualizarModoGradeSetup()">
-              <option value="dvr">DVR (mesmo IP)</option>
-              <option value="individual">IPs individuais</option>
-            </select>
-          </label>
-          <label class="setup-label"><span id="g-host-label">IP do DVR</span>
-            <input id="g-host" type="text" placeholder="192.168.1.108">
-          </label>
-          <label class="setup-label">Canal inicial
-            <input id="g-canal" type="number" value="1" min="1" max="32">
-          </label>
-        </div>
-        <button onclick="gerarGradeSetup()" style="background:#7c3aed">Gerar linhas</button>
-        <small style="color:#64748b;margin-left:8px">Substitui linhas existentes</small>
-      </div>
-    </details>
-
     <!-- Tabela -->
     <div style="overflow-x:auto;margin-bottom:14px">
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead>
           <tr style="background:#111827">
-            <th style="padding:8px 6px;color:#94a3b8;text-align:left;white-space:nowrap">Bomba</th>
-            <th style="padding:8px 6px;color:#94a3b8;text-align:left;white-space:nowrap">Lado</th>
             <th style="padding:8px 6px;color:#94a3b8;text-align:left">Nome</th>
+            <th style="padding:8px 6px;color:#94a3b8;text-align:left">Local</th>
             <th style="padding:8px 6px;color:#94a3b8;text-align:left;white-space:nowrap">Host / IP</th>
             <th style="padding:8px 6px;color:#94a3b8;text-align:left">Usuário</th>
             <th style="padding:8px 6px;color:#94a3b8;text-align:left">Senha</th>
@@ -262,7 +243,7 @@
         <tbody id="setup-tbody"></tbody>
       </table>
       <p id="setup-sem-linhas" style="color:#64748b;font-size:13px;text-align:center;padding:16px 0;margin:0">
-        Nenhuma câmera adicionada. Use o gerador acima ou clique em "+ Adicionar Linha".
+        Nenhuma câmera adicionada. Clique em "+ Adicionar Linha".
       </p>
     </div>
 
@@ -366,18 +347,12 @@ function adicionarLinhaSetup(dados = {}) {
   const tbody = document.getElementById('setup-tbody');
   const pad = _padroesSetup();
 
-  const opsBomba = [1,2,3,4,5,6,7,8,9,10].map(n =>
-    `<option value="${n}" ${dados.bomba == n ? 'selected' : ''}>${n}</option>`).join('');
-  const opsLado = [1,2,3,4,5,6].map(n =>
-    `<option value="${n}" ${dados.lado == n ? 'selected' : ''}>${n}</option>`).join('');
-
   const tr = document.createElement('tr');
   tr.id = `setup-row-${id}`;
   tr.dataset.id = id;
   tr.innerHTML = `
-    <td><select class="sr-bomba lote-input" style="width:54px">${opsBomba}</select></td>
-    <td><select class="sr-lado  lote-input" style="width:54px">${opsLado}</select></td>
-    <td><input  class="sr-nome  lote-input" type="text"     value="${esc(dados.nome||'')}"            placeholder="auto"         style="width:130px"></td>
+    <td><input  class="sr-nome  lote-input" type="text"     value="${esc(dados.nome||'')}"            placeholder="Nome da câmera" style="width:140px"></td>
+    <td><input  class="sr-local lote-input" type="text"     value="${esc(dados.local||'')}"           placeholder="onde está"      style="width:130px"></td>
     <td><input  class="sr-host  lote-input" type="text"     value="${esc(dados.host||'')}"            placeholder="192.168.1.108" style="width:118px"></td>
     <td><input  class="sr-user  lote-input" type="text"     value="${esc(dados.usuario ?? pad.usuario)}"                          style="width:80px"></td>
     <td><input  class="sr-pass  lote-input" type="password" value="${esc(dados.senha   ?? pad.senha)}" placeholder="senha"        style="width:90px"></td>
@@ -402,37 +377,6 @@ function aplicarPadroes() {
   });
 }
 
-function atualizarModoGradeSetup() {
-  const dvr = document.getElementById('g-modo').value === 'dvr';
-  document.getElementById('g-host-label').textContent = dvr ? 'IP do DVR' : 'Base IP (ex: 192.168.1.)';
-  document.getElementById('g-host').placeholder = dvr ? '192.168.1.108' : '192.168.1.';
-}
-
-function gerarGradeSetup() {
-  const tbody = document.getElementById('setup-tbody');
-  if (tbody.querySelectorAll('tr').length > 0 && !confirm('Substituir linhas existentes?')) return;
-  tbody.innerHTML = '';
-  _setupId = 0;
-
-  const nbombas  = parseInt(document.getElementById('g-bombas').value) || 1;
-  const nlados   = parseInt(document.getElementById('g-lados').value)  || 1;
-  const hostBase = document.getElementById('g-host').value.trim();
-  const canalIni = parseInt(document.getElementById('g-canal').value)  || 1;
-  const dvr      = document.getElementById('g-modo').value === 'dvr';
-  const pad      = _padroesSetup();
-
-  let canal = canalIni, ipOff = 0;
-  for (let b = 1; b <= nbombas; b++) {
-    for (let lado = 1; lado <= nlados; lado++) {
-      const host = dvr ? hostBase : (hostBase ? hostBase + (ipOff + 1) : '');
-      adicionarLinhaSetup({ bomba: b, lado, nome: `Bomba ${b} - Lado ${lado}`,
-        host, canal: String(canal), usuario: pad.usuario, senha: pad.senha, ativo: true });
-      canal++;
-      ipOff++;
-    }
-  }
-}
-
 async function salvarCamerasSetup() {
   const tbody = document.getElementById('setup-tbody');
   const rows  = Array.from(tbody.querySelectorAll('tr'));
@@ -441,6 +385,12 @@ async function salvarCamerasSetup() {
   if (!rows.length) {
     mostrarAlertaCam('info', 'Nenhuma câmera adicionada. Você poderá cadastrá-las depois em <a href="/cameras" style="color:#93c5fd">Câmeras</a>.');
     setTimeout(() => irParaEtapa(4), 1200);
+    return;
+  }
+
+  const empresaId = parseInt(document.getElementById('s-empresa').value) || null;
+  if (!empresaId) {
+    mostrarAlertaCam('erro', 'Selecione a empresa (posto) das câmeras — ou remova as linhas e pule esta etapa.');
     return;
   }
 
@@ -465,10 +415,8 @@ async function salvarCamerasSetup() {
     const id  = row.dataset.id;
     const st  = document.getElementById(`setup-st-${id}`);
 
-    const bomba   = parseInt(row.querySelector('.sr-bomba').value);
-    const lado    = parseInt(row.querySelector('.sr-lado').value);
-    const nomeRaw = row.querySelector('.sr-nome').value.trim();
-    const nome    = nomeRaw || `Bomba ${bomba} - Lado ${lado}`;
+    const nome    = row.querySelector('.sr-nome').value.trim() || `Câmera ${i + 1}`;
+    const local   = row.querySelector('.sr-local').value.trim();
     const host    = row.querySelector('.sr-host').value.trim();
     const usuario = row.querySelector('.sr-user').value.trim() || 'admin';
     const senha   = row.querySelector('.sr-pass').value;
@@ -480,7 +428,7 @@ async function salvarCamerasSetup() {
     barra.style.width = `${((i + 1) / rows.length) * 100}%`;
 
     const payload = {
-      nome, bomba, lado, camera_tipo: tipo, camera_indice: '0',
+      nome, empresa_id: empresaId, local, camera_tipo: tipo, camera_indice: '0',
       intelbras_host: host, intelbras_porta: porta, intelbras_usuario: usuario,
       intelbras_canal: canal, intelbras_subtype: subtype,
       intelbras_formato: formato, rtsp_url_custom: '', ativo,
@@ -586,6 +534,21 @@ async function concluirSetup() {
     alert('Erro de rede: ' + ex.message);
   }
 }
+
+// Empresas para o passo 3 (câmera precisa pertencer a um posto)
+(async () => {
+  try {
+    const empresas = await fetch('/api/empresas').then(r => r.json());
+    const sel = document.getElementById('s-empresa');
+    if (empresas.length) {
+      sel.innerHTML = empresas.map(e =>
+        `<option value="${e.id}">${esc(e.nome)} (${esc(e.cnpj)})</option>`).join('');
+    } else {
+      document.getElementById('setup-sem-empresa').style.display = '';
+      document.getElementById('setup-empresa-wrap').style.display = 'none';
+    }
+  } catch (_) {}
+})();
 
 // Pré-carrega config atual no passo 2
 (async () => {

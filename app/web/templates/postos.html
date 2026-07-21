@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Postos — ALPR{% endblock %}
+{% block conteudo %}
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap">
+  <h1 style="margin:0">Postos</h1>
+  <span id="contador" style="color:#94a3b8;font-size:13px"></span>
+  <a href="/posto/novo" style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;
+     padding:8px 16px;border-radius:7px;background:#16a34a;color:#fff;font-size:14px;
+     font-weight:500;text-decoration:none">+ Novo posto</a>
+</div>
+<p style="color:#64748b;margin:0 0 20px;font-size:14px">
+  Cada posto é um CNPJ. "Pronto" significa que tem câmera, automação e bicos com área de
+  captura definida — ou seja, o roteador já pode chamar a leitura.
+</p>
+
+<div class="card" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+  <input id="busca" placeholder="Buscar por nome, CNPJ ou entidade…" style="flex:1;min-width:220px">
+  <label style="display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap">
+    <input type="checkbox" id="so-pendentes" style="width:auto;padding:0"> Só os pendentes
+  </label>
+</div>
+
+<div id="lista"></div>
+<p id="vazio" style="display:none;color:#94a3b8">
+  Nenhum posto cadastrado. <a href="/posto/novo" style="color:#16a34a">Cadastre o primeiro</a>.
+</p>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let _postos = [];
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function carregar() {
+  _postos = await fetch('/api/postos').then(r => r.json()).catch(() => []);
+  render();
+}
+
+function render() {
+  const termo = document.getElementById('busca').value.trim().toLowerCase();
+  const soPend = document.getElementById('so-pendentes').checked;
+  let lista = _postos;
+  if (termo) lista = lista.filter(p =>
+    `${p.nome} ${p.cnpj} ${p.entidade_nome}`.toLowerCase().includes(termo));
+  if (soPend) lista = lista.filter(p => !p.pronto);
+
+  document.getElementById('contador').textContent =
+    `${lista.length} de ${_postos.length} · ${_postos.filter(p => !p.pronto).length} pendente(s)`;
+  document.getElementById('vazio').style.display = _postos.length ? 'none' : '';
+
+  // Agrupa por entidade — é assim que a rede do cliente é organizada
+  const grupos = {};
+  lista.forEach(p => { (grupos[p.entidade_nome || '(sem entidade)'] ??= []).push(p); });
+
+  document.getElementById('lista').innerHTML = Object.entries(grupos).map(([ent, ps]) => `
+    <div class="card">
+      <h2 style="margin:0 0 12px;display:flex;align-items:center;gap:8px">
+        ${esc(ent)}
+        <span style="color:#94a3b8;font-size:12px;font-weight:400">${ps.length} posto(s)</span>
+      </h2>
+      <table>
+        <thead><tr><th>Posto</th><th>CNPJ</th><th>Câmeras</th><th>Automações</th><th>Bicos</th><th>Situação</th><th></th></tr></thead>
+        <tbody>${ps.map(linha).join('')}</tbody>
+      </table>
+    </div>`).join('');
+}
+
+function linha(p) {
+  // Diz o que FALTA, não só que está incompleto — evita o técnico ter que caçar.
+  let sit;
+  if (p.pronto) {
+    sit = '<span class="badge badge-ok">Pronto</span>';
+  } else {
+    const faltas = [];
+    if (!p.n_cameras)    faltas.push('sem câmera');
+    if (!p.n_automacoes) faltas.push('sem automação');
+    if (!p.n_bicos)      faltas.push('sem bico');
+    else if (p.n_bicos_sem_roi) faltas.push(`${p.n_bicos_sem_roi} bico(s) sem área`);
+    sit = `<span class="badge badge-warn">${esc(faltas.join(' · '))}</span>`;
+  }
+  return `<tr>
+    <td><a href="/posto/${p.id}" style="color:#0f172a;font-weight:600;text-decoration:none">${esc(p.nome)}</a></td>
+    <td style="font-family:monospace;font-size:13px">${esc(p.cnpj)}</td>
+    <td>${p.n_cameras}</td><td>${p.n_automacoes}</td><td>${p.n_bicos}</td>
+    <td>${sit}</td>
+    <td><a href="/posto/${p.id}" style="display:inline-flex;padding:8px 12px;border-radius:7px;
+        background:#0f172a;color:#fff;font-size:14px;text-decoration:none">Abrir</a></td>
+  </tr>`;
+}
+
+document.getElementById('busca').addEventListener('input', render);
+document.getElementById('so-pendentes').addEventListener('change', render);
+carregar();
+</script>
+{% endblock %}

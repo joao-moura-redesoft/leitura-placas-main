@@ -1,0 +1,401 @@
+{% extends "base.html" %}
+{% block title %}Câmera — ALPR{% endblock %}
+{% block conteudo %}
+<a id="voltar" href="/cameras" style="color:#64748b;font-size:13px;text-decoration:none">← Voltar</a>
+
+<div style="display:flex;align-items:baseline;gap:12px;margin:6px 0 4px;flex-wrap:wrap">
+  <h1 id="titulo" style="margin:0">…</h1>
+  <span id="selo-vivo"></span>
+</div>
+<p id="subtitulo" style="color:#64748b;margin:0 0 16px;font-size:14px"></p>
+
+<div id="msg" style="margin-bottom:12px"></div>
+
+<div id="layout" style="display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start">
+  <div class="card" style="margin:0">
+    <!-- Imagem: MJPEG quando em modo contínuo, senão captura sob demanda -->
+    <div id="wrap" style="position:relative;border:1px solid #e2e8f0;border-radius:8px;
+         overflow:hidden;background:#0f172a;user-select:none;touch-action:none;max-width:760px">
+      <img id="video" alt="" style="display:block;width:100%;height:auto;pointer-events:none" draggable="false">
+      <canvas id="canvas" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
+      <div id="vazio" style="display:none;width:100%;aspect-ratio:16/9;align-items:center;
+           justify-content:center;color:#94a3b8;font-size:14px;flex-direction:column;gap:8px">
+        <span style="font-size:32px">📷</span><span id="vazio-txt">carregando…</span>
+      </div>
+    </div>
+
+    <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button onclick="alternarEdicao()" id="btn-editar">✎ Editar áreas</button>
+      <button onclick="atualizarImagem(true)" id="btn-atualizar"
+              style="background:#f1f5f9;color:#374151;border:1px solid #e2e8f0">↻ Atualizar</button>
+      <span id="info" style="font-size:12px;color:#64748b;font-family:monospace"></span>
+    </div>
+
+    <!-- Controles que só aparecem no modo de edição -->
+    <div id="barra-edicao" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid #f1f5f9">
+      <div style="font-size:13px;color:#a16207;background:#fef9c3;border:1px solid #fde68a;
+           border-radius:6px;padding:8px 10px;margin-bottom:10px">
+        Modo de edição: escolha um bico ao lado e arraste sobre a imagem para marcar a área dele.
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button onclick="salvarTudo()" id="btn-salvar" disabled style="background:#16a34a">Salvar áreas</button>
+        <button onclick="limparAtual()" style="background:#f1f5f9;color:#374151;border:1px solid #e2e8f0">
+          Limpar área do bico
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <!-- Dados da câmera -->
+    <div class="card" style="margin:0 0 14px">
+      <h2 style="margin:0 0 10px;font-size:15px">Câmera</h2>
+      <table style="font-size:13px"><tbody id="dados-camera"></tbody></table>
+    </div>
+
+    <!-- Bicos -->
+    <div class="card" style="margin:0">
+      <h2 style="margin:0 0 4px;font-size:15px">Bicos nesta câmera</h2>
+      <p style="color:#94a3b8;font-size:12px;margin:0 0 12px">Clique para destacar a área</p>
+      <div id="lista-bicos"></div>
+      <p id="sem-bicos" style="display:none;color:#94a3b8;font-size:13px;margin:0">
+        Nenhum bico usa esta câmera.
+      </p>
+      <div id="painel-teste" style="display:none;border-top:1px solid #f1f5f9;margin-top:14px;padding-top:14px">
+        <button onclick="testarBico()" id="btn-testar" style="width:100%;background:#0f172a">
+          Ler placa deste bico
+        </button>
+        <div id="resultado" style="display:none;margin-top:10px;padding:12px;border-radius:8px;
+             background:#f8fafc;border:1px solid #e2e8f0;text-align:center;font-size:13px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  @media (max-width: 900px) { #layout { grid-template-columns: 1fr !important; } }
+  #wrap.editando { cursor: crosshair; }
+  .bico-item { display:flex; align-items:center; gap:9px; padding:9px 10px; border-radius:7px;
+    cursor:pointer; border:1px solid transparent; margin-bottom:5px; font-size:13px; }
+  .bico-item:hover { background:#f8fafc; }
+  .bico-item.ativo { background:#f0fdf4; border-color:#16a34a; }
+  .bico-cor { width:12px; height:12px; border-radius:3px; flex-shrink:0; }
+  .bico-nome { flex:1; font-weight:600; color:#0f172a; }
+  #dados-camera td { padding:4px 0; border:none; font-size:13px; }
+  #dados-camera td:first-child { color:#94a3b8; padding-right:12px; white-space:nowrap; }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CAM_ID = {{ camera_id }};
+const BICO_INICIAL = {{ bico_id or 'null' }};
+const CORES = ['#16a34a','#2563eb','#d97706','#7c3aed','#db2777','#0891b2','#65a30d','#dc2626'];
+
+let _d = null;            // detalhe vindo da API
+let _bicos = [];          // [{id, codigo, nome, roi, cor, sujo}]
+let _ativo = null;
+let _editando = false;    // observar é o padrão; editar é opt-in
+let _frameW = 0, _frameH = 0;
+let _drag = null, _rect = null;
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function msg(ok, txt) {
+  const el = document.getElementById('msg');
+  el.className = 'alert ' + (ok ? 'alert-ok' : 'alert-err');
+  el.innerHTML = txt;
+  setTimeout(() => { el.innerHTML = ''; el.className = ''; }, 6000);
+}
+
+// ── Coordenadas ──────────────────────────────────────────────────────────────
+function eventoParaCanvas(e) {
+  const r = canvas.getBoundingClientRect();
+  const src = e.touches ? e.touches[0] : e;
+  return [(src.clientX - r.left) * (canvas.width / r.width),
+          (src.clientY - r.top) * (canvas.height / r.height)];
+}
+function roiParaCanvas(roi) {
+  return { x: roi.x * canvas.width / _frameW, y: roi.y * canvas.height / _frameH,
+           w: roi.w * canvas.width / _frameW, h: roi.h * canvas.height / _frameH };
+}
+
+// ── Desenho ──────────────────────────────────────────────────────────────────
+function desenhar() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!_frameW) return;
+
+  // Observando: só contorno, imagem limpa. Editando: escurece o resto para destacar
+  // a área que está sendo marcada.
+  if (_editando) {
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    _bicos.forEach(b => {
+      const roi = (b.id === _ativo && _rect) ? null : b.roi;
+      if (roi) { const c = roiParaCanvas(roi); ctx.clearRect(c.x, c.y, c.w, c.h); }
+    });
+    if (_rect) ctx.clearRect(_rect.x, _rect.y, _rect.w, _rect.h);
+  }
+
+  _bicos.forEach(b => {
+    let c = null;
+    if (b.id === _ativo && _rect) c = _rect;
+    else if (b.roi) c = roiParaCanvas(b.roi);
+    if (!c || c.w < 2 || c.h < 2) return;
+    const destaque = b.id === _ativo;
+
+    ctx.save();
+    ctx.strokeStyle = b.cor;
+    ctx.lineWidth = destaque ? 3 : 2;
+    ctx.setLineDash(destaque ? [] : [7, 5]);
+    ctx.strokeRect(c.x, c.y, c.w, c.h);
+    ctx.restore();
+
+    const rotulo = b.codigo + (b.sujo ? ' *' : '');
+    ctx.font = 'bold 13px monospace';
+    const larg = ctx.measureText(rotulo).width + 10;
+    const ly = c.y > 22 ? c.y - 6 : c.y + c.h + 18;
+    ctx.fillStyle = b.cor;
+    ctx.fillRect(c.x, ly - 14, larg, 19);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(rotulo, c.x + 5, ly);
+
+    if (destaque && _editando) {
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = b.cor; ctx.lineWidth = 2;
+      for (const [hx, hy] of [[c.x,c.y],[c.x+c.w,c.y],[c.x,c.y+c.h],[c.x+c.w,c.y+c.h]]) {
+        ctx.beginPath(); ctx.rect(hx - 4, hy - 4, 8, 8); ctx.fill(); ctx.stroke();
+      }
+    }
+  });
+
+  const b = _bicos.find(x => x.id === _ativo);
+  document.getElementById('info').textContent = b && b.roi
+    ? `${b.codigo}: x=${b.roi.x} y=${b.roi.y} · ${b.roi.w}×${b.roi.h}px`
+    : (b && _editando ? `${b.codigo}: sem área — arraste na imagem` : '');
+  const bs = document.getElementById('btn-salvar');
+  if (bs) bs.disabled = !_bicos.some(x => x.sujo);
+}
+
+// ── Edição (opt-in) ──────────────────────────────────────────────────────────
+function alternarEdicao() {
+  if (_editando && _bicos.some(b => b.sujo)
+      && !confirm('Há áreas não salvas. Sair do modo de edição e descartar?')) return;
+  _editando = !_editando;
+  if (!_editando) _bicos.forEach(b => { b.sujo = false; });
+  document.getElementById('barra-edicao').style.display = _editando ? '' : 'none';
+  document.getElementById('wrap').classList.toggle('editando', _editando);
+  document.getElementById('btn-editar').textContent = _editando ? '✓ Concluir edição' : '✎ Editar áreas';
+  document.getElementById('btn-editar').style.background = _editando ? '#a16207' : '';
+  if (!_editando) carregar();      // recarrega para descartar alterações locais
+  else desenhar();
+}
+
+canvas.addEventListener('mousedown', iniciar);
+canvas.addEventListener('touchstart', iniciar, { passive: false });
+window.addEventListener('mousemove', mover);
+window.addEventListener('touchmove', mover, { passive: false });
+window.addEventListener('mouseup', terminar);
+window.addEventListener('touchend', terminar);
+
+function iniciar(e) {
+  if (!_editando || !_frameW) return;      // observando: clique não altera nada
+  if (_ativo === null) { msg(false, 'Escolha um bico na lista ao lado.'); return; }
+  e.preventDefault();
+  const [x, y] = eventoParaCanvas(e);
+  _drag = { x, y }; _rect = { x, y, w: 0, h: 0 };
+}
+function mover(e) {
+  if (!_drag) return;
+  e.preventDefault();
+  const [x, y] = eventoParaCanvas(e);
+  _rect = { x: Math.min(_drag.x, x), y: Math.min(_drag.y, y),
+            w: Math.abs(x - _drag.x), h: Math.abs(y - _drag.y) };
+  desenhar();
+}
+function terminar() {
+  if (!_drag) return;
+  _drag = null;
+  if (_rect && _rect.w > 5 && _rect.h > 5) {
+    const b = _bicos.find(x => x.id === _ativo);
+    b.roi = {
+      x: Math.max(0, Math.round(_rect.x * _frameW / canvas.width)),
+      y: Math.max(0, Math.round(_rect.y * _frameH / canvas.height)),
+      w: Math.round(_rect.w * _frameW / canvas.width),
+      h: Math.round(_rect.h * _frameH / canvas.height),
+    };
+    b.sujo = true;
+    renderLista();
+  }
+  _rect = null;
+  desenhar();
+}
+
+function limparAtual() {
+  const b = _bicos.find(x => x.id === _ativo);
+  if (!b || !b.roi) return;
+  b.roi = null; b.sujo = true;
+  renderLista(); desenhar();
+}
+
+async function salvarTudo() {
+  const btn = document.getElementById('btn-salvar');
+  btn.disabled = true; btn.textContent = 'Salvando…';
+  let n = 0, erro = null;
+  for (const b of _bicos.filter(x => x.sujo)) {
+    try {
+      const r = b.roi
+        ? await fetch(`/api/bicos/${b.id}/roi`, { method: 'PUT',
+            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b.roi) })
+        : await fetch(`/api/bicos/${b.id}/roi`, { method: 'DELETE' });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
+      b.sujo = false; n++;
+    } catch (ex) { erro = `Bico ${b.codigo}: ${ex.message}`; break; }
+  }
+  btn.textContent = 'Salvar áreas';
+  renderLista(); desenhar();
+  if (erro) msg(false, erro);
+  else msg(true, `${n} área(s) salva(s). A próxima leitura já usa a nova configuração.`);
+}
+
+// ── Lista de bicos ───────────────────────────────────────────────────────────
+function renderLista() {
+  document.getElementById('sem-bicos').style.display = _bicos.length ? 'none' : '';
+  document.getElementById('painel-teste').style.display = _ativo !== null ? '' : 'none';
+  document.getElementById('lista-bicos').innerHTML = _bicos.map(b => `
+    <div class="bico-item ${b.id === _ativo ? 'ativo' : ''}" onclick="selecionar(${b.id})">
+      <span class="bico-cor" style="background:${b.cor}"></span>
+      <span class="bico-nome">${esc(b.codigo)}${b.nome ? ` <span style="font-weight:400;color:#94a3b8">${esc(b.nome)}</span>` : ''}</span>
+      ${b.sujo ? '<span class="badge badge-warn">não salvo</span>'
+               : b.roi ? '<span class="badge badge-ok">ok</span>'
+                       : '<span class="badge badge-err">sem área</span>'}
+    </div>`).join('');
+}
+function selecionar(id) { _ativo = id; _rect = null; renderLista(); desenhar(); }
+
+// ── Imagem ───────────────────────────────────────────────────────────────────
+function ajustarCanvas() {
+  if (!_frameW) return;
+  canvas.width = _frameW; canvas.height = _frameH;
+  desenhar();
+}
+
+async function atualizarImagem(forcar) {
+  if (_d && _d.ao_vivo) {
+    // MJPEG: fluxo contínuo, basta apontar o src uma vez
+    if (!video.src || forcar) video.src = `/stream/${CAM_ID}.mjpg?t=${Date.now()}`;
+    video.style.display = 'block';
+    document.getElementById('vazio').style.display = 'none';
+    return;
+  }
+  const vz = document.getElementById('vazio');
+  document.getElementById('vazio-txt').textContent = 'capturando imagem…';
+  if (forcar) { video.style.display = 'none'; vz.style.display = 'flex'; }
+  try {
+    const r = await fetch(`/api/cameras/${CAM_ID}/snapshot?t=${Date.now()}`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'sem imagem');
+    video.src = URL.createObjectURL(await r.blob());
+    video.style.display = 'block'; vz.style.display = 'none';
+  } catch (ex) {
+    document.getElementById('vazio-txt').textContent = ex.message;
+    video.style.display = 'none'; vz.style.display = 'flex';
+  }
+}
+
+video.addEventListener('load', () => {
+  // O MJPEG nem sempre expõe naturalWidth a tempo; o servidor manda as dimensões reais.
+  if (video.naturalWidth) { _frameW = video.naturalWidth; _frameH = video.naturalHeight; }
+  ajustarCanvas();
+});
+window.addEventListener('resize', desenhar);
+
+async function testarBico() {
+  const b = _bicos.find(x => x.id === _ativo);
+  if (!b) return;
+  if (b.sujo) { msg(false, 'Salve a área antes de testar — o teste usa o que está gravado.'); return; }
+  const btn = document.getElementById('btn-testar');
+  const res = document.getElementById('resultado');
+  const t0 = Date.now();
+  btn.disabled = true;
+  res.style.display = 'block';
+  const tick = setInterval(() => {
+    btn.textContent = `Lendo… ${Math.round((Date.now() - t0) / 1000)}s`;
+  }, 250);
+  res.innerHTML = '<span style="color:#94a3b8">Analisando a área deste bico…</span>';
+  try {
+    const r = await fetch(`/api/bicos/${b.id}/ler-placa-teste`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) res.innerHTML = `<span style="color:#b91c1c">${esc(d.detail || 'falha')}</span>`;
+    else if (!d.placa) res.innerHTML = `<span style="color:#a16207">${esc(d.mensagem || 'Nenhuma placa')}</span>`;
+    else res.innerHTML = `
+      <div style="font-size:22px;font-weight:700;letter-spacing:3px;font-family:'Consolas',monospace">${esc(d.placa)}</div>
+      <div style="margin-top:4px;color:#94a3b8;font-size:12px">
+        ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%</div>`;
+  } catch (ex) {
+    res.innerHTML = `<span style="color:#b91c1c">Erro: ${esc(ex.message)}</span>`;
+  } finally {
+    clearInterval(tick);
+    btn.disabled = false; btn.textContent = 'Ler placa deste bico';
+  }
+}
+
+window.addEventListener('beforeunload', e => {
+  if (_bicos.some(b => b.sujo)) { e.preventDefault(); e.returnValue = ''; }
+});
+
+// ── Carga ────────────────────────────────────────────────────────────────────
+function renderCabecalho() {
+  const c = _d.camera;
+  document.getElementById('titulo').textContent = c.local || c.nome;
+  document.getElementById('selo-vivo').innerHTML = _d.ao_vivo
+    ? '<span class="badge" style="background:#fee2e2;color:#b91c1c">● AO VIVO</span>'
+    : '<span class="badge badge-warn">imagem sob demanda</span>';
+  document.getElementById('subtitulo').innerHTML = _d.posto
+    ? `${esc(c.local ? c.nome : '')} ${c.local ? '·' : ''} Posto
+       <a href="/posto/${_d.posto.id}" style="color:#16a34a">${esc(_d.posto.nome)}</a>`
+    : esc(c.nome);
+  if (_d.posto) document.getElementById('voltar').href = `/posto/${_d.posto.id}`;
+
+  const linhas = [
+    ["Nome", esc(c.nome)],
+    ["Local", esc(c.local || '—')],
+    ["Endereço", esc(c.intelbras_host || c.rtsp_url_custom || '—')],
+    ["Canal", esc(c.intelbras_canal || '—')],
+    ["Situação", c.ativo ? '<span class="badge badge-ok">ativa</span>'
+                         : '<span class="badge badge-err">inativa</span>'],
+    ["Último frame", _d.ultimo_frame_seg != null ? `há ${_d.ultimo_frame_seg}s` : '—'],
+    ["Resolução", _d.frame_largura ? `${_d.frame_largura}×${_d.frame_altura}` : '—'],
+    ["Bicos", String(_d.bicos.length)],
+  ];
+  document.getElementById('dados-camera').innerHTML =
+    linhas.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+}
+
+async function carregar() {
+  const r = await fetch(`/api/cameras/${CAM_ID}/detalhe`);
+  if (!r.ok) { document.getElementById('titulo').textContent = 'Câmera não encontrada'; return; }
+  _d = await r.json();
+
+  if (_d.frame_largura) { _frameW = _d.frame_largura; _frameH = _d.frame_altura; }
+  _bicos = _d.bicos.map((b, i) => ({
+    id: b.id, codigo: b.codigo, nome: b.nome, cor: CORES[i % CORES.length], sujo: false,
+    roi: b.roi ? (typeof b.roi === 'string' ? JSON.parse(b.roi) : b.roi) : null,
+  }));
+  if (_ativo === null || !_bicos.some(b => b.id === _ativo)) {
+    _ativo = (BICO_INICIAL && _bicos.some(b => b.id === BICO_INICIAL))
+      ? BICO_INICIAL : (_bicos[0]?.id ?? null);
+  }
+
+  renderCabecalho();
+  renderLista();
+  ajustarCanvas();
+  await atualizarImagem(!video.src);
+}
+
+carregar();
+// Se o bico veio na URL (link "área" de outra tela), já entra editando.
+if (BICO_INICIAL) setTimeout(alternarEdicao, 400);
+</script>
+{% endblock %}

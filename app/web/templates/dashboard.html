@@ -1,62 +1,83 @@
 {% extends "base.html" %}
 {% block title %}Dashboard — ALPR{% endblock %}
 {% block conteudo %}
-<h1>Dashboard</h1>
-
-<div class="card">
-  <h2 style="margin-top:0;">Status do Pipeline</h2>
-  <div class="grid-status" id="status-grid">
-    <div class="status-cell"><div class="label">Pipeline</div><div class="value" id="st-pipeline">—</div></div>
-    <div class="status-cell"><div class="label">FPS</div><div class="value" id="st-fps">—</div></div>
-    <div class="status-cell"><div class="label">Câmera</div><div class="value" id="st-camera">—</div></div>
-    <div class="status-cell"><div class="label">Modelo YOLO</div><div class="value" id="st-modelo">—</div></div>
-    <div class="status-cell"><div class="label">OCR Engine</div><div class="value" id="st-ocr">—</div></div>
-    <div class="status-cell"><div class="label">Ambiente</div><div class="value" id="st-ambiente">—</div></div>
-    <div class="status-cell"><div class="label">Frames processados</div><div class="value" id="st-frames">—</div></div>
-    <div class="status-cell"><div class="label">Detecções (hoje)</div><div class="value" id="st-hoje">—</div></div>
-    <div class="status-cell"><div class="label">Total</div><div class="value" id="st-total">—</div></div>
-    <div class="status-cell"><div class="label">Uptime</div><div class="value" id="st-uptime">—</div></div>
-  </div>
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+  <h1 style="margin:0">Integração</h1>
+  <select id="janela" onchange="carregarResumo()" style="margin-left:auto">
+    <option value="24">Últimas 24h</option>
+    <option value="1">Última hora</option>
+    <option value="168">Últimos 7 dias</option>
+    <option value="720">Últimos 30 dias</option>
+  </select>
 </div>
 
-<div class="card" id="health-card">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
-    <h2 style="margin:0;">Saúde das Câmeras</h2>
-    <span id="health-status-geral">—</span>
-  </div>
-  <div id="health-corpo"><p style="color:#94a3b8;">Carregando…</p></div>
+<!-- Indicadores da leitura reativa -->
+<div class="grid-status" style="margin-bottom:16px">
+  <div class="status-cell"><div class="label">Chamadas do roteador</div><div class="value" id="kp-total">—</div></div>
+  <div class="status-cell"><div class="label">Placas lidas</div><div class="value" id="kp-ok" style="color:#15803d">—</div></div>
+  <div class="status-cell"><div class="label">Taxa de sucesso</div><div class="value" id="kp-taxa">—</div></div>
+  <div class="status-cell"><div class="label">Acordo médio</div><div class="value" id="kp-acordo">—</div></div>
+  <div class="status-cell"><div class="label">Tempo médio</div><div class="value" id="kp-tempo">—</div></div>
+  <div class="status-cell"><div class="label">Falhas</div><div class="value" id="kp-falhas" style="color:#b91c1c">—</div></div>
 </div>
 
-<div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px;">
-  <div class="card stream-wrapper">
-    <h2 style="margin-top:0;">Stream ao Vivo</h2>
-    <img   id="dashboard-stream-mjpeg" src="" alt="Stream ao vivo" style="width:100%;border-radius:6px">
-    <video id="dashboard-stream-hls" autoplay muted playsinline
-           style="width:100%;border-radius:6px;display:none;background:#000"></video>
-  </div>
+<div id="alerta-cadastro" style="display:none" class="alert alert-err"></div>
+
+<!-- Primeira execução: em vez de seis "—" sem explicação, diz o que falta acontecer. -->
+<div id="sem-dados" style="display:none" class="card" style="text-align:center">
+  <h2 style="margin:0 0 8px">Nenhuma chamada recebida ainda</h2>
+  <p style="color:#64748b;font-size:14px;margin:0 0 14px">
+    Esta tela se preenche quando o roteador do posto chamar o endpoint de leitura.
+    Configure-o para fazer um GET nesta URL ao terminar o abastecimento:
+  </p>
+  <code id="url-exemplo" style="display:inline-block;background:#f1f5f9;padding:10px 14px;
+        border-radius:7px;font-size:13px;word-break:break-all"></code>
+  <p style="color:#94a3b8;font-size:13px;margin:14px 0 0">
+    Para testar sem o roteador, abra um posto e use <strong>"Testar como o roteador"</strong>.
+  </p>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="grid-principal">
   <div class="card">
-    <h2 style="margin-top:0;">Feed de Detecções</h2>
-    <div id="feed" style="max-height: 480px; overflow-y: auto;">
-      <p style="color: #94a3b8;">Aguardando primeira detecção…</p>
-    </div>
+    <h2 style="margin-top:0;margin-bottom:14px">Por posto</h2>
+    <table>
+      <thead><tr><th>Posto</th><th>Lidas</th><th>Chamadas</th><th>Sucesso</th></tr></thead>
+      <tbody id="tb-postos"></tbody>
+    </table>
+    <p id="sem-postos" style="display:none;color:#94a3b8;margin:12px 0 0">
+      Nenhuma chamada ainda. O roteador do posto precisa chamar
+      <code style="background:#f1f5f9;padding:2px 5px;border-radius:4px">GET /api/leitura</code>.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;margin-bottom:14px">Por que está falhando</h2>
+    <div id="motivos"></div>
+    <p id="sem-motivos" style="display:none;color:#15803d;margin:12px 0 0">Nenhuma falha na janela. ✓</p>
   </div>
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0;">Debug OCR — Último Crop</h2>
-  <p style="color:#94a3b8; margin:0 0 10px;">Último crop enviado ao OCR (<span id="debug-engine">…</span>). Atualiza a cada 2s.</p>
-  <div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap;">
-    <img id="debug-crop" src="/api/debug/ocr_crop" alt="Crop OCR"
-         style="max-height:160px; border:1px solid #e2e8f0; border-radius:6px; image-rendering:pixelated;"
-         onerror="this.style.display='none'; document.getElementById('debug-crop-msg').style.display='block'">
-    <span id="debug-crop-msg" style="display:none; color:#94a3b8;">Aguardando primeira detecção…</span>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+    <h2 style="margin:0">Chamadas recentes</h2>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+      <input type="checkbox" id="so-erros" onchange="carregarChamadas()" style="width:auto;padding:0">
+      Só as recusadas
+    </label>
   </div>
+  <table>
+    <thead>
+      <tr><th>Quando</th><th>Posto</th><th>Automação / Bico</th><th>Resultado</th><th>Detalhe</th><th>Tempo</th></tr>
+    </thead>
+    <tbody id="tb-chamadas"></tbody>
+  </table>
+  <p id="sem-chamadas" style="display:none;color:#94a3b8;margin:12px 0 0">Nenhuma chamada registrada.</p>
 </div>
 
 <div class="card">
-  <div style="display: flex; justify-content: space-between; align-items: center;">
-    <h2 style="margin-top:0; margin-bottom: 0;">Logs do Servidor</h2>
-    <div>
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h2 style="margin:0">Logs do Servidor</h2>
+    <div style="display:flex;gap:8px">
       <select id="filtro-nivel" onchange="carregarLogs()">
         <option value="">Todos</option>
         <option value="INFO">INFO</option>
@@ -65,275 +86,125 @@
         <option value="DEBUG">DEBUG</option>
       </select>
       <button onclick="carregarLogs()">Atualizar</button>
-      <button onclick="limparLogs()" style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;">Limpar</button>
+      <button onclick="limparLogs()" style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca">Limpar</button>
     </div>
   </div>
   <div class="log-pane" id="logs">carregando…</div>
 </div>
+
+<style>
+  /* Mantenha o espaço depois da chave: chave seguida de cerquilha inicia um
+     comentário no Jinja e quebra o template inteiro. */
+  @media (max-width: 900px) { #grid-principal { grid-template-columns: 1fr !important; } }
+</style>
 {% endblock %}
 
 {% block scripts %}
 <script>
-function fmtUptime(s) {
-  s = Math.floor(s);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  return `${h}h ${m}m ${sec}s`;
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+const ROTULO = {
+  ok:            ['Placa lida',      '#dcfce7', '#15803d'],
+  sem_placa:     ['Sem placa',       '#fef9c3', '#a16207'],
+  erro_cadastro: ['Cadastro',        '#fee2e2', '#b91c1c'],
+  erro_camera:   ['Câmera',          '#fee2e2', '#b91c1c'],
+};
+
+function selo(status) {
+  const [txt, bg, cor] = ROTULO[status] || [status, '#f1f5f9', '#475569'];
+  return `<span class="badge" style="background:${bg};color:${cor}">${esc(txt)}</span>`;
 }
 
-function setBadge(el, ok, textOk, textNo) {
-  if (ok) {
-    el.innerHTML = `<span class="badge badge-ok">${textOk}</span>`;
-  } else {
-    el.innerHTML = `<span class="badge badge-err">${textNo}</span>`;
+async function carregarResumo() {
+  const horas = document.getElementById('janela').value;
+  const r = await fetch(`/api/chamadas/resumo?horas=${horas}`).then(r => r.json()).catch(() => null);
+  if (!r) return;
+
+  document.getElementById('kp-total').textContent  = r.total;
+  document.getElementById('kp-ok').textContent     = r.ok;
+  document.getElementById('kp-taxa').textContent   = r.taxa_sucesso === null ? '—' : Math.round(r.taxa_sucesso * 100) + '%';
+  document.getElementById('kp-acordo').textContent = r.acordo_medio === null ? '—' : Math.round(r.acordo_medio * 100) + '%';
+  document.getElementById('kp-tempo').textContent  = r.duracao_media_ms === null ? '—' : (r.duracao_media_ms / 1000).toFixed(1) + 's';
+  document.getElementById('kp-falhas').textContent = r.erro_cadastro + r.erro_camera;
+
+  // Estado vazio só na primeira execução (nada registrado em nenhuma janela)
+  const vazio = r.total === 0;
+  document.getElementById('sem-dados').style.display = vazio ? '' : 'none';
+  document.getElementById('grid-principal').style.display = vazio ? 'none' : '';
+  if (vazio) {
+    document.getElementById('url-exemplo').textContent =
+      `${location.origin}/api/leitura?entidade=NOME&cnpj=00000000000000&automacao=1&bico=1`;
   }
+
+  // Erro de cadastro é acionável e específico: o roteador está mandando algo que não existe.
+  const al = document.getElementById('alerta-cadastro');
+  if (r.erro_cadastro > 0) {
+    al.style.display = '';
+    al.innerHTML = `<strong>${r.erro_cadastro} chamada(s) recusada(s) por cadastro divergente.</strong>
+      O roteador está enviando entidade/CNPJ/automação/bico que não existem aqui.
+      Veja o detalhe em "Por que está falhando" e confira o cadastro em
+      <a href="/postos" style="color:#b91c1c;font-weight:600">Postos</a>.`;
+  } else { al.style.display = 'none'; }
+
+  const tb = document.getElementById('tb-postos');
+  document.getElementById('sem-postos').style.display = r.por_posto.length ? 'none' : '';
+  tb.innerHTML = r.por_posto.map(p => {
+    const taxa = p.total ? Math.round(p.ok / p.total * 100) : 0;
+    const cor = taxa >= 80 ? '#15803d' : taxa >= 50 ? '#a16207' : '#b91c1c';
+    return `<tr>
+      <td>${esc(p.posto)}</td><td>${p.ok}</td><td>${p.total}</td>
+      <td><strong style="color:${cor}">${taxa}%</strong></td>
+    </tr>`;
+  }).join('');
+
+  const mot = document.getElementById('motivos');
+  document.getElementById('sem-motivos').style.display = r.motivos.length ? 'none' : '';
+  const maxN = Math.max(1, ...r.motivos.map(m => m.n));
+  mot.innerHTML = r.motivos.map(m => `
+    <div style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">
+        <span>${esc(m.motivo)}</span><strong>${m.n}</strong>
+      </div>
+      <div style="background:#f1f5f9;border-radius:3px;height:6px;overflow:hidden">
+        <div style="height:100%;width:${(m.n / maxN) * 100}%;background:#dc2626"></div>
+      </div>
+    </div>`).join('');
 }
 
-let _modoStream = 'mjpeg';
-let _hlsDashboard = null;
-
-async function carregarStatus() {
-  try {
-    const [st, stats] = await Promise.all([
-      fetch('/api/status').then(r => r.json()),
-      fetch('/api/stats').then(r => r.json()),
-    ]);
-    _modoStream = stats.streaming_modo || 'mjpeg';
-    setBadge(document.getElementById('st-pipeline'), st.pipeline, 'rodando', 'parado');
-    document.getElementById('st-fps').textContent = (st.fps || 0).toFixed(1);
-    setBadge(document.getElementById('st-camera'), st.camera_conectada, st.camera_tipo || 'ok', 'desconectada');
-    if (st.modelo_carregado) {
-      document.getElementById('st-modelo').innerHTML = '<span class="badge badge-ok">ONNX</span>';
-    } else {
-      document.getElementById('st-modelo').innerHTML = '<span class="badge badge-warn">fallback contornos</span>';
-    }
-    document.getElementById('st-ocr').textContent = st.ocr_engine || '—';
-    const amb = st.ambiente;
-    const rotuloAmb = {noite:'🌙 Noite', baixa_luz:'🌆 Baixa luz', nublado:'☁ Nublado/chuva',
-                       sol_forte:'☀ Sol forte', normal:'✔ Normal'};
-    document.getElementById('st-ambiente').textContent =
-      amb ? (rotuloAmb[amb.perfil] || amb.perfil) : 'desativado';
-    document.getElementById('debug-engine').textContent = st.ocr_engine || '?';
-    document.getElementById('st-frames').textContent = (st.frames_processados || 0).toLocaleString('pt-BR');
-    document.getElementById('st-hoje').textContent = stats.hoje;
-    document.getElementById('st-total').textContent = stats.total;
-    document.getElementById('st-uptime').textContent = fmtUptime(st.uptime_seg);
-  } catch (e) { console.error(e); }
+async function carregarChamadas() {
+  const soErros = document.getElementById('so-erros').checked;
+  const r = await fetch('/api/chamadas?limit=50' + (soErros ? '&apenas_erros=true' : ''))
+    .then(r => r.json()).catch(() => []);
+  document.getElementById('sem-chamadas').style.display = r.length ? 'none' : '';
+  document.getElementById('tb-chamadas').innerHTML = r.map(ch => `
+    <tr>
+      <td style="white-space:nowrap">${new Date(ch.criado_em).toLocaleString('pt-BR')}</td>
+      <td>${ch.empresa_nome
+            ? `<a href="/posto/${ch.empresa_id}" style="color:#16a34a;text-decoration:none">${esc(ch.empresa_nome)}</a>`
+            : `<span style="color:#b91c1c" title="CNPJ não cadastrado">${esc(ch.cnpj)}</span>`}</td>
+      <td style="font-family:monospace;font-size:13px">${esc(ch.automacao)} / ${esc(ch.bico)}</td>
+      <td>${selo(ch.status)}${ch.placa ? ` <strong style="font-family:monospace">${esc(ch.placa)}</strong>` : ''}</td>
+      <td style="color:#64748b;font-size:13px">${esc(ch.motivo || '')}</td>
+      <td style="white-space:nowrap;color:#64748b">${ch.duracao_ms != null ? (ch.duracao_ms / 1000).toFixed(1) + 's' : '—'}</td>
+    </tr>`).join('');
 }
 
-async function carregarFeed() {
-  try {
-    const r = await fetch('/api/recentes').then(r => r.json());
-    const feed = document.getElementById('feed');
-    if (!r.length) {
-      feed.innerHTML = '<p style="color:#94a3b8;">Aguardando primeira detecção…</p>';
-      return;
-    }
-    feed.innerHTML = r.map(d => _itemFeed(d)).join('');
-  } catch (e) { console.error(e); }
-}
-
-function _itemFeed(d) {
-  const alertaNegra = d.lista === 'negra'
-    ? '<span class="badge badge-err" style="margin-left:4px">ALERTA</span>' : '';
-  return `<div class="feed-item">
-    <div>
-      <div class="feed-placa">${d.placa}</div>
-      <small style="color:#94a3b8;">${new Date(d.criado_em).toLocaleTimeString('pt-BR')} · ${(d.confianca*100).toFixed(0)}%</small>
-    </div>
-    <span><span class="badge badge-${d.padrao}">${d.padrao}</span>${alertaNegra}</span>
-  </div>`;
-}
-
-// ── WebSocket: feed em tempo real ──────────────────────────────────────────
-let _ws = null, _wsDelay = 1000;
-
-function _conectarWS() {
-  if (_ws && _ws.readyState < 2) return;
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  _ws = new WebSocket(`${proto}//${location.host}/ws`);
-
-  _ws.onopen  = () => { _wsDelay = 1000; };
-  _ws.onerror = () => _ws.close();
-  _ws.onclose = () => {
-    _ws = null;
-    setTimeout(_conectarWS, _wsDelay);
-    _wsDelay = Math.min(_wsDelay * 2, 30000);
-  };
-  _ws.onmessage = (e) => {
-    try {
-      const d = JSON.parse(e.data);
-      if (d.tipo !== 'deteccao') return;
-      const feed = document.getElementById('feed');
-      // Remove placeholder "Aguardando..."
-      const placeholder = feed.querySelector('p');
-      if (placeholder) placeholder.remove();
-      feed.insertAdjacentHTML('afterbegin', _itemFeed(d));
-      // Limita a 30 itens no feed
-      const items = feed.querySelectorAll('.feed-item');
-      items.forEach((el, i) => { if (i >= 30) el.remove(); });
-      if (d.lista === 'negra') _flashAlertaNegra(d.placa);
-    } catch (_) {}
-  };
-}
-
-function _flashAlertaNegra(placa) {
-  const banner = document.createElement('div');
-  banner.style.cssText = `position:fixed;top:70px;right:20px;z-index:999;
-    background:#fee2e2;border:1px solid #fecaca;color:#b91c1c;
-    padding:12px 18px;border-radius:8px;font-weight:600;font-size:14px;
-    box-shadow:0 4px 16px rgba(0,0,0,.12)`;
-  banner.textContent = `⚠ Lista negra: ${placa}`;
-  document.body.appendChild(banner);
-  setTimeout(() => banner.remove(), 6000);
+async function carregarLogs() {
+  const nivel = document.getElementById('filtro-nivel').value;
+  const logs = await fetch('/api/logs?limit=100' + (nivel ? '&nivel=' + nivel : ''))
+    .then(r => r.json()).catch(() => []);
+  document.getElementById('logs').innerHTML = logs.map(l =>
+    `<div class="log-line log-${esc(l.level)}">[${new Date(l.ts * 1000).toLocaleTimeString('pt-BR')}] ${esc(l.msg)}</div>`
+  ).join('') || '<span style="color:#94a3b8">sem logs</span>';
 }
 
 async function limparLogs() {
   await fetch('/api/logs', { method: 'DELETE' });
-  document.getElementById('logs').innerHTML = '<div style="color:#94a3b8;">Logs limpos.</div>';
+  carregarLogs();
 }
 
-async function carregarLogs() {
-  try {
-    const nivel = document.getElementById('filtro-nivel').value;
-    const url = '/api/logs?limit=100' + (nivel ? '&nivel=' + nivel : '');
-    const r = await fetch(url).then(r => r.json());
-    const pane = document.getElementById('logs');
-    if (!r.length) {
-      pane.innerHTML = '<div style="color:#94a3b8;">Sem logs.</div>';
-      return;
-    }
-    pane.innerHTML = r.map(l => {
-      const ts = new Date(l.ts * 1000).toLocaleTimeString('pt-BR');
-      return `<div class="log-line log-${l.level}">[${ts}] ${l.level.padEnd(7)} ${l.name}: ${l.msg}</div>`;
-    }).join('');
-  } catch (e) { console.error(e); }
-}
-
-function atualizarCropDebug() {
-  const img = document.getElementById('debug-crop');
-  if (!img) return;
-  const novo = '/api/debug/ocr_crop?t=' + Date.now();
-  const tmp = new Image();
-  tmp.onload = () => {
-    img.src = novo;
-    img.style.display = '';
-    document.getElementById('debug-crop-msg').style.display = 'none';
-  };
-  tmp.onerror = () => {};
-  tmp.src = novo;
-}
-
-async function carregarStreamDashboard() {
-  try {
-    const cameras = await fetch('/api/cameras').then(r => r.json());
-    const ativa = cameras.find(c => c.ativo);
-    const imgEl = document.getElementById('dashboard-stream-mjpeg');
-    const vidEl = document.getElementById('dashboard-stream-hls');
-
-    if (!ativa) {
-      imgEl.src = ''; imgEl.alt = 'Nenhuma câmera ativa';
-      return;
-    }
-
-    if (_modoStream === 'hls') {
-      imgEl.style.display = 'none';
-      vidEl.style.display = 'block';
-      // Configura HLS.js apenas uma vez por câmera
-      if (!vidEl.dataset.camId || vidEl.dataset.camId !== String(ativa.id)) {
-        vidEl.dataset.camId = ativa.id;
-        if (_hlsDashboard) { _hlsDashboard.destroy(); _hlsDashboard = null; }
-        const url = `/hls/${ativa.id}/index.m3u8`;
-        if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-          _hlsDashboard = new Hls({ lowLatencyMode: true, maxBufferLength: 4 });
-          _hlsDashboard.loadSource(url);
-          _hlsDashboard.attachMedia(vidEl);
-        } else if (vidEl.canPlayType('application/vnd.apple.mpegurl')) {
-          vidEl.src = url;
-        }
-      }
-    } else {
-      vidEl.style.display = 'none';
-      imgEl.style.display = 'block';
-      const src = `/stream/${ativa.id}.mjpg`;
-      if (imgEl.src !== location.origin + src) imgEl.src = src;
-    }
-  } catch (e) { console.error(e); }
-}
-
-const _HEALTH_STATUS_BADGE = {
-  ok:       '<span class="badge badge-ok">Tudo OK</span>',
-  warning:  '<span class="badge badge-warn">Atenção</span>',
-  degraded: '<span class="badge badge-err">Degradado</span>',
-};
-const _HEALTH_CAM_BADGE = {
-  ok:        ['badge-ok',   'OK'],
-  sem_frame: ['badge-warn', 'Sem frame'],
-  parado:    ['badge-err',  'Parado'],
-};
-
-async function carregarHealth() {
-  try {
-    const h = await fetch('/api/health').then(r => r.json());
-
-    document.getElementById('health-status-geral').innerHTML =
-      _HEALTH_STATUS_BADGE[h.status] || `<span class="badge badge-warn">${h.status}</span>`;
-
-    const card = document.getElementById('health-card');
-    card.style.borderColor =
-      h.status === 'degraded' ? '#fecaca' :
-      h.status === 'warning'  ? '#fef08a' : '#e2e8f0';
-
-    const corpo = document.getElementById('health-corpo');
-    if (!h.cameras || !h.cameras.length) {
-      corpo.innerHTML = '<p style="color:#94a3b8;">Nenhuma câmera configurada.</p>';
-      return;
-    }
-
-    const linhas = h.cameras.map(c => {
-      const [cls, lbl] = _HEALTH_CAM_BADGE[c.status] || ['badge-warn', c.status];
-      const ultimoFrame = c.ultimo_frame_seg !== null && c.ultimo_frame_seg !== undefined
-        ? `${c.ultimo_frame_seg}s`  : '—';
-      const backoff = c.backoff_restante_seg > 0 ? `${c.backoff_restante_seg}s` : '—';
-      const threadBadge = c.thread_viva
-        ? '<span class="badge badge-ok">viva</span>'
-        : '<span class="badge badge-err">morta</span>';
-      const autoBadge = c.deteccao_automatica === null ? '—'
-        : c.deteccao_automatica
-          ? '<span class="badge badge-ok">sim</span>'
-          : '<span style="color:#94a3b8;font-size:12px;">manual</span>';
-      const restartsBadge = c.restarts > 0
-        ? `<span class="badge badge-warn">${c.restarts}</span>`
-        : '0';
-      return `<tr>
-        <td style="font-weight:600;">${c.nome}</td>
-        <td><span class="badge ${cls}">${lbl}</span></td>
-        <td>${threadBadge}</td>
-        <td style="font-variant-numeric:tabular-nums;">${ultimoFrame}</td>
-        <td>${restartsBadge}</td>
-        <td style="font-variant-numeric:tabular-nums;color:#64748b;">${backoff}</td>
-        <td>${autoBadge}</td>
-      </tr>`;
-    }).join('');
-
-    corpo.innerHTML = `
-      <table>
-        <thead><tr>
-          <th>Câmera</th><th>Status</th><th>Thread</th>
-          <th>Último frame</th><th>Restarts</th><th>Backoff</th><th>Auto</th>
-        </tr></thead>
-        <tbody>${linhas}</tbody>
-      </table>`;
-  } catch (e) { console.error('health:', e); }
-}
-
-setInterval(carregarStatus, 1000);
-setInterval(carregarHealth, 5000);
-setInterval(carregarLogs, 3000);
-setInterval(atualizarCropDebug, 2000);
-setInterval(carregarStreamDashboard, 10000);
-carregarStatus(); carregarHealth(); carregarFeed(); carregarLogs(); atualizarCropDebug(); carregarStreamDashboard();
-_conectarWS();  // substitui setInterval(carregarFeed, 2000)
+function atualizarTudo() { carregarResumo(); carregarChamadas(); carregarLogs(); }
+atualizarTudo();
+setInterval(atualizarTudo, 15000);
 </script>
 {% endblock %}

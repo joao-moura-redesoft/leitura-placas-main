@@ -64,6 +64,35 @@
   .nav-logout { margin-left: auto !important; font-size: 13px !important; color: #94a3b8 !important; }
   .nav-logout:hover { color: #64748b !important; background: #f8fafc !important; }
 
+  /* Menu suspenso por CLIQUE — hover não existe em tablet, e o técnico usa tablet em campo */
+  .nav-menu { position: relative; }
+  .nav-menu-trigger {
+    color: #64748b; font-size: 14px; font-weight: 500; background: none; border: none;
+    padding: 6px 10px; border-radius: 6px; white-space: nowrap; cursor: pointer;
+    font-family: inherit; transition: color .15s, background .15s;
+  }
+  .nav-menu-trigger:hover { color: #16a34a; background: #f0fdf4; }
+  .nav-menu-trigger[aria-expanded="true"] { color: #16a34a; background: #f0fdf4; }
+  .nav-menu-itens {
+    display: none; position: absolute; top: 100%; left: 0; min-width: 216px;
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.10); z-index: 200;
+  }
+  .nav-menu.aberto .nav-menu-itens { display: block; }
+  .nav-menu-itens a { display: block; padding: 8px 12px !important; border-radius: 6px; }
+  .nav-menu-itens a small { color: #94a3b8; font-weight: 400; }
+  .nav-sep { height: 1px; background: #f1f5f9; margin: 5px 8px; }
+
+  /* Tabelas largas: rolam dentro do próprio card em vez de estourar a página.
+     São de 5 a 10 colunas e a tela de campo costuma ser um tablet. */
+  .tabela-rolavel { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tabela-rolavel table { min-width: 620px; }
+  @media (max-width: 820px) {
+    .card table { display: block; overflow-x: auto; white-space: nowrap; }
+    .grid-status { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+    h1 { font-size: 19px; }
+  }
+
   /* ── Layout ── */
   main { padding: 28px 24px; max-width: 1400px; margin: 0 auto; }
   h1 { font-size: 22px; font-weight: 700; color: #0f172a; margin-bottom: 20px; }
@@ -277,6 +306,66 @@
 </script>
 </head>
 <body>
+<div id="aviso-global" style="display:none;position:fixed;top:68px;left:50%;transform:translateX(-50%);
+     z-index:300;max-width:min(680px,94vw);box-shadow:0 8px 28px rgba(0,0,0,.14);border-radius:8px"></div>
+<script>
+// Mensagens de erro/sucesso no lugar de alert() — não bloqueia, cabe texto longo
+// (as mensagens de validação do servidor são explicativas) e permite links.
+function avisar(texto, tipo) {
+  const el = document.getElementById('aviso-global');
+  el.className = 'alert alert-' + (tipo === 'ok' ? 'ok' : 'err');
+  el.style.display = 'block';
+  el.style.marginBottom = '0';
+  el.innerHTML = `<div style="display:flex;gap:10px;align-items:flex-start">
+      <span style="flex:1">${texto}</span>
+      <span onclick="this.closest('#aviso-global').style.display='none'"
+            style="cursor:pointer;opacity:.6;font-weight:700">✕</span>
+    </div>`;
+  clearTimeout(window.__avisoT);
+  window.__avisoT = setTimeout(() => { el.style.display = 'none'; }, tipo === 'ok' ? 4000 : 9000);
+}
+// Extrai a mensagem do FastAPI e avisa. Uso: if (!res.ok) return avisarResposta(res);
+async function avisarResposta(res, prefixo) {
+  const d = await res.json().catch(() => ({}));
+  avisar((prefixo ? prefixo + ': ' : '') + (d.detail || `erro ${res.status}`), 'err');
+}
+
+// Exclusão em cascata (entidade/posto apaga o cadastro inteiro de um cliente) exige
+// digitar o nome. confirm() é um clique de distância de destruir dados de produção.
+function confirmarExclusao(nome, oQueApaga) {
+  const dig = prompt(
+    `Isto apaga ${oQueApaga}.\n\nEsta ação não pode ser desfeita.\n` +
+    `Para confirmar, digite o nome exatamente:\n\n${nome}`);
+  if (dig === null) return false;
+  if (dig.trim() !== String(nome).trim()) {
+    avisar('Nome não confere — nada foi apagado.', 'err');
+    return false;
+  }
+  return true;
+}
+
+// Menus da barra: clique abre/fecha, clique fora ou Esc fecha.
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.nav-menu-trigger').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const menu = btn.closest('.nav-menu');
+      const abrindo = !menu.classList.contains('aberto');
+      document.querySelectorAll('.nav-menu').forEach(m => {
+        m.classList.remove('aberto');
+        m.querySelector('.nav-menu-trigger').setAttribute('aria-expanded', 'false');
+      });
+      if (abrindo) { menu.classList.add('aberto'); btn.setAttribute('aria-expanded', 'true'); }
+    });
+  });
+  const fechar = () => document.querySelectorAll('.nav-menu').forEach(m => {
+    m.classList.remove('aberto');
+    m.querySelector('.nav-menu-trigger')?.setAttribute('aria-expanded', 'false');
+  });
+  document.addEventListener('click', fechar);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') fechar(); });
+});
+</script>
 <nav>
   <a href="/" class="nav-brand">
     <div class="nav-brand-icon">
@@ -289,14 +378,29 @@
     </div>
     <span class="nav-brand-text">ALPR</span>
   </a>
-  <a href="/">Ao Vivo</a>
-  <a href="/dashboard">Dashboard</a>
+  <a href="/dashboard">Integração</a>
+  <a href="/postos">Postos</a>
   <a href="/historico">Histórico</a>
   <a href="/listas">Listas</a>
-  <a href="/cameras">Câmeras</a>
-  <a href="/configuracao">Configuração</a>
-  <a href="/testes">Testes</a>
-  <a href="/documentacao">Documentação</a>
+
+  <div class="nav-menu">
+    <button type="button" class="nav-menu-trigger" aria-haspopup="true" aria-expanded="false">Sistema ▾</button>
+    <div class="nav-menu-itens" role="menu">
+      <a href="/cameras">Todas as câmeras</a>
+      <a href="/configuracao">Configuração</a>
+      <a href="/testes">Testes</a>
+      <a href="/documentacao">Documentação</a>
+      <div class="nav-sep"></div>
+      <div style="padding:4px 12px;font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em">
+        Cadastro avulso
+      </div>
+      <a href="/entidades">Entidades</a>
+      <a href="/empresas">Postos (lista simples)</a>
+      <a href="/automacoes">Automações</a>
+      <a href="/bicos">Bicos</a>
+    </div>
+  </div>
+
   <a href="/logout" class="nav-logout">Sair</a>
 </nav>
 <main>
