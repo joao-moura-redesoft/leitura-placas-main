@@ -4,7 +4,7 @@ import time
 
 import cv2
 
-import estado
+from app.core import estado
 
 
 def gerar_mjpeg(qualidade: int = 75, fps_max: int = 15):

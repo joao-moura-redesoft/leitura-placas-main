@@ -6,7 +6,7 @@ services:
       - "14000:14000"
     volumes:
       - ./placas.db:/app/placas.db
-      - ./static/snapshots:/app/static/snapshots
+      - ./app/web/static/snapshots:/app/app/web/static/snapshots
       - ./models:/app/models
       - ./config.txt:/app/config.txt
     environment:

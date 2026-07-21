@@ -1,6 +1,6 @@
 # Arquitetura do Sistema ALPR
 
-> Estado atual · maio/2026 · commit `c58e85d` · sincronizado com o código.
+> Estado atual · julho/2026 · reorganizado em pacote `app/` (core/visao/streaming/operacao/seguranca/web) · sincronizado com o código.
 
 ---
 
@@ -10,21 +10,22 @@ Sistema de reconhecimento automático de placas (ALPR) rodando em Python com Fas
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                          servidor.py                              │
+│                       app/servidor.py                              │
 │                FastAPI + Uvicorn (porta 14000)                    │
 │  ┌──────────┐  ┌────────────┐  ┌────────────┐  ┌─────────────┐  │
 │  │  paginas │  │   auth     │  │   stream   │  │  api (REST) │  │
+│  │          app/web/*                                          │
 │  └──────────┘  └────────────┘  └────────────┘  └─────────────┘  │
 └─────────────────────────┬────────────────────────────────────────┘
                            │ lê / escreve
                     ┌──────▼──────┐
-                    │  estado.py  │  ← fps, logs, detecções recentes,
-                    │  (memória   │     frames por câmera, crop OCR
-                    │ compartilhada)
+                    │ app/core/   │  ← fps, logs, detecções recentes,
+                    │ estado.py   │     frames por câmera, crop OCR
+                    │ (memória compartilhada)
                     └──────┬──────┘
                            │
       ┌────────────────────▼──────────────────────────────────────┐
-      │                   pipeline.py                              │
+      │              app/visao/pipeline.py                         │
       │  _instancias: dict[int, Pipeline]  (1 por câmera)         │
       │                                                            │
       │  Pipeline A  Pipeline B  Pipeline C  ...                   │
@@ -34,21 +35,23 @@ Sistema de reconhecimento automático de placas (ALPR) rodando em Python com Fas
       │  ROI crop     ROI crop    ROI crop   ← área configurável   │
       │  Detector     Detector    Detector                         │
       │  Tracker      Tracker     Tracker    ← IoU / ByteTrack     │
-      │  OCR          OCR         OCR                              │
+      │  OCR          OCR         OCR         (app/visao/ocr/)      │
       │  Validador    Validador   Validador                        │
-      │  Banco        Banco       Banco                            │
+      │  Banco        Banco       Banco       (app/core/banco.py)   │
       └────────────────────────────────────────────────────────────┘
                            │ supervisiona
                     ┌──────▼──────────┐
-                    │  supervisor.py  │  ← liveness + frame freshness
-                    │  (WorkerSupervisor) backoff exponencial      │
+                    │ app/operacao/   │  ← liveness + frame freshness
+                    │ supervisor.py   │     (WorkerSupervisor) backoff exponencial
                     └─────────────────┘
 
-         hls_encoder.py (opcional)
+         app/streaming/hls_encoder.py (opcional)
          FFmpeg por câmera → hls/{id}/*.ts + index.m3u8
 ```
 
-Cada câmera cadastrada no banco recebe sua própria instância de `Pipeline` rodando em thread dedicada. O `WorkerSupervisor` monitora liveness e frescor de frame, reiniciando pipelines mortos com backoff exponencial (5 s → 300 s). As instâncias são gerenciadas pelo dicionário `_instancias: dict[int, Pipeline]` em `pipeline.py`.
+Cada câmera cadastrada no banco recebe sua própria instância de `Pipeline` rodando em thread dedicada. O `WorkerSupervisor` monitora liveness e frescor de frame, reiniciando pipelines mortos com backoff exponencial (5 s → 300 s). As instâncias são gerenciadas pelo dicionário `_instancias: dict[int, Pipeline]` em `app/visao/pipeline.py`.
+
+O código de produção mora em `app/` (execução: `python -m app.main`, a partir da raiz do repo). Assets (`templates/`, `static/`) vivem em `app/web/`; dados de runtime (`config.txt`, `placas.db`, `models/`, `hls/`) permanecem na raiz do repositório.
 
 ---
 
@@ -56,24 +59,34 @@ Cada câmera cadastrada no banco recebe sua própria instância de `Pipeline` ro
 
 | Arquivo | Responsabilidade |
 |---------|-----------------|
-| `main.py` | Ponto de entrada — argparse (`--reload`), suprime warnings PyTorch, delega para `servidor.iniciar()` |
-| `servidor.py` | Cria app FastAPI, lifespan, monta rotas, monta `/hls` como static, registra MIME types, verifica porta antes de subir, exibe banner |
-| `config.py` | Lê/grava `config.txt` (chave=valor) + override via env vars; padrão `intelbras` |
-| `estado.py` | Estado global compartilhado entre threads (lock único); ring buffer de logs; `frames_cameras: dict[int, frame]` |
-| `banco.py` | Camada SQLite — detecções, listas, câmeras, usuários, sessões; WAL mode; migração incremental |
-| `camera.py` | OpenCV VideoCapture: USB (CAP_DSHOW/CAP_V4L2), CSI, RTSP, Intelbras; auto-detecção backend no Windows |
-| `detector.py` | YOLO26n ONNX Runtime (CPUExecutionProvider); auto-detecta formato de saída; fallback por contornos Canny |
-| `ocr.py` | Tesseract, EasyOCR, PaddleOCR, docTR, fast-plate-ocr; pré-processamento multicamada |
-| `validador.py` | Regex + correções posicionais (O↔0, I↔1, T↔7, B↔8…); janela deslizante; `formato_hint` |
-| `pipeline.py` | Loop principal por câmera; ROI crop; rate-limit; detecção; tracker; consenso; cooldown |
-| `tracker.py` | IoU Tracker interno + wrapper ByteTrack (boxmot); voto por track; reduz OCR em ~80–99% |
-| `supervisor.py` | WorkerSupervisor — monitora liveness de threads e frescor de frame; reinicia com backoff exponencial |
-| `hls_encoder.py` | HLSManager — subprocess FFmpeg por câmera; codifica uma vez para N viewers; segmentos `.ts` + `.m3u8` |
-| `stream.py` | Gerador MJPEG global e por câmera; snapshot JPEG |
-| `rotas/api.py` | API REST completa: detecções, stats, health, listas, config, câmeras, ROI, debug crop |
-| `rotas/auth.py` | Autenticação: login, logout, criar-admin; sessão via cookie HttpOnly 7 dias |
-| `rotas/paginas.py` | Páginas HTML via Jinja2 (inclui `/roi/{camera_id}`) |
-| `rotas/stream.py` | Endpoints `/stream.mjpg`, `/stream/{id}.mjpg`, `/snapshot.jpg` |
+| `app/main.py` | Ponto de entrada — argparse (`--reload`), suprime warnings PyTorch, delega para `app.servidor.iniciar()` |
+| `app/servidor.py` | Cria app FastAPI, lifespan, monta rotas, monta `/hls` como static, registra MIME types, verifica porta antes de subir, exibe banner |
+| `app/core/config.py` | Lê/grava `config.txt` (chave=valor) + override via env vars; padrão `intelbras` |
+| `app/core/estado.py` | Estado global compartilhado entre threads (lock único); ring buffer de logs; `frames_cameras: dict[int, frame]` |
+| `app/core/banco.py` | Camada SQLite — detecções, listas, câmeras, usuários, sessões; WAL mode; migração incremental |
+| `app/core/broadcaster.py` | Hub WebSocket — eventos do pipeline (thread síncrona) → clientes conectados (loop asyncio) |
+| `app/seguranca/sessao.py` | Hash de senhas (bcrypt) e sessões em memória com TTL |
+| `app/visao/camera.py` | OpenCV VideoCapture: USB (CAP_DSHOW/CAP_V4L2), CSI, RTSP, Intelbras; auto-detecção backend no Windows |
+| `app/visao/detector.py` | YOLO/open-image-models ONNX Runtime; auto-detecta formato de saída; fallback por contornos Canny |
+| `app/visao/hardware.py` | Detecção de GPU/CUDA — providers ONNX Runtime e `torch_cuda_disponivel()` |
+| `app/visao/ambiente.py` | Ajuste adaptativo de imagem por condição de ambiente (no-op se desativado) |
+| `app/visao/ocr/engines.py` | Classe `OCR` — Tesseract, EasyOCR, PaddleOCR, docTR, fast-plate-ocr; pré-processamento multicamada |
+| `app/visao/ocr/auto.py` | `AutoOCR`, `AutoOCRPaddle` (seleção automática) e `MultiOCR` (votação); `obter_ocr_leitura()` |
+| `app/visao/ocr/__init__.py` | Fachada do pacote — reexporta `OCR`, `AutoOCR`, `AutoOCRPaddle`, `MultiOCR`, `obter_ocr_leitura` |
+| `app/visao/validador.py` | Regex + correções posicionais (O↔0, I↔1, T↔7, B↔8…); janela deslizante; `formato_hint` |
+| `app/visao/pipeline.py` | Loop principal por câmera; ROI crop; rate-limit; detecção; tracker; consenso; cooldown |
+| `app/visao/tracker.py` | IoU Tracker interno + wrapper ByteTrack (boxmot); voto por track; reduz OCR em ~80–99% |
+| `app/operacao/supervisor.py` | WorkerSupervisor — monitora liveness de threads e frescor de frame; reinicia com backoff exponencial |
+| `app/operacao/dns_server.py` | Servidor DNS local embutido (stdlib) — resolve hostname configurado para o IP da LAN |
+| `app/streaming/hls_encoder.py` | HLSManager — subprocess FFmpeg por câmera; codifica uma vez para N viewers; segmentos `.ts` + `.m3u8` |
+| `app/streaming/stream.py` | Gerador MJPEG global e por câmera; snapshot JPEG |
+| `app/web/api.py` | API REST completa: detecções, stats, health, listas, config, câmeras, ROI, debug crop |
+| `app/web/auth.py` | Rotas de autenticação: login, logout, criar-admin; sessão via cookie HttpOnly 7 dias |
+| `app/web/paginas.py` | Páginas HTML via Jinja2 (inclui `/roi/{camera_id}`) |
+| `app/web/stream.py` | Endpoints `/stream.mjpg`, `/stream/{id}.mjpg`, `/snapshot.jpg` |
+| `app/web/testes.py` | Avaliação de acurácia OCR e capturador de fotos de teste via UI |
+| `app/web/templates/` | Templates Jinja2 (movido de `templates/` na raiz) |
+| `app/web/static/` | Estáticos servidos em `/static` — inclui `snapshots/` (movido de `static/` na raiz) |
 
 ---
 
@@ -517,24 +530,34 @@ Zero testes unitários ou de integração.
 ## 17. Diagrama de Dependências
 
 ```
-main
- └─ servidor
-     ├─ config ◄────────────────── (sem deps internas)
-     ├─ banco
-     ├─ estado ◄─────────────────── (sem deps internas)
-     ├─ pipeline
-     │   ├─ camera
-     │   ├─ detector
-     │   ├─ tracker ──► (boxmot opcional)
-     │   ├─ ocr ──► estado (registrar_crop_ocr, registrar_frame_camera)
-     │   ├─ validador ◄──────────── (sem deps internas)
-     │   └─ banco
-     ├─ supervisor ──► pipeline, estado
-     ├─ hls_encoder ──► estado (frames_cameras)
-     ├─ rotas/api ──► banco, camera, config, estado, pipeline, supervisor
-     ├─ rotas/auth ──► banco
-     ├─ rotas/paginas
-     └─ rotas/stream ──► stream ──► estado
+app.main
+ └─ app.servidor
+     ├─ app.core.config ◄────────────────── (sem deps internas)
+     ├─ app.core.banco
+     ├─ app.core.estado ◄─────────────────── (sem deps internas)
+     ├─ app.core.broadcaster
+     ├─ app.seguranca.sessao ──► (sem deps internas)
+     ├─ app.visao.pipeline
+     │   ├─ app.visao.camera
+     │   ├─ app.visao.detector ──► app.visao.hardware
+     │   ├─ app.visao.tracker ──► (boxmot opcional)
+     │   ├─ app.visao.ambiente ──► app.core.estado
+     │   ├─ app.visao.ocr (pacote)
+     │   │   ├─ engines.py ──► app.core.estado, app.visao.hardware
+     │   │   └─ auto.py ──► engines.py, app.visao.validador
+     │   ├─ app.visao.validador ◄──────────── (sem deps internas)
+     │   └─ app.core.banco
+     ├─ app.operacao.supervisor ──► app.visao.pipeline, app.core.estado
+     ├─ app.operacao.dns_server ◄──────────── (sem deps internas)
+     ├─ app.streaming.hls_encoder ──► app.core.estado (frames_cameras)
+     ├─ app.web.api ──► app.core.banco, app.visao.camera, app.core.config,
+     │                  app.core.estado, app.visao.pipeline, app.operacao.supervisor,
+     │                  app.visao.detector, app.visao.ocr, app.visao.validador
+     ├─ app.web.auth ──► app.core.banco, app.seguranca.sessao (templates: app/web/templates)
+     ├─ app.web.paginas (templates: app/web/templates)
+     ├─ app.web.stream ──► app.streaming.stream ──► app.core.estado
+     └─ app.web.testes ──► app.core.banco, app.core.estado, app.core.config,
+                           app.visao.camera, app.visao.pipeline
 ```
 
 ---
@@ -572,7 +595,7 @@ rtsp://HOST:554/user=USUARIO&password=SENHA&channel=N&stream=S.sdp?
 
 | Métrica | Valor |
 |---------|-------|
-| Arquivos Python principais | 16 |
+| Arquivos Python principais | 21 (organizados em `app/core`, `app/visao`, `app/streaming`, `app/operacao`, `app/seguranca`, `app/web`) |
 | Linhas de código (aprox.) | ~2 400 |
 | Testes automatizados | dataset 42 placas + script de avaliação |
 | Endpoints REST | 26 |

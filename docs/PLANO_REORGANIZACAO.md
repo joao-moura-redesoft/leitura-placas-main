@@ -1,7 +1,13 @@
 # Plano de Reorganização de Arquivos — ALPR
 
-> Documento de planejamento. Nenhuma alteração de código foi feita ainda.
-> Objetivo: sair de 19 módulos soltos na raiz para um pacote `app/` em camadas,
+> **Status: executado (Fases 0–3 concluídas e validadas ao vivo).** Mantido como registro
+> da migração. Duas correções em relação ao plano original: `ambiente.py` e `hardware.py`
+> (não listados na varredura inicial) também foram movidos para `app/visao/`; e o split do
+> `ocr.py` (Fase 2) preservou os métodos da classe `OCR` intactos — a divisão foi por
+> classe/função de nível de módulo (`engines.py`/`auto.py`), não por método interno, para
+> não alterar lógica numa pipeline em produção sem suíte de testes.
+>
+> Objetivo original: sair de 19 módulos soltos na raiz para um pacote `app/` em camadas,
 > sem quebrar o comportamento em runtime.
 
 ---

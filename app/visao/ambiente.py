@@ -33,7 +33,7 @@ import logging
 import cv2
 import numpy as np
 
-import estado
+from app.core import estado
 
 log = logging.getLogger(__name__)
 

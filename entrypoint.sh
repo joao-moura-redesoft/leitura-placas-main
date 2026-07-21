@@ -35,6 +35,6 @@ EOF
   echo "[entrypoint] config.txt criado — edite intelbras_host/senha antes do primeiro uso"
 fi
 
-mkdir -p /app/models /app/static/snapshots
+mkdir -p /app/models /app/app/web/static/snapshots
 
 exec "$@"

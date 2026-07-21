@@ -22,16 +22,16 @@ sys.path.insert(0, str(_ROOT))
 os.chdir(_ROOT)
 
 import cv2
-import estado
+from app.core import estado
 
 
 def _criar_detector(cfg: dict):
-    from detector import Detector, MultiDetector
+    from app.visao.detector import Detector, MultiDetector
     conf = float(cfg["conf_threshold"])
     nms  = float(cfg["nms_threshold"])
     extras = [e.strip() for e in cfg.get("detector_modelos_extra", "").split(",") if e.strip()]
     if extras:
-        from detector import MultiDetector
+        from app.visao.detector import MultiDetector
         dets = [Detector(cfg["modelo_path"], conf, nms)]
         for m in extras:
             dets.append(Detector(m, conf, nms))
@@ -43,7 +43,7 @@ def _criar_detector(cfg: dict):
 
 
 def _criar_ocr(cfg: dict):
-    from ocr import OCR, AutoOCR, MultiOCR
+    from app.visao.ocr import OCR, AutoOCR, MultiOCR
     engine = cfg.get("ocr_engine", "tesseract")
     psm = int(cfg.get("tesseract_psm", "7"))
     extras = [e.strip() for e in cfg.get("ocr_engines_extra", "").split(",") if e.strip()]
@@ -58,8 +58,8 @@ def _criar_ocr(cfg: dict):
 
 
 def _testar_foto(foto: dict, det, ocr, cfg: dict, crops_dir: Path | None = None) -> dict:
-    from validador import validar
-    from pipeline import _expandir_bbox
+    from app.visao.validador import validar
+    from app.visao.pipeline import _expandir_bbox
 
     arquivo = str(_ROOT / foto["arquivo"])
     img = cv2.imread(arquivo)
@@ -165,7 +165,7 @@ def rodar(engines: list[str], salvar: bool = False) -> dict:
         print(f"  ENGINE: {engine_name.upper()}")
         print(f"{'='*62}")
 
-        import config as cfg_mod
+        from app.core import config as cfg_mod
         cfg = cfg_mod.carregar()
         cfg["ocr_engine"] = engine_name
 
@@ -261,7 +261,7 @@ if __name__ == "__main__":
     elif args.engines:
         engines_run = args.engines
     else:
-        import config as cfg_mod
+        from app.core import config as cfg_mod
         cfg = cfg_mod.carregar()
         engines_run = [cfg.get("ocr_engine", "auto")]
 

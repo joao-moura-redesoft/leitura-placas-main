@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
-import stream as stream_mod
+from app.streaming import stream as stream_mod
 
 router = APIRouter()
 

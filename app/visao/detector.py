@@ -34,7 +34,7 @@ class Detector:
             return
         try:
             import onnxruntime as ort
-            from hardware import onnx_providers
+            from app.visao.hardware import onnx_providers
             self.sess = ort.InferenceSession(str(self.modelo_path), providers=onnx_providers())
             self.input_name = self.sess.get_inputs()[0].name
             out_shape = self.sess.get_outputs()[0].shape
@@ -230,7 +230,7 @@ class OpenImageDetector:
             self.sess = None
             return
         try:
-            from hardware import onnx_providers
+            from app.visao.hardware import onnx_providers
             self._det = LicensePlateDetector(detection_model=self.modelo, conf_thresh=self.conf,
                                               providers=onnx_providers())
             self.sess = getattr(self._det, "model", None)
@@ -303,7 +303,7 @@ class VehicleDetector:
             return
         try:
             import onnxruntime as ort
-            from hardware import onnx_providers
+            from app.visao.hardware import onnx_providers
             self.sess = ort.InferenceSession(str(self.modelo_path), providers=onnx_providers())
             self.input_name = self.sess.get_inputs()[0].name
             log.info("VehicleDetector carregado [YOLOX-s, Apache-2.0]: %s", self.modelo_path)

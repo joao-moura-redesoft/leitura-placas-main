@@ -35,7 +35,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) para postos de
 
 ```bash
 pip install -r requirements.txt
-python main.py
+python -m app.main
 ```
 
 Acesse `http://localhost:14000`. Na primeira execução, o setup wizard guia a criação do admin e a configuração inicial.
@@ -43,7 +43,7 @@ Acesse `http://localhost:14000`. Na primeira execução, o setup wizard guia a c
 ### Modo desenvolvimento (hot-reload)
 
 ```bash
-python main.py --reload
+python -m app.main --reload
 ```
 
 Requer `watchfiles` (já incluso em `requirements.txt`).
@@ -146,41 +146,63 @@ rtsp://192.168.1.100:554/user=admin&password=SENHA&channel=1&stream=1.sdp?
 
 ```
 leitura-placas/
-├── main.py                 # Ponto de entrada (argparse --reload)
-├── servidor.py             # FastAPI app + lifespan + HLS mount
-├── pipeline.py             # Loop de detecção por câmera (thread)
-├── camera.py               # Captura OpenCV (USB/CSI/RTSP/Intelbras)
-├── detector.py             # YOLO26 ONNX + fallback contornos
-├── ocr.py                  # AutoOCR + 5 engines + pré-processamento
-├── validador.py            # Regex + correções posicionais
-├── banco.py                # SQLite (detecções, listas, câmeras, auth)
-├── estado.py               # Estado global compartilhado entre threads
-├── config.py               # Lê/grava config.txt
-├── stream.py               # Gerador MJPEG
-├── tracker.py              # IoU Tracker + wrapper ByteTrack
-├── supervisor.py           # WorkerSupervisor (liveness + backoff)
-├── hls_encoder.py          # HLS via FFmpeg (opcional)
-├── rotas/
-│   ├── api.py              # Endpoints REST
-│   ├── auth.py             # Login, logout, criar-admin
-│   ├── paginas.py          # Páginas HTML (Jinja2)
-│   └── stream.py           # Endpoints MJPEG/snapshot
+├── app/                     # Código de produção (execução: python -m app.main)
+│   ├── main.py              # Ponto de entrada (argparse --reload)
+│   ├── servidor.py          # FastAPI app + lifespan + HLS mount
+│   ├── core/                # Infra compartilhada
+│   │   ├── config.py        # Lê/grava config.txt
+│   │   ├── estado.py        # Estado global compartilhado entre threads
+│   │   ├── banco.py         # SQLite (detecções, listas, câmeras, auth)
+│   │   └── broadcaster.py   # Hub WebSocket
+│   ├── visao/                # Pipeline de visão computacional
+│   │   ├── pipeline.py      # Loop de detecção por câmera (thread)
+│   │   ├── camera.py        # Captura OpenCV (USB/CSI/RTSP/Intelbras)
+│   │   ├── detector.py      # YOLO/open-image-models ONNX + fallback contornos
+│   │   ├── hardware.py      # Detecção de GPU/CUDA
+│   │   ├── ambiente.py      # Ajuste adaptativo de imagem
+│   │   ├── validador.py     # Regex + correções posicionais
+│   │   ├── tracker.py       # IoU Tracker + wrapper ByteTrack
+│   │   └── ocr/             # AutoOCR + 5 engines + pré-processamento
+│   │       ├── engines.py
+│   │       └── auto.py
+│   ├── streaming/
+│   │   ├── stream.py        # Gerador MJPEG
+│   │   └── hls_encoder.py   # HLS via FFmpeg (opcional)
+│   ├── operacao/
+│   │   ├── supervisor.py    # WorkerSupervisor (liveness + backoff)
+│   │   └── dns_server.py    # DNS local embutido (opcional)
+│   ├── seguranca/
+│   │   └── sessao.py        # bcrypt + sessões em memória
+│   └── web/                 # Rotas + assets
+│       ├── api.py           # Endpoints REST
+│       ├── auth.py          # Login, logout, criar-admin
+│       ├── paginas.py       # Páginas HTML (Jinja2)
+│       ├── stream.py        # Endpoints MJPEG/snapshot
+│       ├── testes.py        # Avaliação de acurácia OCR via UI
+│       ├── templates/       # HTML Jinja2
+│       │   ├── base.html    # Layout base + fetch 401 interceptor
+│       │   ├── login.html
+│       │   ├── cameras.html
+│       │   ├── roi.html     # Editor visual de área de captura
+│       │   └── ...
+│       └── static/          # Servido em /static (inclui snapshots/)
+├── benchmarks/
+│   ├── benchmark_stream.py
+│   └── benchmark_tracker.py
 ├── scripts/
 │   ├── baixar_modelo.py
 │   └── treinar_yolo26s.py
 ├── testes/
-│   ├── dataset.json        # 42 placas (sintéticas + reais)
+│   ├── dataset.json         # 42 placas (sintéticas + reais)
 │   ├── run_testes.py
 │   └── gerar_placas_sinteticas.py
-└── templates/              # HTML Jinja2
-    ├── base.html           # Layout base + fetch 401 interceptor
-    ├── login.html
-    ├── cameras.html
-    ├── roi.html            # Editor visual de área de captura
-    └── ...
+├── docs/                    # ARQUITETURA.md, CASOS_DE_USO.md, OTIMIZACAO.md, ...
+├── models/                  # Modelos ONNX (baixados via scripts/baixar_modelo.py)
+├── config.txt               # Configuração (gerado no primeiro uso)
+└── placas.db                 # Banco SQLite
 ```
 
-Veja [ARQUITETURA.md](ARQUITETURA.md) para detalhamento completo de módulos, fluxo de dados e endpoints.
+Veja [docs/ARQUITETURA.md](docs/ARQUITETURA.md) para detalhamento completo de módulos, fluxo de dados e endpoints.
 
 ## Precisão OCR
 
