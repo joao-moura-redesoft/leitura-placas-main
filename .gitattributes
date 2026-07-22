@@ -1,2 +1,11 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Arquivos consumidos DENTRO do container Linux precisam de LF também na cópia de
+# trabalho, não só no repositório. Com `text=auto` sozinho, um checkout no Windows
+# deixa CRLF no arquivo local; construir a imagem a partir dessa cópia faz o
+# `COPY` levar o CRLF para dentro e o script morre com "bad interpreter: /bin/sh^M".
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+Dockerfile.* text eol=lf
+entrypoint.sh text eol=lf

@@ -61,6 +61,48 @@ Requer `watchfiles` (já incluso em `requirements.txt`).
 docker compose up -d --build
 ```
 
+É só isso — não há passo manual antes nem depois. No primeiro boot o container prepara
+os volumes, gera o `config.txt` a partir dos padrões do projeto e baixa o detector de
+veículo (~36 MB, repositório público). Em seguida abra `http://localhost:14000`, crie o
+primeiro administrador e cadastre entidade → posto → automação → câmera → bico.
+
+O servidor roda como usuário sem privilégio (`alpr`, UID 1000); só a preparação inicial
+dos volumes acontece como root, dentro do entrypoint. Confira com:
+
+```bash
+docker compose exec alpr id      # esperado: uid=1000(alpr)
+```
+
+**Backup:** só a pasta `dados/` importa — ela guarda `config.txt` e `placas.db`. É um
+**diretório**, e não o banco montado como arquivo, porque o SQLite roda em modo WAL e
+grava `placas.db-wal`/`placas.db-shm` ao lado do banco; montar só o arquivo deixaria
+esses dois no filesystem efêmero do container e perderia escritas ao recriá-lo.
+
+**Acesso pela rede:** por padrão a porta é publicada só em `127.0.0.1`, porque
+`/api/leitura` não tem autenticação (é chamado pelo sidecar Java do posto). Para abrir na
+rede interna, crie um `.env` ao lado do compose com `BIND_ADDR=0.0.0.0` — com firewall ou
+VPN na frente, e de preferência um proxy reverso com TLS.
+
+#### Servidor de produção com GPU NVIDIA
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+```
+
+Requer o [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+no host (o driver basta; CUDA/cuDNN vêm na imagem). Confirme que a GPU foi realmente
+usada — `app/visao/hardware.py` cai para CPU **sem erro** se não achar CUDA:
+
+```bash
+docker compose logs alpr | grep -i cuda
+# esperado: "ONNX Runtime: GPU CUDA disponível — detecção acelerada por GPU"
+```
+
+> A imagem GPU (`Dockerfile.gpu`) foi escrita seguindo a matriz de compatibilidade do
+> `onnxruntime-gpu` 1.25 (CUDA 12.x + cuDNN 9), mas **não pôde ser construída nem testada
+> no ambiente de desenvolvimento** (Windows, sem GPU e sem Docker). Valide no servidor
+> real seguindo o checklist no fim do `Dockerfile.gpu` antes de colocar em produção.
+
 ## Modelo de Detecção
 
 O backend padrão (`detector_backend = open_image_models`) **não precisa de download

@@ -1,0 +1,52 @@
+# O Dockerfile faz `COPY . .` — sem este arquivo a imagem levaria o ambiente virtual
+# inteiro, o histórico do git e, pior, SEGREDOS (config.txt tem a senha RTSP das câmeras
+# e placas.db tem hash de senha de usuário + dados de cliente). Segredo dentro de imagem
+# não sai mais: fica em todas as camadas, em qualquer registry para onde a imagem for.
+
+# Ambiente virtual e caches Python (centenas de MB, e inúteis: a imagem instala do zero)
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# SEGREDOS E DADOS — nunca entram na imagem. Chegam em runtime, por volume/env.
+config.txt
+config.txt.*
+placas.db
+placas.db-*
+*.bak
+.env
+
+# Imagens de detecção (podem conter veículo/placa de cliente real)
+app/web/static/snapshots/*
+!app/web/static/snapshots/.gitkeep
+testes/fotos/
+testes/resultados/
+
+# Modelos e caches de download: chegam em runtime pelo volume ./models (que é montado
+# por cima deste caminho de qualquer forma) — na imagem só incham a camada.
+models/
+
+# Desenvolvimento
+.vscode/
+.idea/
+.claude/
+scratch/
+*.log
+*.swp
+.DS_Store
+leitura-placas/
+
+# Docker (não precisa dele dentro da própria imagem)
+Dockerfile
+Dockerfile.gpu
+docker-compose*.yml
+.dockerignore
