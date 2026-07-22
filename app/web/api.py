@@ -492,34 +492,6 @@ def modelos_listar():
     return sorted(f.name for f in pasta.glob("*.onnx"))
 
 
-@router.post("/cameras/{id_}/ler-placa")
-def cameras_ler_placa(id_: int):
-    """Loop de leitura por confiança ("reject-retry"): delega para app.visao.leitura.ler_placa
-    (compartilhado com o endpoint reativo multi-tenant GET /api/leitura), reusando o frame do
-    pipeline contínuo quando disponível para essa câmera (evita 2ª conexão RTSP).
-    """
-    cam = banco.cameras_obter(id_)
-    if not cam:
-        raise HTTPException(404, "Câmera não encontrada")
-
-    cfg = config.carregar()
-    especificacao = leitura.EspecificacaoCamera.de_camera_db(cam, cfg)
-
-    def _frame_pipeline():
-        frame = estado.obter_frame_camera_limpo(id_)
-        return frame if frame is not None else estado.obter_frame_camera(id_)
-
-    provider = _frame_pipeline if id_ in pipeline._instancias else None
-
-    try:
-        return leitura.ler_placa(
-            camera_id=id_, especificacao=especificacao, roi=None, cfg=cfg,
-            pipeline_frame_provider=provider, preview_nome=f"preview_{id_}", origem="teste",
-        )
-    except leitura.LeituraError as e:
-        raise HTTPException(e.status, e.mensagem)
-
-
 @router.get("/debug/ocr_crop")
 def debug_ocr_crop():
     """Retorna o último crop enviado ao Tesseract como JPEG (para debug visual)."""

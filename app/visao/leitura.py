@@ -1,9 +1,10 @@
 """Lógica de domínio da leitura de placa sob demanda ("Ler Placa" / GET reativo).
 
-Extraído de app/web/api.py para ser reusado por dois endpoints: o interno
-(POST /api/cameras/{id}/ler-placa, por id numérico de câmera) e o multi-tenant
-(GET /api/leitura, por entidade/cnpj/automacao/bico) — mesmo loop reject-retry nos
-dois casos, só muda como a câmera/ROI são resolvidos antes de chamar ler_placa().
+Reusado por dois endpoints: o reativo multi-tenant (GET /api/leitura, por
+entidade/cnpj/automacao/bico) e o teste manual por bico (POST /api/bicos/{id}/
+ler-placa-teste, usado pela tela do posto e pelo editor de áreas) — mesmo loop
+reject-retry nos dois casos, só muda como a câmera/ROI são resolvidas antes de
+chamar ler_placa().
 
 Não importa nada de app/web/ (regra de dependência do projeto: visao importa só core).
 Levanta LeituraError em vez de HTTPException — cada rota HTTP converte pro código que
