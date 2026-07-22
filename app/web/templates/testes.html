@@ -1,0 +1,602 @@
+{% extends "base.html" %}
+{% block title %}Testes — ALPR{% endblock %}
+
+{% block conteudo %}
+<h1>Testes de Precisão</h1>
+
+<!-- ===== SEÇÃO: SNAPSHOTS ===== -->
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+    <h2 style="margin:0;">Fotos para Teste</h2>
+    <div style="display:flex;gap:8px;">
+      <button onclick="document.getElementById('input-upload').click()" style="background:#16a34a;font-size:13px;padding:6px 14px;">+ Upload</button>
+      <button onclick="carregarSnapshots()" style="background:#fff;color:#374151;border:1px solid #e2e8f0;font-size:13px;padding:6px 12px;">Atualizar</button>
+    </div>
+  </div>
+  <p style="color:#94a3b8;margin-top:0;font-size:13px;">Faça upload de fotos ou use as salvas pelo ALPR. Clique em "Adicionar" para rotular e incluir no dataset.</p>
+
+  <!-- Capturar de um bico (mesma entrada que a produção analisa) -->
+  <div style="background:#f8fafc;border-radius:8px;padding:14px;margin-bottom:16px;border:1px solid #e2e8f0;">
+    <div style="font-size:13px;color:#94a3b8;margin-bottom:4px;font-weight:600;">Capturar de um bico</div>
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:10px;">
+      A imagem é salva já recortada pela área do bico — é exatamente o que o detector
+      recebe na leitura reativa, então o teste mede o caminho real.
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+      <div style="flex:1;min-width:240px;">
+        <div style="font-size:11px;color:#64748b;margin-bottom:4px;">Bico</div>
+        <select id="sel-bico" style="width:100%;">
+          <option value="">Carregando…</option>
+        </select>
+      </div>
+      <button id="btn-capturar" onclick="capturarBico()" style="padding:8px 18px;white-space:nowrap;">
+        Capturar
+      </button>
+    </div>
+    <div id="aviso-roi" style="display:none;margin-top:10px;font-size:12px;color:#a16207;
+         background:#fef9c3;border:1px solid #fde68a;border-radius:6px;padding:8px 10px"></div>
+    <div id="cap-status" style="display:none;margin-top:10px;font-size:13px;"></div>
+  </div>
+
+  <!-- Zona de drag-and-drop -->
+  <div id="drop-zone"
+       ondragover="event.preventDefault();this.style.borderColor='#16a34a';this.style.background='#f0fdf4';"
+       ondragleave="this.style.borderColor='#e2e8f0';this.style.background='';"
+       ondrop="handleDrop(event)"
+       style="border:2px dashed #e2e8f0;border-radius:8px;padding:20px;text-align:center;margin-bottom:16px;cursor:pointer;transition:border-color .2s,background .2s;"
+       onclick="document.getElementById('input-upload').click()">
+    <div style="color:#64748b;font-size:13px;">Arraste fotos aqui ou clique para selecionar</div>
+    <div style="color:#94a3b8;font-size:11px;margin-top:4px;">JPG ou PNG — frame (cena completa) ou crop (recorte da placa)</div>
+  </div>
+  <input id="input-upload" type="file" accept="image/jpeg,image/png" multiple style="display:none;" onchange="uploadArquivos(this.files)">
+  <div id="upload-progress" style="display:none;margin-bottom:12px;"></div>
+
+  <div id="snapshots-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;"></div>
+  <div id="snapshots-vazio" style="color:#64748b;padding:24px;text-align:center;display:none;">Nenhuma foto encontrada.</div>
+</div>
+
+<!-- ===== SEÇÃO: DATASET ===== -->
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+    <h2 style="margin:0;">Dataset Rotulado <span id="badge-total" style="font-size:13px;color:#94a3b8;"></span></h2>
+    <button onclick="carregarDataset()" style="background:#fff;color:#374151;border:1px solid #e2e8f0;font-size:13px;padding:6px 12px;">Atualizar</button>
+  </div>
+  <div id="dataset-vazio" style="color:#64748b;padding:24px;text-align:center;display:none;">Dataset vazio — adicione fotos acima.</div>
+  <div style="overflow-x:auto;">
+    <table id="dataset-tabela" style="display:none;">
+      <thead>
+        <tr>
+          <th style="width:120px;">Thumbnail</th>
+          <th>Arquivo</th>
+          <th>Placa Correta</th>
+          <th>Formato</th>
+          <th>Tipo</th>
+          <th>Obs</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="dataset-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ===== SEÇÃO: EXECUTAR TESTES ===== -->
+<div class="card">
+  <h2 style="margin-top:0;">Executar Testes</h2>
+  <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px;">
+    <div>
+      <div style="font-size:13px;color:#94a3b8;margin-bottom:8px;">Engines:</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="eng-auto" value="auto" checked> auto
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="eng-fast" value="fast_plate_ocr"> fast_plate_ocr
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="eng-easy" value="easyocr"> easyocr
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="eng-tess" value="tesseract"> tesseract
+        </label>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+        <input type="checkbox" id="salvar-resultado"> Salvar resultado JSON
+      </label>
+    </div>
+    <button id="btn-rodar" onclick="rodarTestes()">Rodar Testes</button>
+  </div>
+  <div id="testes-loading" style="display:none;color:#94a3b8;padding:12px 0;">Executando testes...</div>
+  <div id="testes-resultado" style="display:none;"></div>
+</div>
+
+<!-- ===== SEÇÃO: RESULTADOS SALVOS ===== -->
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+    <h2 style="margin:0;">Resultados Anteriores</h2>
+    <button onclick="carregarResultados()" style="background:#fff;color:#374151;border:1px solid #e2e8f0;font-size:13px;padding:6px 12px;">Atualizar</button>
+  </div>
+  <div id="resultados-lista" style="color:#64748b;font-size:13px;">Carregando...</div>
+</div>
+
+<!-- ===== MODAL ===== -->
+<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(2px);z-index:1000;justify-content:center;align-items:center;">
+  <div style="background:#fff;border-radius:12px;padding:28px;min-width:360px;max-width:480px;box-shadow:0 20px 60px rgba(0,0,0,.18);">
+    <h3 style="margin-top:0;color:#0f172a;font-size:16px;font-weight:600;">Adicionar ao Dataset</h3>
+    <div id="modal-thumb" style="margin-bottom:16px;"></div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:13px;color:#64748b;display:block;margin-bottom:4px;font-weight:500;">Arquivo</label>
+      <input id="modal-arquivo" readonly style="width:100%;box-sizing:border-box;color:#94a3b8;">
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:13px;color:#64748b;display:block;margin-bottom:4px;font-weight:500;">Placa Correta *</label>
+      <input id="modal-placa" placeholder="Ex: ABC1D23" maxlength="8"
+             style="width:100%;box-sizing:border-box;text-transform:uppercase;font-family:monospace;font-size:18px;letter-spacing:2px;">
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+      <div>
+        <label style="font-size:13px;color:#64748b;display:block;margin-bottom:4px;font-weight:500;">Formato</label>
+        <select id="modal-formato" style="width:100%;">
+          <option value="">Auto-detectar</option>
+          <option value="mercosul">Mercosul</option>
+          <option value="antigo">Antigo</option>
+          <option value="desconhecido">Desconhecido</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size:13px;color:#64748b;display:block;margin-bottom:4px;font-weight:500;">Tipo</label>
+        <select id="modal-tipo" style="width:100%;">
+          <option value="crop">crop (recorte)</option>
+          <option value="frame">frame (cena completa)</option>
+        </select>
+      </div>
+    </div>
+    <div style="margin-bottom:20px;">
+      <label style="font-size:13px;color:#64748b;display:block;margin-bottom:4px;font-weight:500;">Observação</label>
+      <input id="modal-obs" placeholder="opcional" style="width:100%;box-sizing:border-box;">
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button onclick="fecharModal()" style="background:#fff;color:#374151;border:1px solid #e2e8f0;">Cancelar</button>
+      <button onclick="confirmarAdicionar()">Adicionar ao Dataset</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ===== ESTADO =====
+let _snapshotsNoDataset = new Set();
+
+// ===== BICOS =====
+let _bicos = [];
+
+async function carregarBicos() {
+  const sel = document.getElementById('sel-bico');
+  try {
+    _bicos = await fetch('/api/testes/bicos').then(r => r.json());
+    if (!_bicos.length) {
+      sel.innerHTML = '<option value="">Nenhum bico cadastrado</option>';
+      document.getElementById('btn-capturar').disabled = true;
+      return;
+    }
+    // Agrupa por posto: o dataset agora mistura clientes diferentes
+    const grupos = {};
+    _bicos.forEach(b => { (grupos[b.posto] ??= []).push(b); });
+    sel.innerHTML = Object.entries(grupos).map(([posto, bs]) =>
+      `<optgroup label="${posto}">` + bs.map(b =>
+        `<option value="${b.id}">${b.automacao_codigo}/${b.codigo}` +
+        `${b.nome ? ' — ' + b.nome : ''} · ${b.camera_local || b.camera_nome}` +
+        `${b.tem_roi ? '' : '  (sem área)'}</option>`).join('') + '</optgroup>'
+    ).join('');
+    avisarRoi();
+  } catch {
+    sel.innerHTML = '<option value="">Erro ao carregar bicos</option>';
+  }
+}
+
+// Sem área definida a captura vira o frame inteiro — e aí o teste mede algo diferente
+// da produção. Melhor avisar antes do que gerar dataset enganoso.
+function avisarRoi() {
+  const b = _bicos.find(x => String(x.id) === document.getElementById('sel-bico').value);
+  const el = document.getElementById('aviso-roi');
+  if (b && !b.tem_roi) {
+    el.style.display = 'block';
+    el.innerHTML = `Este bico não tem área definida — a captura virá com o frame inteiro,
+      que <strong>não é</strong> o que a leitura reativa analisa.
+      <a href="/roi-camera/${b.camera_id}?bico=${b.id}" style="color:#a16207;font-weight:600">Definir a área</a>.`;
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+async function capturarBico() {
+  const bicoId = document.getElementById('sel-bico').value;
+  if (!bicoId) { avisar('Selecione um bico.', 'err'); return; }
+  const btn = document.getElementById('btn-capturar');
+  const status = document.getElementById('cap-status');
+
+  btn.disabled = true;
+  status.style.display = 'block';
+  status.innerHTML = '<span style="color:#94a3b8;">Conectando à câmera e capturando…</span>';
+
+  try {
+    const r = await fetch(`/api/testes/capturar-bico/${bicoId}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({aplicar_roi: true}),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      status.innerHTML = `<span style="color:#b91c1c;">Erro: ${d.detail || r.status}</span>`;
+      return;
+    }
+    const d = await r.json();
+    status.innerHTML = `<span style="color:#15803d;">Capturado: ${d.nome}</span>
+      <span style="color:#94a3b8">· ${d.largura}×${d.altura}px
+      ${d.recortado_por_roi ? '(área do bico)' : '(frame inteiro — bico sem área)'}
+      · ${d.origem}</span>`;
+    setTimeout(() => { status.style.display = 'none'; }, 6000);
+    await carregarSnapshots();
+  } catch (e) {
+    status.innerHTML = `<span style="color:#b91c1c;">Erro de rede: ${e.message}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ===== UPLOAD =====
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById('drop-zone').style.borderColor = '#2a3142';
+  uploadArquivos(e.dataTransfer.files);
+}
+
+async function uploadArquivos(files) {
+  if (!files || !files.length) return;
+  const prog = document.getElementById('upload-progress');
+  prog.style.display = 'block';
+  prog.innerHTML = `<div style="color:#94a3b8;font-size:13px;">Enviando ${files.length} arquivo(s)...</div>`;
+
+  let ok = 0, erros = [];
+  for (const file of files) {
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await fetch('/api/testes/upload', { method: 'POST', body: fd });
+      if (r.ok) ok++;
+      else erros.push(`${file.name}: ${await r.text()}`);
+    } catch (e) {
+      erros.push(`${file.name}: erro de rede`);
+    }
+  }
+
+  if (erros.length) {
+    prog.innerHTML = `<div style="color:#f87171;font-size:13px;">${erros.join('<br>')}</div>`;
+  } else {
+    prog.innerHTML = `<div style="color:#16a34a;font-size:13px;">${ok} foto(s) enviada(s) com sucesso.</div>`;
+    setTimeout(() => { prog.style.display = 'none'; }, 3000);
+  }
+  document.getElementById('input-upload').value = '';
+  await carregarSnapshots();
+}
+
+// ===== SNAPSHOTS =====
+async function carregarSnapshots() {
+  const [snaps, ds] = await Promise.all([
+    fetch('/api/testes/snapshots').then(r => r.json()),
+    fetch('/api/testes/dataset').then(r => r.json()),
+  ]);
+  _snapshotsNoDataset = new Set((ds.fotos || []).map(f => f.arquivo));
+
+  const grid = document.getElementById('snapshots-grid');
+  const vazio = document.getElementById('snapshots-vazio');
+  grid.innerHTML = '';
+  if (!snaps.length) { vazio.style.display = 'block'; return; }
+  vazio.style.display = 'none';
+
+  snaps.forEach(s => {
+    const noDS = _snapshotsNoDataset.has(s.arquivo);
+    const card = document.createElement('div');
+    card.style.cssText = 'background:#fff;border-radius:8px;overflow:hidden;border:1px solid ' + (noDS ? '#86efac' : '#e2e8f0') + ';box-shadow:0 1px 3px rgba(0,0,0,.05);';
+    const origemLabel = s.origem === 'upload'
+      ? '<div style="position:absolute;top:6px;left:6px;background:#7c3aed;color:#fff;font-size:10px;padding:2px 5px;border-radius:3px;">upload</div>'
+      : '';
+    card.innerHTML = `
+      <div style="position:relative;">
+        <img src="${s.url}" alt="${s.nome}" loading="lazy"
+             style="width:100%;height:130px;object-fit:cover;display:block;">
+        ${noDS ? '<div style="position:absolute;top:6px;right:6px;background:#dcfce7;color:#15803d;font-size:11px;padding:2px 6px;border-radius:4px;font-weight:600;">No dataset</div>' : ''}
+        ${origemLabel}
+        <div style="position:absolute;bottom:4px;left:4px;background:rgba(0,0,0,.55);font-size:10px;padding:2px 5px;border-radius:3px;color:#fff;">${s.tipo}</div>
+      </div>
+      <div style="padding:8px;">
+        <div style="font-size:11px;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:4px;" title="${s.nome}">${s.nome}</div>
+        ${s.placa_detectada ? `<div style="font-family:monospace;font-size:14px;font-weight:600;color:#16a34a;margin-bottom:6px;">${s.placa_detectada}</div>` : '<div style="font-size:12px;color:#94a3b8;margin-bottom:6px;">(sem placa no nome)</div>'}
+        <button onclick='abrirModal(${JSON.stringify(s)})' style="width:100%;font-size:12px;padding:5px;background:${noDS ? '#f8fafc' : '#16a34a'};${noDS ? 'color:#374151;border:1px solid #e2e8f0;' : ''}">
+          ${noDS ? 'Editar' : 'Adicionar'}
+        </button>
+      </div>`;
+    grid.appendChild(card);
+  });
+}
+
+// ===== DATASET =====
+async function carregarDataset() {
+  const ds = await fetch('/api/testes/dataset').then(r => r.json());
+  const fotos = ds.fotos || [];
+  const badge = document.getElementById('badge-total');
+  badge.textContent = `(${fotos.length} foto${fotos.length !== 1 ? 's' : ''})`;
+
+  const tabela = document.getElementById('dataset-tabela');
+  const vazio = document.getElementById('dataset-vazio');
+  const tbody = document.getElementById('dataset-tbody');
+  tbody.innerHTML = '';
+
+  if (!fotos.length) {
+    tabela.style.display = 'none';
+    vazio.style.display = 'block';
+    return;
+  }
+  vazio.style.display = 'none';
+  tabela.style.display = 'table';
+
+  fotos.forEach(f => {
+    const tr = document.createElement('tr');
+    const fmtBadge = f.formato === 'mercosul' ? 'badge-mercosul' : (f.formato === 'antigo' ? 'badge-antigo' : '');
+    tr.innerHTML = `
+      <td><img src="/${f.arquivo}" style="width:100px;height:50px;object-fit:cover;border-radius:4px;" loading="lazy"></td>
+      <td style="font-size:12px;color:#94a3b8;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${f.arquivo}">${f.arquivo.split('/').pop()}</td>
+      <td><span style="font-family:monospace;font-weight:600;font-size:15px;">${f.placa_correta}</span></td>
+      <td><span class="badge ${fmtBadge}" style="font-size:11px;">${f.formato || '-'}</span></td>
+      <td><span style="font-size:12px;color:#94a3b8;">${f.tipo || 'crop'}</span></td>
+      <td style="font-size:12px;color:#94a3b8;max-width:120px;">${f.obs || ''}</td>
+      <td><button onclick='removerFoto("${f.arquivo}")' style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;font-size:12px;padding:4px 8px;">Remover</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function removerFoto(arquivo) {
+  if (!confirm(`Remover "${arquivo.split('/').pop()}" do dataset?`)) return;
+  const r = await fetch('/api/testes/dataset', {
+    method: 'DELETE',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({arquivo}),
+  });
+  if (r.ok) { await carregarDataset(); await carregarSnapshots(); }
+  else alert('Erro ao remover: ' + await r.text());
+}
+
+// ===== MODAL =====
+function abrirModal(snap) {
+  document.getElementById('modal-arquivo').value = snap.arquivo;
+  document.getElementById('modal-placa').value = snap.placa_detectada || '';
+  document.getElementById('modal-tipo').value = snap.tipo || 'crop';
+  document.getElementById('modal-formato').value = '';
+  document.getElementById('modal-obs').value = '';
+  document.getElementById('modal-thumb').innerHTML =
+    `<img src="${snap.url}" style="width:100%;max-height:150px;object-fit:contain;border-radius:6px;">`;
+  document.getElementById('modal-overlay').style.display = 'flex';
+  setTimeout(() => document.getElementById('modal-placa').focus(), 50);
+}
+
+function fecharModal() {
+  document.getElementById('modal-overlay').style.display = 'none';
+}
+
+document.getElementById('modal-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal-overlay')) fecharModal();
+});
+
+document.getElementById('modal-placa').addEventListener('input', function() {
+  this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+});
+
+async function confirmarAdicionar() {
+  const arquivo = document.getElementById('modal-arquivo').value;
+  const placa = document.getElementById('modal-placa').value.trim();
+  if (!placa || placa.length < 7) { alert('Placa inválida (mínimo 7 caracteres)'); return; }
+  const payload = {
+    arquivo,
+    placa_correta: placa,
+    formato: document.getElementById('modal-formato').value,
+    tipo: document.getElementById('modal-tipo').value,
+    obs: document.getElementById('modal-obs').value,
+  };
+  const r = await fetch('/api/testes/dataset', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+  if (r.ok) {
+    fecharModal();
+    await Promise.all([carregarDataset(), carregarSnapshots()]);
+  } else {
+    alert('Erro: ' + await r.text());
+  }
+}
+
+// ===== TESTES =====
+async function rodarTestes() {
+  const engines = ['eng-auto','eng-fast','eng-easy','eng-tess']
+    .map(id => document.getElementById(id))
+    .filter(el => el.checked)
+    .map(el => el.value);
+  if (!engines.length) { alert('Selecione pelo menos uma engine.'); return; }
+
+  const salvar = document.getElementById('salvar-resultado').checked;
+  document.getElementById('btn-rodar').disabled = true;
+  document.getElementById('testes-loading').style.display = 'block';
+  document.getElementById('testes-resultado').style.display = 'none';
+
+  try {
+    const r = await fetch('/api/testes/rodar', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({engines, salvar}),
+    });
+    if (!r.ok) {
+      const txt = await r.text();
+      document.getElementById('testes-resultado').innerHTML =
+        `<div style="color:#f87171;padding:12px;background:#1a0a0a;border-radius:6px;">Erro: ${txt}</div>`;
+      document.getElementById('testes-resultado').style.display = 'block';
+      return;
+    }
+    const dados = await r.json();
+    renderizarResultado(dados);
+    if (salvar) carregarResultados();
+  } finally {
+    document.getElementById('btn-rodar').disabled = false;
+    document.getElementById('testes-loading').style.display = 'none';
+  }
+}
+
+function renderizarResultado(dados) {
+  const div = document.getElementById('testes-resultado');
+  if (!dados || !dados.engines) {
+    div.innerHTML = '<div style="color:#a16207;padding:12px;">Dataset vazio — adicione fotos rotuladas primeiro.</div>';
+    div.style.display = 'block';
+    return;
+  }
+
+  let html = `<div style="font-size:13px;color:#94a3b8;margin-bottom:16px;">
+    ${new Date(dados.data).toLocaleString('pt-BR')} — ${dados.total_fotos} foto(s)
+  </div>`;
+
+  for (const [eng, stats] of Object.entries(dados.engines)) {
+    const pct = (stats.acuracia * 100).toFixed(1);
+    const cor = stats.acuracia >= 0.9 ? '#16a34a' : stats.acuracia >= 0.7 ? '#ca8a04' : '#dc2626';
+    html += `
+    <div style="background:#fff;border-radius:10px;padding:16px;margin-bottom:16px;border:1px solid #e2e8f0;box-shadow:0 1px 3px rgba(0,0,0,.05);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <div style="font-weight:600;font-size:15px;color:#0f172a;">${eng}</div>
+        <div style="font-size:22px;font-weight:700;color:${cor};">${pct}%</div>
+      </div>
+      <div style="background:#f1f5f9;border-radius:4px;height:8px;margin-bottom:12px;overflow:hidden;">
+        <div style="background:${cor};height:100%;width:${pct}%;transition:width .4s;"></div>
+      </div>
+      <div style="display:flex;gap:16px;font-size:13px;color:#64748b;margin-bottom:12px;">
+        <span style="color:#15803d;">✓ ${stats.ok} corretas</span>
+        <span style="color:#b91c1c;">✗ ${stats.erros} erros</span>
+        ${stats.falhas_deteccao ? `<span style="color:#a16207;">⚠ ${stats.falhas_deteccao} sem detecção</span>` : ''}
+        <span>Total: ${stats.total}</span>
+      </div>`;
+
+    // Crops processados — mostra antes/depois para todos os resultados com crop
+    const comCrop = (stats.detalhes || []).filter(r => r.crop_processado);
+    if (comCrop.length) {
+      html += `<details style="margin-bottom:10px;">
+        <summary style="cursor:pointer;font-size:13px;color:#64748b;user-select:none;">Ver ${comCrop.length} crop(s) pós-processado(s)</summary>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:10px;">`;
+      comCrop.forEach(r => {
+        const statusColor = r.status === 'ok' ? '#16a34a' : r.status === 'errou' ? '#dc2626' : '#ca8a04';
+        html += `<div style="background:#f8fafc;border-radius:8px;padding:8px;border:1px solid #e2e8f0;text-align:center;">
+          <div style="display:flex;gap:4px;justify-content:center;margin-bottom:6px;">
+            <img src="/${r.arquivo}" style="height:38px;border-radius:3px;" title="Original" loading="lazy">
+            <span style="color:#94a3b8;align-self:center;">→</span>
+            <img src="${r.crop_processado}" style="height:38px;border-radius:3px;border:1px solid #e2e8f0;" title="Pós-OCR" loading="lazy">
+          </div>
+          <div style="font-family:monospace;font-size:12px;font-weight:600;color:${statusColor};">
+            ${r.esperado} ${r.status === 'ok' ? '✓' : '→ ' + (r.lido || '∅')}
+          </div>
+        </div>`;
+      });
+      html += '</div></details>';
+    }
+
+    // Por formato
+    if (stats.por_formato && Object.keys(stats.por_formato).length) {
+      html += '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;">';
+      for (const [fmt, s] of Object.entries(stats.por_formato)) {
+        const fmtPct = s.total ? (s.ok / s.total * 100).toFixed(0) : 0;
+        html += `<div style="background:#f8fafc;padding:6px 12px;border-radius:6px;font-size:12px;border:1px solid #e2e8f0;">
+          <span style="color:#64748b;">${fmt}:</span>
+          <strong style="margin-left:4px;color:#0f172a;">${s.ok}/${s.total} (${fmtPct}%)</strong>
+        </div>`;
+      }
+      html += '</div>';
+    }
+
+    // Confusões
+    if (stats.confusoes && Object.keys(stats.confusoes).length) {
+      html += '<div style="margin-bottom:10px;"><div style="font-size:12px;color:#94a3b8;margin-bottom:6px;">Confusões de caracteres:</div><div style="display:flex;flex-wrap:wrap;gap:6px;">';
+      const sorted = Object.entries(stats.confusoes).sort((a,b) => b[1]-a[1]);
+      sorted.forEach(([par, n]) => {
+        const [e, l] = par.split('>');
+        html += `<span style="background:#fef9c3;padding:3px 8px;border-radius:4px;font-family:monospace;font-size:13px;border:1px solid #fde68a;">
+          <span style="color:#92400e;">${e}</span>→<span style="color:#b91c1c;">${l}</span>
+          <span style="color:#94a3b8;font-size:11px;margin-left:3px;">${n}x</span>
+        </span>`;
+      });
+      html += '</div></div>';
+    }
+
+    // Detalhes dos erros
+    const erros = (stats.detalhes || []).filter(r => r.status === 'errou' || r.status === 'falhou');
+    if (erros.length) {
+      html += `<details style="margin-top:8px;">
+        <summary style="cursor:pointer;font-size:13px;color:#64748b;user-select:none;">Ver ${erros.length} erro(s)</summary>
+        <div style="margin-top:10px;overflow-x:auto;">
+        <table style="font-size:12px;">
+           <thead><tr>
+            <th>Arquivo</th><th>Original</th><th>Pós-OCR</th><th>Esperado</th><th>Lido</th><th>Status</th>
+          </tr></thead>
+          <tbody>`;
+      erros.forEach(r => {
+        const arq = (r.arquivo || '').split('/').pop();
+        const imgOrig = r.arquivo ? `<img src="/${r.arquivo}" style="height:40px;border-radius:3px;" loading="lazy">` : '';
+        const imgProc = r.crop_processado ? `<img src="${r.crop_processado}" style="height:40px;border-radius:3px;border:1px solid #e2e8f0;" loading="lazy">` : '<span style="color:#94a3b8;font-size:11px;">—</span>';
+        html += `<tr>
+          <td style="color:#64748b;">${arq}</td>
+          <td>${imgOrig}</td>
+          <td>${imgProc}</td>
+          <td style="font-family:monospace;color:#16a34a;">${r.esperado}</td>
+          <td style="font-family:monospace;color:#b91c1c;">${r.lido || '(nada)'}</td>
+          <td><span class="badge ${r.status === 'falhou' ? 'badge-warn' : 'badge-err'}" style="font-size:10px;">${r.status}</span></td>
+        </tr>`;
+      });
+      html += '</tbody></table></div></details>';
+    }
+
+    html += '</div>';
+  }
+
+  div.innerHTML = html;
+  div.style.display = 'block';
+}
+
+// ===== RESULTADOS ANTERIORES =====
+async function carregarResultados() {
+  const lista = document.getElementById('resultados-lista');
+  const rs = await fetch('/api/testes/resultados').then(r => r.json());
+  if (!rs.length) {
+    lista.innerHTML = '<span style="color:#64748b;">Nenhum resultado salvo.</span>';
+    return;
+  }
+  lista.innerHTML = rs.map(r => `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f1f5f9;">
+      <span style="font-family:monospace;color:#374151;">${r.nome}</span>
+      <div style="display:flex;gap:8px;">
+        <span style="color:#94a3b8;">${(r.tamanho/1024).toFixed(1)} KB</span>
+        <button onclick="verResultado('${r.nome}')" style="background:#f8fafc;color:#374151;border:1px solid #e2e8f0;font-size:12px;padding:4px 10px;">Ver</button>
+      </div>
+    </div>`).join('');
+}
+
+async function verResultado(nome) {
+  const dados = await fetch(`/api/testes/resultados/${nome}`).then(r => r.json());
+  document.getElementById('testes-resultado').style.display = 'none';
+  renderizarResultado(dados);
+  document.getElementById('testes-resultado').scrollIntoView({behavior:'smooth'});
+}
+
+// ===== INIT =====
+(async () => {
+  document.getElementById('sel-bico').addEventListener('change', avisarRoi);
+  await Promise.all([carregarBicos(), carregarSnapshots(), carregarDataset(), carregarResultados()]);
+})();
+</script>
+{% endblock %}
+

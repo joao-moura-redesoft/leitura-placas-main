@@ -6,7 +6,7 @@ import cv2
 import logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
-from ocr import AutoOCR
+from app.visao.ocr import AutoOCR
 ocr = AutoOCR()
 ocr.carregar()
 

@@ -1,0 +1,750 @@
+{% extends "base.html" %}
+{% block title %}Câmeras — ALPR{% endblock %}
+{% block conteudo %}
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap">
+  <h1 style="margin:0">Câmeras</h1>
+  <span id="filtro-badge" style="display:none;background:#dcfce7;color:#15803d;padding:4px 12px;
+        border-radius:20px;font-size:13px;font-weight:600"></span>
+  <a href="/postos" style="color:#64748b;font-size:13px;margin-left:auto">← Postos</a>
+</div>
+<p style="color:#64748b;margin:0 0 20px;font-size:14px">
+  Cada câmera pertence a um posto (empresa) e o campo <strong>Local</strong> diz onde ela
+  está instalada. Bomba/lado e área de captura pertencem ao
+  <a href="/bicos" style="color:#16a34a">bico</a> — uma câmera pode servir vários bicos.
+</p>
+
+<div class="card" style="margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+  <button onclick="abrirModal()">+ Nova Câmera</button>
+  <button onclick="abrirModalLote()" style="background:#7c3aed">&#9776; Adicionar em Lote</button>
+  <button onclick="toggleScan()" id="btn-toggle-scan" style="background:#fff;color:#374151;border:1px solid #e2e8f0">&#128269; Localizar na Rede</button>
+</div>
+
+<!-- Painel de Scan RTSP -->
+<div id="painel-scan" style="display:none;margin-bottom:16px">
+  <div class="card">
+    <h3 style="margin-top:0;margin-bottom:14px">Localizar Câmeras RTSP na Rede</h3>
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
+      <label style="flex:1;min-width:200px">Sub-rede (CIDR)
+        <input id="scan-rede" type="text" placeholder="192.168.1.0/24"
+               style="width:100%;box-sizing:border-box;margin-top:4px">
+      </label>
+      <label style="width:90px">Porta
+        <input id="scan-porta" type="text" value="554"
+               style="width:100%;box-sizing:border-box;margin-top:4px">
+      </label>
+      <label style="width:90px">Timeout (s)
+        <input id="scan-timeout" type="text" value="0.3"
+               style="width:100%;box-sizing:border-box;margin-top:4px">
+      </label>
+      <button onclick="iniciarScan()" id="btn-scan" style="background:#16a34a;height:36px;align-self:flex-end">
+        Escanear
+      </button>
+    </div>
+    <div id="scan-status" style="font-size:13px;color:#94a3b8;margin-bottom:10px"></div>
+    <div id="scan-resultados"></div>
+  </div>
+</div>
+
+<div class="card" id="card-tabela">
+  <table id="tabela-cameras">
+    <thead>
+      <tr>
+        <th>Posto</th><th>Local</th><th>Nome</th><th>Tipo</th><th>Host / Índice</th><th>Ativo</th><th>Ações</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <p id="sem-cameras" style="display:none;color:#94a3b8">Nenhuma câmera cadastrada.</p>
+</div>
+
+<!-- Modal -->
+<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(2px);z-index:100;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:12px;padding:28px;width:560px;max-width:96vw;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+    <h2 id="modal-titulo" style="margin-top:0">Nova Câmera</h2>
+    <form id="form-camera" onsubmit="salvarCamera(event)">
+      <input type="hidden" id="cam-id" value="">
+
+      <label style="display:block;margin-bottom:12px">Posto
+        <select id="cam-empresa" required style="width:100%;margin-top:4px"></select>
+      </label>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <label>Nome / Descrição
+          <input id="cam-nome" type="text" placeholder="ex: DVR canal 3" required style="width:100%;box-sizing:border-box;margin-top:4px">
+        </label>
+        <label>Local da câmera
+          <input id="cam-local" type="text" placeholder="ex: Cobertura bomba 2, vista pista" style="width:100%;box-sizing:border-box;margin-top:4px">
+        </label>
+      </div>
+
+      <label style="display:block;margin-bottom:12px">Tipo de Câmera
+        <select id="cam-tipo" required style="width:100%;margin-top:4px" onchange="atualizarCampos()">
+          <option value="rtsp">RTSP / DVR</option>
+          <option value="usb">USB / Webcam</option>
+          <option value="csi">CSI (Raspberry Pi)</option>
+        </select>
+      </label>
+
+      <!-- Campos Intelbras / RTSP -->
+      <div id="secao-intelbras">
+        <div style="display:grid;grid-template-columns:1fr 80px;gap:12px;margin-bottom:12px">
+          <label>Host / IP
+            <input id="cam-host" type="text" placeholder="192.168.1.108" style="width:100%;box-sizing:border-box;margin-top:4px">
+          </label>
+          <label>Porta
+            <input id="cam-porta" type="text" value="554" style="width:100%;box-sizing:border-box;margin-top:4px">
+          </label>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+          <label>Usuário
+            <input id="cam-usuario" type="text" value="admin" style="width:100%;box-sizing:border-box;margin-top:4px">
+          </label>
+          <label>Senha
+            <input id="cam-senha" type="password" placeholder="(mantém se vazio)" style="width:100%;box-sizing:border-box;margin-top:4px">
+          </label>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+          <label>Canal
+            <input id="cam-canal" type="text" value="1" style="width:100%;box-sizing:border-box;margin-top:4px">
+          </label>
+          <label>Subtype
+            <select id="cam-subtype" style="width:100%;margin-top:4px">
+              <option value="1">1 — Sub (leve)</option>
+              <option value="0">0 — Main (HD)</option>
+            </select>
+          </label>
+          <label>Formato URL
+            <select id="cam-formato" style="width:100%;margin-top:4px">
+              <option value="padrao">Padrão Intelbras</option>
+              <option value="dahua">Dahua</option>
+              <option value="custom">Personalizado</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <!-- URL personalizada (opcional — substitui host/canal se preenchida) -->
+      <div id="secao-url-custom">
+        <label style="display:block;margin-bottom:12px">URL RTSP personalizada
+          <small style="color:#94a3b8;font-weight:normal"> — preencha para substituir os campos acima</small>
+          <input id="cam-rtsp-url" type="text" placeholder="rtsp://admin:senha@10.0.200.15:554/stream1"
+                 style="width:100%;box-sizing:border-box;margin-top:4px">
+        </label>
+      </div>
+
+      <!-- Campos USB/CSI -->
+      <div id="secao-usb" style="display:none">
+        <label style="display:block;margin-bottom:12px">Índice do dispositivo
+          <input id="cam-indice" type="text" value="0" placeholder="0" style="width:100%;box-sizing:border-box;margin-top:4px">
+        </label>
+      </div>
+
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <input id="cam-ativo" type="checkbox" checked style="width:auto;padding:0">
+        Câmera ativa
+      </label>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button type="submit" style="background:#16a34a">Salvar</button>
+        <button type="button" id="btn-testar" onclick="testarCamera()" style="background:#16a34a">Testar Conexão</button>
+        <button type="button" onclick="fecharModal()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Cancelar</button>
+      </div>
+    </form>
+    <div id="teste-resultado" style="margin-top:14px"></div>
+    <img id="teste-snapshot" src="" alt="snapshot" style="display:none;margin-top:10px;max-width:100%;border-radius:6px">
+  </div>
+</div>
+
+<!-- Modal Lote -->
+<div id="modal-lote" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(2px);z-index:100;align-items:flex-start;justify-content:center;padding:20px 8px;overflow-y:auto">
+  <div style="background:#fff;border-radius:12px;padding:28px;width:1060px;max-width:98vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+    <h2 style="margin-top:0">Adicionar Câmeras em Lote</h2>
+
+    <label style="display:block;margin-bottom:16px;max-width:420px">Posto — aplica a todas as linhas
+      <select id="lote-empresa" required style="width:100%;margin-top:4px"></select>
+    </label>
+
+    <!-- Valores padrão para preenchimento -->
+    <details style="margin-bottom:16px">
+      <summary style="cursor:pointer;font-size:13px;color:#64748b;padding:10px 14px;background:#f8fafc;border-radius:8px;user-select:none;border:1px solid #e2e8f0">
+        &#9998; Valores padrão para novas linhas
+        <small style="color:#94a3b8;margin-left:8px">— preenche automaticamente ao gerar ou adicionar linha</small>
+      </summary>
+      <div style="background:#f8fafc;border-radius:0 0 8px 8px;padding:14px;border:1px solid #e2e8f0;border-top:none">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px;margin-bottom:12px">
+          <label>Tipo
+            <select id="lote-tipo" style="width:100%;margin-top:4px">
+              <option value="rtsp">RTSP / DVR</option>
+              <option value="intelbras">Intelbras</option>
+              <option value="usb">USB</option>
+              <option value="csi">CSI</option>
+            </select>
+          </label>
+          <label>Porta
+            <input id="lote-porta" type="text" value="554" style="width:100%;box-sizing:border-box;margin-top:4px">
+          </label>
+          <label>Usuário padrão
+            <input id="lote-usuario" type="text" value="admin" style="width:100%;box-sizing:border-box;margin-top:4px">
+          </label>
+          <label>Senha padrão
+            <input id="lote-senha" type="password" placeholder="senha" style="width:100%;box-sizing:border-box;margin-top:4px">
+          </label>
+          <label>Subtype
+            <select id="lote-subtype" style="width:100%;margin-top:4px">
+              <option value="1">1 — Sub (leve)</option>
+              <option value="0">0 — Main (HD)</option>
+            </select>
+          </label>
+          <label>Formato URL
+            <select id="lote-formato" style="width:100%;margin-top:4px">
+              <option value="padrao">Padrão Intelbras</option>
+              <option value="dahua">Dahua</option>
+              <option value="custom">Personalizado</option>
+            </select>
+          </label>
+        </div>
+        <button onclick="aplicarPadroesTodas()" style="background:#fff;color:#374151;border:1px solid #e2e8f0;font-size:12px">
+          Aplicar padrões a todas as linhas
+        </button>
+        <small style="color:#94a3b8;margin-left:8px">sobrescreve usuário e senha de cada linha</small>
+      </div>
+    </details>
+
+    <!-- Tabela de câmeras -->
+    <div style="overflow-x:auto;margin-bottom:14px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="background:#f8fafc">
+            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Nome</th>
+            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Local</th>
+            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0;white-space:nowrap">Host / IP</th>
+            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Usuário</th>
+            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Senha</th>
+            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Canal</th>
+            <th style="padding:8px 6px;text-align:center;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Ativo</th>
+            <th style="padding:8px 6px;width:28px;border-bottom:2px solid #e2e8f0"></th>
+            <th style="padding:8px 6px;width:32px;border-bottom:2px solid #e2e8f0"></th>
+          </tr>
+        </thead>
+        <tbody id="lote-tbody"></tbody>
+      </table>
+      <p id="lote-sem-linhas" style="color:#64748b;font-size:13px;text-align:center;padding:16px 0;margin:0">
+        Nenhuma câmera adicionada. Clique em "+ Adicionar Linha".
+      </p>
+    </div>
+
+    <button onclick="adicionarLinhaLote()" style="background:#fff;color:#374151;border:1px solid #e2e8f0;margin-bottom:16px">+ Adicionar Linha</button>
+
+    <!-- Barra de progresso -->
+    <div id="lote-progresso" style="display:none;margin-bottom:16px">
+      <div style="background:#e2e8f0;border-radius:4px;height:8px;overflow:hidden;margin-bottom:6px">
+        <div id="lote-barra" style="height:100%;background:#7c3aed;width:0%;transition:width .2s"></div>
+      </div>
+      <p id="lote-txt" style="font-size:13px;color:#64748b;margin:0"></p>
+    </div>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button id="btn-salvar-lote" onclick="salvarLote()" style="background:#16a34a">
+        Salvar (<span id="lote-count">0</span>)
+      </button>
+      <button onclick="fecharModalLote()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  #modal-overlay { display: none; }
+  #modal-overlay.aberto { display: flex !important; }
+  #modal-lote.aberto { display: flex !important; }
+  .lote-input { background:#fff;border:1px solid #e2e8f0;border-radius:5px;color:#1e293b;padding:4px 7px;font-size:13px;outline:none;transition:border-color .15s }
+  .lote-input:focus { border-color:#7c3aed;box-shadow:0 0 0 2px rgba(124,58,237,.1) }
+  #lote-tbody tr { border-bottom:1px solid #f1f5f9; }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const params = new URLSearchParams(location.search);
+const FILTRO_EMPRESA = params.get('empresa_id') ? parseInt(params.get('empresa_id')) : null;
+
+let _cameras = [];
+let _empresas = [];
+let _editandoId = null;
+
+function nomeEmpresa(id) {
+  if (!id) return '— sem posto —';
+  const e = _empresas.find(x => x.id === id);
+  return e ? e.nome : `#${id}`;
+}
+
+async function carregarEmpresas() {
+  _empresas = await fetch('/api/empresas').then(r => r.json()).catch(() => []);
+  document.getElementById('cam-empresa').innerHTML =
+    _empresas.map(e => `<option value="${e.id}">${esc(e.nome)} (${esc(e.cnpj)})</option>`).join('')
+    || '<option value="">— cadastre uma empresa primeiro —</option>';
+}
+
+async function carregarCameras() {
+  const url = FILTRO_EMPRESA ? `/api/cameras?empresa_id=${FILTRO_EMPRESA}` : '/api/cameras';
+  const res = await fetch(url);
+  _cameras = await res.json();
+  if (FILTRO_EMPRESA) {
+    const badge = document.getElementById('filtro-badge');
+    badge.style.display = '';
+    badge.textContent = 'Filtrando por: ' + nomeEmpresa(FILTRO_EMPRESA);
+  }
+  renderTabela();
+}
+
+function renderTabela() {
+  const tbody = document.getElementById('tbody');
+  const sem = document.getElementById('sem-cameras');
+  tbody.innerHTML = '';
+  if (!_cameras.length) { sem.style.display = ''; return; }
+  sem.style.display = 'none';
+  _cameras.forEach(cam => {
+    const hostOuIndice = ['intelbras','rtsp'].includes(cam.camera_tipo)
+      ? (cam.intelbras_host || '—')
+      : `índice ${cam.camera_indice}`;
+    const ativo = cam.ativo
+      ? '<span class="badge badge-ok">Ativo</span>'
+      : '<span class="badge badge-err">Inativo</span>';
+    const semEmpresa = !cam.empresa_id;
+    tbody.innerHTML += `<tr>
+      <td${semEmpresa ? ' style="color:#b91c1c"' : ''}>${esc(nomeEmpresa(cam.empresa_id))}</td>
+      <td>${esc(cam.local || '—')}</td>
+      <td>${esc(cam.nome)}</td>
+      <td>${cam.camera_tipo}</td>
+      <td>${esc(hostOuIndice)}</td>
+      <td>${ativo}</td>
+      <td style="white-space:nowrap">
+        <a href="/roi-camera/${cam.id}" style="display:inline-flex;align-items:center;padding:8px 12px;
+           border-radius:7px;background:#0f172a;color:#fff;font-size:14px;font-weight:500;
+           text-decoration:none;margin-right:4px">Abrir</a>
+        <button onclick="editarCamera(${cam.id})" style="background:#16a34a;margin-right:4px">Editar</button>
+        <button onclick="removerCamera(${cam.id})" style="background:#dc2626">Remover</button>
+      </td>
+    </tr>`;
+  });
+}
+
+function abrirModal(cam = null) {
+  _editandoId = cam ? cam.id : null;
+  document.getElementById('modal-titulo').textContent = cam ? 'Editar Câmera' : 'Nova Câmera';
+  document.getElementById('cam-id').value = cam ? cam.id : '';
+  document.getElementById('cam-empresa').value = cam ? (cam.empresa_id || '') : (FILTRO_EMPRESA || '');
+  document.getElementById('cam-local').value = cam ? (cam.local || '') : '';
+  document.getElementById('cam-nome').value = cam ? cam.nome : '';
+  document.getElementById('cam-tipo').value = cam ? cam.camera_tipo : 'intelbras';
+  document.getElementById('cam-host').value = cam ? cam.intelbras_host : '';
+  document.getElementById('cam-porta').value = cam ? cam.intelbras_porta : '554';
+  document.getElementById('cam-usuario').value = cam ? cam.intelbras_usuario : 'admin';
+  document.getElementById('cam-senha').value = '';
+  document.getElementById('cam-canal').value = cam ? cam.intelbras_canal : '1';
+  document.getElementById('cam-subtype').value = cam ? cam.intelbras_subtype : '1';
+  document.getElementById('cam-formato').value = cam ? cam.intelbras_formato : 'padrao';
+  document.getElementById('cam-indice').value = cam ? cam.camera_indice : '0';
+  document.getElementById('cam-rtsp-url').value = cam ? (cam.rtsp_url_custom || '') : '';
+  document.getElementById('cam-ativo').checked = cam ? !!cam.ativo : true;
+  document.getElementById('teste-resultado').textContent = '';
+  document.getElementById('teste-snapshot').style.display = 'none';
+  atualizarCampos();
+  document.getElementById('modal-overlay').classList.add('aberto');
+}
+
+function fecharModal() {
+  document.getElementById('modal-overlay').classList.remove('aberto');
+}
+
+function editarCamera(id) {
+  const cam = _cameras.find(c => c.id === id);
+  if (cam) abrirModal(cam);
+}
+
+function atualizarCampos() {
+  const tipo = document.getElementById('cam-tipo').value;
+  const usaIntelbras = ['intelbras','rtsp'].includes(tipo);
+  document.getElementById('secao-intelbras').style.display = usaIntelbras ? '' : 'none';
+  document.getElementById('secao-url-custom').style.display = usaIntelbras ? '' : 'none';
+  document.getElementById('secao-usb').style.display = usaIntelbras ? 'none' : '';
+}
+
+async function salvarCamera(e) {
+  e.preventDefault();
+  const tipo = document.getElementById('cam-tipo').value;
+  const senha = document.getElementById('cam-senha').value;
+  const payload = {
+    nome: document.getElementById('cam-nome').value.trim(),
+    empresa_id: parseInt(document.getElementById('cam-empresa').value) || null,
+    local: document.getElementById('cam-local').value.trim(),
+    camera_tipo: tipo,
+    camera_indice: document.getElementById('cam-indice').value || '0',
+    intelbras_host: document.getElementById('cam-host').value.trim(),
+    intelbras_porta: document.getElementById('cam-porta').value.trim() || '554',
+    intelbras_usuario: document.getElementById('cam-usuario').value.trim() || 'admin',
+    intelbras_canal: document.getElementById('cam-canal').value.trim() || '1',
+    intelbras_subtype: document.getElementById('cam-subtype').value,
+    intelbras_formato: document.getElementById('cam-formato').value,
+    rtsp_url_custom: document.getElementById('cam-rtsp-url').value.trim(),
+    ativo: document.getElementById('cam-ativo').checked,
+  };
+  if (senha) payload.intelbras_senha = senha;
+
+  const btnSalvar = document.querySelector('#form-camera button[type="submit"]');
+  btnSalvar.disabled = true;
+  btnSalvar.textContent = 'Salvando…';
+
+  try {
+    const url = _editandoId ? `/api/cameras/${_editandoId}` : '/api/cameras';
+    const metodo = _editandoId ? 'PUT' : 'POST';
+    const res = await fetch(url, { method: metodo, headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    if (res.ok) {
+      fecharModal();
+      await carregarCameras();
+    } else {
+      await avisarResposta(res);
+    }
+  } finally {
+    btnSalvar.disabled = false;
+    btnSalvar.textContent = 'Salvar';
+  }
+}
+
+async function removerCamera(id) {
+  const cam = _cameras.find(c => c.id === id);
+  if (!confirm(`Remover câmera "${cam?.nome}"?`)) return;
+  const res = await fetch(`/api/cameras/${id}`, { method: 'DELETE' });
+  if (res.ok) await carregarCameras();
+}
+
+async function testarCamera() {
+  const resultado = document.getElementById('teste-resultado');
+  const snap = document.getElementById('teste-snapshot');
+  resultado.textContent = 'Testando…';
+  resultado.style.color = '#94a3b8';
+  snap.style.display = 'none';
+
+  try {
+    let res;
+
+    if (_editandoId) {
+      // Câmera já salva: usa frame do pipeline em execução (sem abrir segunda conexão RTSP)
+      res = await fetch(`/api/cameras/${_editandoId}/teste`, { method: 'POST' });
+    } else {
+      // Câmera nova (ainda não salva): tenta conexão direta
+      const tipo = document.getElementById('cam-tipo').value;
+      const senha = document.getElementById('cam-senha').value;
+      const payload = {
+        camera_tipo: tipo,
+        camera_indice: document.getElementById('cam-indice').value || '0',
+        camera_largura: 1280, camera_altura: 720, camera_fps: 15,
+        intelbras_host: document.getElementById('cam-host').value.trim(),
+        intelbras_porta: document.getElementById('cam-porta').value.trim() || '554',
+        intelbras_usuario: document.getElementById('cam-usuario').value.trim() || 'admin',
+        intelbras_senha: senha,
+        intelbras_canal: document.getElementById('cam-canal').value.trim() || '1',
+        intelbras_subtype: document.getElementById('cam-subtype').value,
+        intelbras_formato: document.getElementById('cam-formato').value,
+      };
+      res = await fetch('/api/camera/teste', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+    }
+
+    if (res.ok) {
+      const blob = await res.blob();
+      snap.src = URL.createObjectURL(blob);
+      snap.style.display = '';
+      resultado.textContent = '✓ Câmera respondendo';
+      resultado.style.color = '#15803d';
+    } else {
+      const err = await res.json().catch(() => ({}));
+      resultado.textContent = '✗ Falha: ' + (err.detail || res.status);
+      resultado.style.color = '#f87171';
+    }
+  } catch (ex) {
+    resultado.textContent = '✗ Erro de rede: ' + ex.message;
+    resultado.style.color = '#f87171';
+  }
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Scan RTSP ────────────────────────────────────────────────────────────────
+
+async function toggleScan() {
+  const painel = document.getElementById('painel-scan');
+  const visivel = painel.style.display !== 'none';
+  painel.style.display = visivel ? 'none' : '';
+  if (!visivel && !document.getElementById('scan-rede').value) {
+    await sugerirRede();
+  }
+}
+
+async function sugerirRede() {
+  try {
+    const r = await fetch('/api/cameras/rede-local');
+    const d = await r.json();
+    if (d.rede_sugerida) {
+      document.getElementById('scan-rede').value = d.rede_sugerida;
+    }
+  } catch (_) {}
+}
+
+async function iniciarScan() {
+  const btn = document.getElementById('btn-scan');
+  const status = document.getElementById('scan-status');
+  const resultados = document.getElementById('scan-resultados');
+  const rede = document.getElementById('scan-rede').value.trim();
+  const porta = document.getElementById('scan-porta').value.trim() || '554';
+  const timeout = document.getElementById('scan-timeout').value.trim() || '0.3';
+
+  if (!rede) { status.textContent = 'Informe a sub-rede.'; status.style.color = '#f87171'; return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Escaneando…';
+  status.style.color = '#94a3b8';
+  status.textContent = `Varrendo ${rede} na porta ${porta}…`;
+  resultados.innerHTML = '';
+
+  try {
+    const res = await fetch('/api/cameras/scan', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ rede, porta: parseInt(porta), timeout: parseFloat(timeout) })
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      status.textContent = '✗ ' + (data.detail || res.status);
+      status.style.color = '#f87171';
+      return;
+    }
+
+    if (data.total === 0) {
+      status.textContent = `Nenhum host com porta ${porta} encontrado em ${rede}.`;
+      status.style.color = '#94a3b8';
+      return;
+    }
+
+    status.textContent = `${data.total} host(s) encontrado(s) com porta ${porta} aberta:`;
+    status.style.color = '#15803d';
+
+    const ul = document.createElement('ul');
+    ul.style.cssText = 'list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px';
+    data.hosts.forEach(ip => {
+      const li = document.createElement('li');
+      li.style.cssText = 'display:flex;align-items:center;gap:10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:8px 12px';
+      li.innerHTML = `
+        <span style="font-family:monospace;color:#0f172a;flex:1">${esc(ip)}</span>
+        <span style="font-size:12px;color:#64748b">porta ${esc(porta)}</span>
+        <button onclick="usarIpScan('${esc(ip)}', '${esc(porta)}')" style="background:#16a34a;padding:4px 10px;font-size:12px">
+          Usar este IP
+        </button>`;
+      ul.appendChild(li);
+    });
+    resultados.appendChild(ul);
+  } catch (ex) {
+    status.textContent = '✗ Erro: ' + ex.message;
+    status.style.color = '#f87171';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Escanear';
+  }
+}
+
+function usarIpScan(ip, porta) {
+  abrirModal();
+  document.getElementById('cam-tipo').value = 'rtsp';
+  document.getElementById('cam-host').value = ip;
+  document.getElementById('cam-porta').value = porta || '554';
+  atualizarCampos();
+  document.getElementById('painel-scan').style.display = 'none';
+  document.getElementById('cam-nome').focus();
+}
+
+(async () => {
+  await carregarEmpresas();
+  const selLote = document.getElementById('lote-empresa');
+  selLote.innerHTML = document.getElementById('cam-empresa').innerHTML;
+  if (FILTRO_EMPRESA) selLote.value = FILTRO_EMPRESA;
+  await carregarCameras();
+})();
+
+// ── Modal Lote ────────────────────────────────────────────────────────────────
+
+let _loteId = 0;
+
+function abrirModalLote() {
+  document.getElementById('modal-lote').classList.add('aberto');
+  atualizarContadorLote();
+}
+
+function fecharModalLote() {
+  document.getElementById('modal-lote').classList.remove('aberto');
+}
+
+function atualizarContadorLote() {
+  const n = document.getElementById('lote-tbody').querySelectorAll('tr').length;
+  document.getElementById('lote-count').textContent = n;
+  document.getElementById('lote-sem-linhas').style.display = n ? 'none' : '';
+}
+
+function _padroesAtuais() {
+  return {
+    usuario: document.getElementById('lote-usuario').value || 'admin',
+    senha:   document.getElementById('lote-senha').value,
+  };
+}
+
+function adicionarLinhaLote(dados = {}) {
+  const id = ++_loteId;
+  const tbody = document.getElementById('lote-tbody');
+  const pad = _padroesAtuais();
+
+  const tr = document.createElement('tr');
+  tr.id = `lote-row-${id}`;
+  tr.dataset.id = id;
+  tr.style.borderBottom = '1px solid #f1f5f9';
+  tr.innerHTML = `
+    <td style="padding:4px 5px">
+      <input class="lote-nome lote-input" type="text" value="${esc(dados.nome || '')}"
+             placeholder="Nome da câmera" style="width:140px">
+    </td>
+    <td style="padding:4px 5px">
+      <input class="lote-local lote-input" type="text" value="${esc(dados.local || '')}"
+             placeholder="onde está" style="width:130px">
+    </td>
+    <td style="padding:4px 5px">
+      <input class="lote-host lote-input" type="text" value="${esc(dados.host || '')}"
+             placeholder="192.168.1.108" style="width:118px">
+    </td>
+    <td style="padding:4px 5px">
+      <input class="lote-usuario lote-input" type="text" value="${esc(dados.usuario ?? pad.usuario)}"
+             style="width:80px">
+    </td>
+    <td style="padding:4px 5px">
+      <input class="lote-senha lote-input" type="password" value="${esc(dados.senha ?? pad.senha)}"
+             placeholder="senha" style="width:90px">
+    </td>
+    <td style="padding:4px 5px">
+      <input class="lote-canal lote-input" type="text" value="${esc(String(dados.canal ?? '1'))}"
+             style="width:44px">
+    </td>
+    <td style="padding:4px 5px;text-align:center">
+      <input class="lote-ativo" type="checkbox" ${dados.ativo !== false ? 'checked' : ''}
+             style="width:auto;padding:0">
+    </td>
+    <td id="lote-status-${id}" style="padding:4px 5px;width:28px;text-align:center;font-size:15px"></td>
+    <td style="padding:4px 5px">
+      <button onclick="removerLinhaLote(${id})"
+              style="background:#dc2626;padding:3px 8px;font-size:12px">✕</button>
+    </td>`;
+  tbody.appendChild(tr);
+  atualizarContadorLote();
+}
+
+function removerLinhaLote(id) {
+  document.getElementById(`lote-row-${id}`)?.remove();
+  atualizarContadorLote();
+}
+
+function aplicarPadroesTodas() {
+  const pad = _padroesAtuais();
+  document.getElementById('lote-tbody').querySelectorAll('tr').forEach(row => {
+    row.querySelector('.lote-usuario').value = pad.usuario;
+    if (pad.senha) row.querySelector('.lote-senha').value = pad.senha;
+  });
+}
+
+async function salvarLote() {
+  const tbody = document.getElementById('lote-tbody');
+  const rows  = Array.from(tbody.querySelectorAll('tr'));
+  if (!rows.length) { avisar('Adicione ao menos uma câmera.', 'err'); return; }
+
+  const empresaId = parseInt(document.getElementById('lote-empresa').value) || null;
+  if (!empresaId) { avisar('Selecione a empresa (posto) das câmeras.', 'err'); return; }
+
+  const tipo    = document.getElementById('lote-tipo').value;
+  const porta   = document.getElementById('lote-porta').value   || '554';
+  const subtype = document.getElementById('lote-subtype').value;
+  const formato = document.getElementById('lote-formato').value;
+
+  const btn = document.getElementById('btn-salvar-lote');
+  btn.disabled = true;
+
+  const progresso = document.getElementById('lote-progresso');
+  const barra     = document.getElementById('lote-barra');
+  const txt       = document.getElementById('lote-txt');
+  progresso.style.display = '';
+
+  let ok = 0, erros = 0;
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const id  = row.dataset.id;
+    const statusEl = document.getElementById(`lote-status-${id}`);
+
+    const nome    = row.querySelector('.lote-nome').value.trim() || `Câmera ${i + 1}`;
+    const local   = row.querySelector('.lote-local').value.trim();
+    const host    = row.querySelector('.lote-host').value.trim();
+    const usuario = row.querySelector('.lote-usuario').value.trim() || 'admin';
+    const senha   = row.querySelector('.lote-senha').value;
+    const canal   = row.querySelector('.lote-canal').value.trim() || '1';
+    const ativo   = row.querySelector('.lote-ativo').checked;
+
+    statusEl.textContent = '⏳';
+    txt.textContent = `Salvando ${i + 1} / ${rows.length}…`;
+    barra.style.width = `${((i + 1) / rows.length) * 100}%`;
+
+    const payload = {
+      nome,
+      empresa_id: empresaId,
+      local,
+      camera_tipo: tipo,
+      camera_indice: '0',
+      intelbras_host: host,
+      intelbras_porta: porta,
+      intelbras_usuario: usuario,
+      intelbras_canal: canal,
+      intelbras_subtype: subtype,
+      intelbras_formato: formato,
+      rtsp_url_custom: '',
+      ativo,
+    };
+    if (senha) payload.intelbras_senha = senha;
+
+    try {
+      const res = await fetch('/api/cameras', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        ok++;
+        statusEl.innerHTML = '<span style="color:#4ade80">✓</span>';
+        row.style.opacity = '0.5';
+      } else {
+        erros++;
+        const err = await res.json().catch(() => ({}));
+        const detalhe = esc(err.detail || String(res.status));
+        statusEl.innerHTML = `<span style="color:#f87171;cursor:help" title="${detalhe}">✗</span>`;
+      }
+    } catch (ex) {
+      erros++;
+      statusEl.innerHTML = `<span style="color:#f87171;cursor:help" title="${esc(ex.message)}">✗</span>`;
+    }
+  }
+
+  txt.textContent = `Concluído: ${ok} salva${ok !== 1 ? 's' : ''}${erros ? `, ${erros} com erro` : ''}.`;
+  btn.disabled = false;
+
+  if (ok > 0) await carregarCameras();
+  if (!erros) setTimeout(() => fecharModalLote(), 1400);
+}
+</script>
+{% endblock %}

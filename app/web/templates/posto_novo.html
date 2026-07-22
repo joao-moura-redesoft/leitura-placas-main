@@ -1,0 +1,274 @@
+{% extends "base.html" %}
+{% block title %}Novo posto — ALPR{% endblock %}
+{% block conteudo %}
+<div style="max-width:900px">
+  <a href="/postos" style="color:#64748b;font-size:13px;text-decoration:none">← Postos</a>
+  <h1 style="margin:6px 0 6px">Novo posto</h1>
+  <p style="color:#64748b;margin:0 0 22px;font-size:14px">
+    Cadastra tudo numa passada. As áreas de captura são desenhadas no final, uma tela por câmera.
+  </p>
+
+  <div class="card">
+    <h2 style="margin:0 0 12px">1. Entidade e posto</h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <label>Entidade (rede/grupo)
+        <select id="entidade" style="width:100%;margin-top:4px"></select>
+      </label>
+      <label id="wrap-entidade-nova" style="display:none">Nome da nova entidade
+        <input id="entidade-nova" style="width:100%;box-sizing:border-box;margin-top:4px">
+      </label>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <label>CNPJ
+        <input id="cnpj" placeholder="00.000.000/0001-00" style="width:100%;box-sizing:border-box;margin-top:4px">
+      </label>
+      <label>Nome do posto
+        <input id="posto-nome" placeholder="ex: Posto Centro" style="width:100%;box-sizing:border-box;margin-top:4px">
+      </label>
+    </div>
+  </div>
+
+  <!-- Câmeras -->
+  <div class="card">
+    <h2 style="margin:0 0 4px">2. Câmeras</h2>
+    <p style="color:#94a3b8;font-size:13px;margin:0 0 12px">
+      Uma linha por câmera física. Uma mesma câmera pode atender vários bicos.
+    </p>
+    <details style="margin-bottom:14px">
+      <summary style="cursor:pointer;font-size:13px;color:#64748b;padding:9px 13px;background:#f8fafc;
+               border:1px solid #e2e8f0;border-radius:8px;user-select:none">
+        Credenciais padrão — preenchem cada nova linha
+      </summary>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px;
+                  padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px">
+        <label>Host / DVR<input id="pad-host" placeholder="192.168.1.108" style="width:100%;box-sizing:border-box;margin-top:4px"></label>
+        <label>Porta<input id="pad-porta" value="554" style="width:100%;box-sizing:border-box;margin-top:4px"></label>
+        <label>Usuário<input id="pad-usuario" value="admin" style="width:100%;box-sizing:border-box;margin-top:4px"></label>
+        <label>Senha<input id="pad-senha" type="password" style="width:100%;box-sizing:border-box;margin-top:4px"></label>
+      </div>
+    </details>
+    <div class="tabela-rolavel">
+      <table>
+        <thead><tr><th>Nome</th><th>Local</th><th>Host</th><th>Usuário</th><th>Senha</th><th>Canal</th><th></th></tr></thead>
+        <tbody id="cameras"></tbody>
+      </table>
+    </div>
+    <button onclick="addCamera()" style="margin-top:12px;background:#fff;color:#374151;border:1px solid #e2e8f0">
+      + Câmera
+    </button>
+  </div>
+
+  <!-- Automação e bicos -->
+  <div class="card">
+    <h2 style="margin:0 0 4px">3. Automação e bicos</h2>
+    <p style="color:#94a3b8;font-size:13px;margin:0 0 12px">
+      Códigos precisam ser <strong>exatamente</strong> os que o roteador envia — confirme com quem
+      configura o sistema do posto antes de salvar.
+    </p>
+    <label style="max-width:300px;margin-bottom:14px;display:block">Código da automação
+      <input id="automacao" placeholder="ex: 1" style="width:100%;box-sizing:border-box;margin-top:4px">
+    </label>
+    <div class="tabela-rolavel">
+      <table>
+        <thead><tr><th>Código do bico</th><th>Nome</th><th>Câmera</th><th>Bomba</th><th>Lado</th><th></th></tr></thead>
+        <tbody id="bicos"></tbody>
+      </table>
+    </div>
+    <button onclick="addBico()" style="margin-top:12px;background:#fff;color:#374151;border:1px solid #e2e8f0">
+      + Bico
+    </button>
+  </div>
+
+  <div id="erro" style="display:none" class="alert alert-err"></div>
+  <div id="progresso" style="display:none" class="card"></div>
+
+  <div style="display:flex;gap:10px;margin-bottom:40px">
+    <button onclick="salvar()" id="btn-salvar" style="background:#16a34a;padding:10px 24px;font-size:15px">
+      Criar posto
+    </button>
+    <a href="/postos" style="display:inline-flex;align-items:center;padding:10px 20px;border-radius:7px;
+       background:#fff;color:#374151;border:1px solid #e2e8f0;text-decoration:none">Cancelar</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let _nc = 0, _nb = 0;
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+const val = id => (document.getElementById(id)?.value || '').trim();
+
+async function carregarEntidades() {
+  const ents = await fetch('/api/entidades').then(r => r.json()).catch(() => []);
+  document.getElementById('entidade').innerHTML =
+    ents.map(e => `<option value="${e.id}">${esc(e.nome)}</option>`).join('') +
+    '<option value="__nova__">+ Criar nova entidade…</option>';
+  if (!ents.length) document.getElementById('entidade').value = '__nova__';
+  toggleNova();
+}
+function toggleNova() {
+  const nova = document.getElementById('entidade').value === '__nova__';
+  document.getElementById('wrap-entidade-nova').style.display = nova ? '' : 'none';
+}
+
+// ── Câmeras ──────────────────────────────────────────────────────────────────
+function addCamera() {
+  const id = ++_nc;
+  const tr = document.createElement('tr');
+  tr.id = `cam-${id}`; tr.dataset.id = id;
+  tr.innerHTML = `
+    <td><input class="c-nome"    placeholder="ex: DVR canal 3" style="width:130px"></td>
+    <td><input class="c-local"   placeholder="ex: Bomba 2"     style="width:120px"></td>
+    <td><input class="c-host"    value="${esc(val('pad-host'))}"    placeholder="IP/DVR" style="width:120px"></td>
+    <td><input class="c-usuario" value="${esc(val('pad-usuario') || 'admin')}" style="width:85px"></td>
+    <td><input class="c-senha"   type="password" value="${esc(val('pad-senha'))}" style="width:90px"></td>
+    <td><input class="c-canal"   value="1" style="width:55px"></td>
+    <td><button onclick="removerCamera(${id})" style="background:#dc2626;padding:4px 9px;font-size:12px">✕</button></td>`;
+  document.getElementById('cameras').appendChild(tr);
+  tr.querySelectorAll('.c-nome, .c-local').forEach(i => i.addEventListener('input', syncSelects));
+  syncSelects();
+}
+function removerCamera(id) {
+  document.getElementById(`cam-${id}`)?.remove();
+  syncSelects();
+}
+function listaCameras() {
+  return Array.from(document.querySelectorAll('#cameras tr')).map((tr, i) => ({
+    idx: tr.dataset.id,
+    ordem: i,
+    nome: tr.querySelector('.c-nome').value.trim(),
+    local: tr.querySelector('.c-local').value.trim(),
+    host: tr.querySelector('.c-host').value.trim(),
+    usuario: tr.querySelector('.c-usuario').value.trim() || 'admin',
+    senha: tr.querySelector('.c-senha').value,
+    canal: tr.querySelector('.c-canal').value.trim() || '1',
+  }));
+}
+// Cada bico escolhe entre as câmeras definidas acima — é o compartilhamento seletivo
+// que o assistente antigo não permitia (ele forçava a mesma câmera para todos).
+function syncSelects() {
+  const cams = listaCameras();
+  document.querySelectorAll('#bicos select.b-camera').forEach(sel => {
+    const atual = sel.value;
+    sel.innerHTML = cams.length
+      ? cams.map(c => `<option value="${c.idx}">${esc(c.local || c.nome || `câmera ${c.ordem + 1}`)}</option>`).join('')
+      : '<option value="">— defina uma câmera acima —</option>';
+    if (cams.some(c => c.idx === atual)) sel.value = atual;
+  });
+}
+
+// ── Bicos ────────────────────────────────────────────────────────────────────
+function addBico() {
+  const id = ++_nb;
+  const tr = document.createElement('tr');
+  tr.id = `bico-${id}`;
+  tr.innerHTML = `
+    <td><input class="b-codigo" placeholder="ex: 1" style="width:100px"></td>
+    <td><input class="b-nome"   placeholder="opcional" style="width:130px"></td>
+    <td><select class="b-camera" style="width:150px"></select></td>
+    <td><input class="b-bomba" type="number" min="1" style="width:70px"></td>
+    <td><input class="b-lado"  type="number" min="1" style="width:70px"></td>
+    <td><button onclick="document.getElementById('bico-${id}').remove()"
+        style="background:#dc2626;padding:4px 9px;font-size:12px">✕</button></td>`;
+  document.getElementById('bicos').appendChild(tr);
+  syncSelects();
+}
+
+function erro(txt) {
+  const el = document.getElementById('erro');
+  el.style.display = ''; el.innerHTML = txt;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+function passo(txt, ok = true) {
+  const p = document.getElementById('progresso');
+  p.style.display = '';
+  p.innerHTML += `<div style="font-size:13px;color:${ok ? '#15803d' : '#b91c1c'}">${ok ? '✓' : '✗'} ${esc(txt)}</div>`;
+}
+async function api(metodo, url, body) {
+  const r = await fetch(url, { method: metodo, headers: { 'Content-Type': 'application/json' },
+                               body: body ? JSON.stringify(body) : undefined });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || `${metodo} ${url} -> ${r.status}`);
+  return d;
+}
+
+async function salvar() {
+  const btn = document.getElementById('btn-salvar');
+  document.getElementById('erro').style.display = 'none';
+  document.getElementById('progresso').innerHTML = '';
+
+  const cnpj = val('cnpj'), postoNome = val('posto-nome'), autoCod = val('automacao');
+  const cams = listaCameras().filter(c => c.nome || c.local || c.host);
+  const bicos = Array.from(document.querySelectorAll('#bicos tr')).map(tr => ({
+    codigo: tr.querySelector('.b-codigo').value.trim(),
+    nome:   tr.querySelector('.b-nome').value.trim(),
+    camIdx: tr.querySelector('.b-camera').value,
+    bomba:  tr.querySelector('.b-bomba').value || null,
+    lado:   tr.querySelector('.b-lado').value || null,
+  })).filter(b => b.codigo);
+
+  if (!cnpj || !postoNome) return erro('Informe o CNPJ e o nome do posto (passo 1).');
+  if (!cams.length)        return erro('Adicione ao menos uma câmera (passo 2).');
+  if (cams.some(c => !c.nome && !c.local)) return erro('Toda câmera precisa de nome ou local (passo 2).');
+  if (!autoCod)            return erro('Informe o código da automação (passo 3).');
+  if (!bicos.length)       return erro('Adicione ao menos um bico com código (passo 3).');
+  if (bicos.some(b => !b.camIdx)) return erro('Todo bico precisa de uma câmera (passo 3).');
+
+  btn.disabled = true; btn.textContent = 'Criando…';
+  try {
+    let entId = val('entidade');
+    if (entId === '__nova__') {
+      const nome = val('entidade-nova');
+      if (!nome) throw new Error('Informe o nome da nova entidade (passo 1).');
+      entId = (await api('POST', '/api/entidades', { nome })).id;
+      passo(`Entidade "${nome}" criada`);
+    }
+
+    const empId = (await api('POST', '/api/empresas',
+      { entidade_id: parseInt(entId), cnpj, nome: postoNome })).id;
+    passo(`Posto "${postoNome}" criado`);
+
+    // idx local -> id real, para os bicos apontarem para a câmera certa
+    const mapaCam = {};
+    for (const c of cams) {
+      const p = {
+        nome: c.nome || c.local, local: c.local, empresa_id: empId,
+        camera_tipo: 'rtsp', camera_indice: '0',
+        intelbras_host: c.host, intelbras_porta: val('pad-porta') || '554',
+        intelbras_usuario: c.usuario, intelbras_canal: c.canal,
+        intelbras_subtype: '0', intelbras_formato: 'padrao', ativo: true,
+      };
+      if (c.senha) p.intelbras_senha = c.senha;
+      mapaCam[c.idx] = (await api('POST', '/api/cameras', p)).id;
+      passo(`Câmera "${p.nome}" criada`);
+    }
+
+    const autoId = (await api('POST', '/api/automacoes',
+      { empresa_id: empId, codigo: autoCod })).id;
+    passo(`Automação "${autoCod}" criada`);
+
+    for (const b of bicos) {
+      await api('POST', '/api/bicos', {
+        automacao_id: autoId, camera_id: mapaCam[b.camIdx],
+        codigo: b.codigo, nome: b.nome, bomba: b.bomba, lado: b.lado,
+      });
+      passo(`Bico "${b.codigo}" criado`);
+    }
+
+    passo('Pronto — abrindo o posto para desenhar as áreas');
+    setTimeout(() => { location.href = `/posto/${empId}`; }, 900);
+  } catch (ex) {
+    passo(ex.message, false);
+    erro(`<strong>Parou aqui:</strong> ${esc(ex.message)}<br>
+      O que já foi criado permanece — continue pela
+      <a href="/postos" style="color:#b91c1c;font-weight:600">lista de postos</a>.`);
+    btn.disabled = false; btn.textContent = 'Criar posto';
+  }
+}
+
+document.getElementById('entidade').addEventListener('change', toggleNova);
+carregarEntidades();
+addCamera();
+addBico();
+</script>
+{% endblock %}

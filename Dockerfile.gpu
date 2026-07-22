@@ -1,0 +1,118 @@
+# Variante GPU (NVIDIA CUDA) para o servidor de produção.
+#
+#     docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+# Requisitos no HOST: driver NVIDIA + NVIDIA Container Toolkit
+# (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+# Só o driver basta — CUDA/cuDNN vêm nesta imagem.
+#
+# Por que existe: app/visao/hardware.py pede CUDA automaticamente e cai para CPU SEM
+# ERRO se não achar. Com a imagem CPU padrão isso é silencioso — o servidor funciona,
+# só fica ~7s por tentativa de leitura em vez do que a GPU entregaria. Confirme no log
+# de boot: "ONNX Runtime: GPU CUDA disponível" (e não "sem CUDA ... usando CPU").
+#
+# ATENÇÃO: esta imagem NÃO pôde ser construída/testada no ambiente onde foi escrita
+# (máquina de desenvolvimento Windows, sem GPU e sem Docker). As versões de CUDA/cuDNN
+# abaixo seguem a matriz de compatibilidade do onnxruntime-gpu 1.25 (CUDA 12.x + cuDNN 9),
+# mas VALIDE no servidor real antes de colocar em produção — ver seção "Validação" no fim.
+
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1
+
+# Ubuntu 22.04 traz Python 3.10; o projeto é desenvolvido em 3.11 (deadsnakes).
+# NÃO instalar `python3-pip` aqui: esse pacote instala o pip do Python 3.10, em
+# dist-packages que o 3.11 não enxerga — `python -m pip` quebraria com "No module named
+# pip" depois de apontar /usr/bin/python para o 3.11. O pip do 3.11 vem do `ensurepip`
+# (disponibilizado pelo pacote python3.11-venv), logo abaixo.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common gnupg ca-certificates \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-venv \
+        python3.11-dev \
+        python3.11-distutils \
+        tesseract-ocr \
+        tesseract-ocr-por \
+        libgl1 \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        ffmpeg \
+        v4l-utils \
+        curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python \
+    && python3.11 -m ensurepip --upgrade
+
+RUN groupadd --gid 1000 alpr && useradd --uid 1000 --gid 1000 --create-home alpr
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+# Ordem deliberada, num ÚNICO RUN (uma camada só — um `pip uninstall` numa camada
+# posterior não recupera o espaço da anterior, e a imagem carregaria os dois torch):
+#
+#   1. torch CUDA ANTES do requirements.txt. O easyocr depende de `torch` sem fixar
+#      versão; encontrando o CUDA já instalado, o pip o aceita e não baixa o torch CPU.
+#      Instalar depois significaria baixar torch duas vezes (~200MB CPU + ~2,5GB CUDA).
+#   2. requirements.txt normalmente (traz easyocr, paddle, opencv, fastapi...).
+#   3. troca onnxruntime (CPU, vem fixado no requirements) por onnxruntime-gpu na MESMA
+#      versão — é o que acelera a detecção em 2 estágios.
+#
+# O `python -c` no fim falha o build se o torch CUDA tiver sido trocado por um CPU por
+# alguma dependência transitiva — melhor quebrar aqui do que descobrir em produção que a
+# GPU nunca foi usada (hardware.py cai para CPU sem erro nenhum).
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir torch torchvision \
+         --index-url https://download.pytorch.org/whl/cu124 \
+    && python -m pip install --no-cache-dir -r requirements.txt \
+    && python -m pip uninstall -y onnxruntime \
+    && python -m pip install --no-cache-dir onnxruntime-gpu==1.25.1 \
+    && python -c "import torch; assert torch.version.cuda, 'torch sem CUDA na imagem'; print('torch CUDA:', torch.version.cuda)"
+
+# PaddleOCR em GPU: o requirements.txt registra que NÃO foi validado em GPU real neste
+# projeto. Fica desligado por padrão aqui — o reforço PaddleOCR continua funcionando em
+# CPU (config ocr_leitura_paddle=sim) enquanto detecção e EasyOCR já usam a GPU.
+# Para testar o Paddle em GPU no servidor, descomente e valide a acurácia depois:
+# RUN python -m pip uninstall -y paddlepaddle \
+#     && python -m pip install --no-cache-dir paddlepaddle-gpu
+
+COPY --chown=alpr:alpr . .
+
+# Ver nota de portabilidade no Dockerfile (CPU): `COPY --chmod` exigiria BuildKit, e
+# isto precisa rodar antes do `USER alpr` para poder escrever em /.
+RUN cp /app/entrypoint.sh /entrypoint.sh && chmod 755 /entrypoint.sh
+
+ENV HOME=/home/alpr \
+    DB_PATH=/app/dados/placas.db \
+    CONFIG_PATH=/app/dados/config.txt
+
+# Sem `USER alpr` — ver a nota no Dockerfile (CPU): o entrypoint prepara os volumes como
+# root e baixa o privilégio com setpriv antes de subir o servidor.
+
+EXPOSE 14000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
+    CMD curl -sf http://localhost:14000/api/healthz || exit 1
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["python", "-m", "app.main"]
+
+# ── Validação no servidor (antes de considerar pronto) ────────────────────────────
+#   1. docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#   2. docker compose exec alpr nvidia-smi          → a GPU precisa aparecer
+#   3. docker compose logs alpr | grep -i cuda      → esperado:
+#        "ONNX Runtime: GPU CUDA disponível — detecção acelerada por GPU"
+#        "PyTorch (EasyOCR): GPU CUDA disponível"
+#      Se aparecer "sem CUDA ... usando CPU", a GPU não chegou ao container (toolkit
+#      ausente no host) ou a versão de CUDA/cuDNN não bate com o onnxruntime-gpu.
+#   4. Meça a latência real de uma leitura e ajuste leitura_timeout_seg (hoje 28s,
+#      calibrado para CPU) para um valor coerente com a GPU.

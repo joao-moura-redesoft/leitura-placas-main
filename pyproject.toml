@@ -1,0 +1,13 @@
+[project]
+name = "leitura-placas"
+version = "0.1.0"
+description = "Sistema de reconhecimento automático de placas (ALPR)"
+requires-python = ">=3.10"
+# Dependências de execução continuam declaradas em requirements.txt.
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

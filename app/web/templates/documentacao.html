@@ -1,0 +1,636 @@
+{% extends "base.html" %}
+{% block title %}Documentação — ALPR{% endblock %}
+{% block conteudo %}
+<style>
+  .doc-header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 16px; }
+  .doc-header p { margin: 6px 0 0; color: #94a3b8; max-width: 820px; line-height: 1.5; }
+  .doc-tabs { display: inline-flex; gap: 6px; padding: 4px; background: #111827; border: 1px solid #2a3142; border-radius: 8px; }
+  .doc-tab { background: transparent; color: #cbd5e1; border: 1px solid transparent; padding: 9px 14px; }
+  .doc-tab:hover { background: #1f2937; }
+  .doc-tab.active { background: #16a34a; color: #fff; }
+  .doc-panel { display: none; }
+  .doc-panel.active { display: block; }
+  .doc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .doc-section { background: #1a1f2b; border: 1px solid #2a3142; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .doc-section h2, .doc-section h3 { margin-top: 0; }
+  .doc-section p, .doc-section li { color: #cbd5e1; line-height: 1.55; }
+  .doc-section small { color: #94a3b8; }
+  .doc-list { margin: 0; padding-left: 20px; }
+  .doc-code { font-family: Consolas, Monaco, monospace; font-size: 13px; color: #e5e7eb; background: #0a0d13; border: 1px solid #2a3142; border-radius: 6px; padding: 10px; overflow-x: auto; white-space: pre-wrap; }
+  .endpoint { display: grid; grid-template-columns: 92px minmax(180px, 1fr); gap: 10px; align-items: start; padding: 10px 0; border-bottom: 1px solid #2a3142; }
+  .endpoint:last-child { border-bottom: 0; }
+  .method { display: inline-block; min-width: 62px; text-align: center; padding: 3px 8px; border-radius: 4px; font: 700 12px Consolas, Monaco, monospace; }
+  .get { background: #0f766e; }
+  .post { background: #0369a1; }
+  .put { background: #7c3aed; }
+  .delete { background: #dc2626; }
+  .path { font-family: Consolas, Monaco, monospace; color: #fff; }
+  .note { color: #94a3b8; margin-top: 4px; }
+  .api-examples { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-top: 18px; }
+  .api-card { background: #111827; border: 1px solid #2a3142; border-radius: 8px; padding: 12px; min-width: 0; }
+  .api-card h3 { margin: 0 0 8px; font-size: 15px; }
+  .api-card .api-meta { color: #94a3b8; font-size: 12px; margin-bottom: 8px; }
+  .api-label { color: #4da3ff; font-size: 12px; font-weight: 700; margin: 10px 0 4px; text-transform: uppercase; }
+  .api-runner { background: #111827; border: 1px solid #2a3142; border-radius: 8px; padding: 14px; margin: 18px 0; }
+  .runner-row { display: grid; grid-template-columns: 1fr 120px; gap: 12px; margin-bottom: 12px; }
+  .runner-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .runner-field label { color: #94a3b8; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+  .runner-field input, .runner-field select, .runner-field textarea { width: 100%; box-sizing: border-box; }
+  .runner-field textarea { min-height: 132px; resize: vertical; font-family: Consolas, Monaco, monospace; }
+  .runner-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .runner-actions button { min-height: 38px; }
+  .runner-status { color: #94a3b8; font-size: 13px; }
+  .runner-image { display: none; max-width: 100%; border-radius: 6px; border: 1px solid #2a3142; margin-top: 10px; }
+  @media (max-width: 720px) {
+    .doc-header { display: block; }
+    .doc-tabs { width: 100%; margin-top: 12px; box-sizing: border-box; }
+    .doc-tab { flex: 1; }
+    .endpoint { grid-template-columns: 1fr; }
+    .runner-row { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="doc-header">
+  <div>
+    <h1>Documentação</h1>
+    <p>Guia da aplicação ALPR: um servidor central multi-tenant, acionado pelo sistema de
+       automação de cada posto quando um abastecimento termina. Use as abas para alternar
+       entre visão de operação e visão de desenvolvimento.</p>
+  </div>
+  <div class="doc-tabs" role="tablist" aria-label="Abas da documentação">
+    <button class="doc-tab active" id="tab-user" role="tab" aria-selected="true" aria-controls="panel-user" onclick="mostrarAba('user')">User</button>
+    <button class="doc-tab" id="tab-dev" role="tab" aria-selected="false" aria-controls="panel-dev" onclick="mostrarAba('dev')">Developer</button>
+  </div>
+</div>
+
+<section id="panel-user" class="doc-panel active" role="tabpanel" aria-labelledby="tab-user">
+  <div class="doc-grid">
+    <div class="doc-section">
+      <h2>Funcionamento do Web</h2>
+      <p>A interface web organiza o cadastro por posto e a operação em torno da chamada
+         que o roteador de cada posto faz quando um abastecimento termina.</p>
+      <ul class="doc-list">
+        <li><strong>Postos:</strong> ponto de partida. Lista os postos por entidade dizendo o que falta em cada um (câmera, automação, bico, área de captura). Cada posto tem câmeras, bicos, imagens ao vivo e teste de leitura numa tela só.</li>
+        <li><strong>Integração:</strong> mede as chamadas do roteador — volume, taxa de sucesso, acordo médio, tempo médio, e o motivo de cada chamada recusada (nível de cadastro que não bateu). Também mostra os logs do servidor.</li>
+        <li><strong>Histórico:</strong> consulta detecções gravadas no SQLite, com posto/bico de origem, filtro por placa/posto/bico/período, e as duas imagens de cada leitura (recorte da placa e quadro inteiro).</li>
+        <li><strong>Listas:</strong> cadastra placas em lista branca ou negra para acompanhamento operacional.</li>
+        <li><strong>Cadastro › Postos</strong> (recomendado) e o assistente <strong>Novo posto</strong> criam entidade, posto, câmeras, automação e bicos numa passada. <strong>Câmeras</strong>/<strong>Entidades</strong>/<strong>Automações</strong>/<strong>Bicos</strong> no menu "Sistema" são o mesmo cadastro em telas avulsas, uma tabela por nível.</li>
+        <li><strong>Área de captura</strong> (aberta a partir de uma câmera): uma imagem por câmera, um retângulo por bico — vários bicos podem compartilhar a mesma câmera.</li>
+        <li><strong>Configuração:</strong> ajusta detector, OCR, snapshots, thresholds, RTSP e comportamento do pipeline contínuo.</li>
+        <li><strong>Testes:</strong> mede acurácia do OCR contra um dataset rotulado, capturando por bico (já recortado pela área) para medir o mesmo caminho que a produção usa.</li>
+      </ul>
+    </div>
+
+    <div class="doc-section">
+      <h2>Fluxo de Leitura Reativa</h2>
+      <ol class="doc-list">
+        <li>O sistema de automação do posto detecta que um abastecimento terminou e chama <span class="path">GET /api/leitura</span> com entidade/CNPJ/automação/bico.</li>
+        <li>O servidor resolve esses 4 valores até achar a câmera e a área (ROI) do bico — ou devolve em qual nível o cadastro não bateu.</li>
+        <li>Tira uma foto fresca da câmera (ou reaproveita o frame do pipeline contínuo, se a câmera já estiver em modo ao vivo) e recorta pela área do bico.</li>
+        <li>Detector (2 estágios: veículo → placa) localiza a placa dentro do recorte; o OCR (ensemble de engines) lê o texto.</li>
+        <li>Repete captura + detecção até o consenso entre as leituras ficar forte o bastante ou o tempo esgotar ("reject-retry").</li>
+        <li>A leitura é registrada em <span class="path">deteccoes</span> (com o posto/bico de origem) e a chamada em <span class="path">chamadas</span> (sucesso ou não), visível no Histórico e na Integração.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="doc-section">
+    <h2>Operação Recomendada</h2>
+    <div class="doc-grid">
+      <div>
+        <h3>Cadastrar um posto novo</h3>
+        <ul class="doc-list">
+          <li>Em <span class="path">/postos</span>, use <strong>+ Novo posto</strong> — cria entidade (se precisar), posto/CNPJ, câmeras, automação e bicos numa tela.</li>
+          <li>Termina abrindo a tela do posto para desenhar a área de captura de cada bico (uma imagem por câmera, um retângulo por bico).</li>
+          <li>Use <strong>"Testar como o roteador"</strong> na tela do posto para validar a chamada sem esperar um abastecimento real.</li>
+          <li>Confirme com quem for programar o roteador que os códigos de automação/bico cadastrados batem com o que será enviado — ver <span class="path">docs/INTEGRACAO_ROTEADOR.md</span>.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Leitura manual / teste</h3>
+        <ul class="doc-list">
+          <li>Na tela do posto ou na área de captura da câmera, clique <strong>Ler placa deste bico</strong>.</li>
+          <li>O sistema captura fotos incrementalmente até o consenso ficar forte (padrão "reject-retry"), recortando pela área do bico selecionado.</li>
+          <li>O retorno mostra placa, padrão, confiança, acordo e o número de tentativas. Fica marcado como leitura de teste — não conta como chamada do roteador.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Diagnóstico</h3>
+        <ul class="doc-list">
+          <li>Use <span class="path">/dashboard</span> (Integração) para ver chamadas recentes, taxa de sucesso e o motivo de cada recusa.</li>
+          <li>Use <span class="path">/api/chamadas?apenas_erros=true</span> para listar só as chamadas recusadas.</li>
+          <li>Use <span class="path">/api/health</span> para a saúde das câmeras em modo contínuo (thread viva, frescor do frame, reinícios).</li>
+          <li>Use <span class="path">/api/debug/ocr_crop</span> para ver o último crop enviado ao OCR.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="panel-dev" class="doc-panel" role="tabpanel" aria-labelledby="tab-dev">
+  <div class="doc-section">
+    <h2>Arquitetura da Aplicação</h2>
+    <p><small>Pacote <span class="path">app/</span> em camadas: <span class="path">core</span> não importa domínio; <span class="path">visao</span>/<span class="path">streaming</span>/<span class="path">operacao</span>/<span class="path">seguranca</span> importam só <span class="path">core</span>; <span class="path">web</span> e <span class="path">servidor</span> importam de todos. Executa com <span class="path">python -m app.main</span> a partir da raiz.</small></p>
+    <div class="doc-grid">
+      <div>
+        <h3>Entrada e Servidor</h3>
+        <ul class="doc-list">
+          <li><span class="path">app/main.py</span> ajusta o event loop no Windows e inicia o servidor.</li>
+          <li><span class="path">app/servidor.py</span> cria o FastAPI, monta estáticos, inicializa banco, aquece os modelos de leitura em background e inicia pipelines contínuos.</li>
+          <li><span class="path">app/web/paginas.py</span> expõe as páginas Jinja2; <span class="path">app/web/api.py</span>, <span class="path">leitura.py</span>, <span class="path">cadastro.py</span> e <span class="path">testes.py</span> expõem a API REST.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Leitura</h3>
+        <ul class="doc-list">
+          <li><span class="path">app/visao/leitura.py</span> tem a lógica de domínio da leitura sob demanda (reject-retry, consenso por caractere), compartilhada pelo endpoint reativo e pelo teste manual.</li>
+          <li><span class="path">app/visao/pipeline.py</span> orquestra o modo contínuo (captura → detector → OCR → votação → persistência), usado só quando a câmera está em modo "ao vivo".</li>
+          <li><span class="path">app/visao/detector.py</span> detecção em 2 estágios (veículo YOLOX → placa) via ONNX; <span class="path">app/visao/ocr/</span> suporta múltiplos engines com seleção automática e ensemble.</li>
+          <li><span class="path">app/visao/validador.py</span> normaliza e valida placas antigas e Mercosul.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Estado e Dados</h3>
+        <ul class="doc-list">
+          <li><span class="path">app/core/banco.py</span> gerencia o SQLite: cadastro multi-tenant (entidades/empresas/automacoes/bicos), câmeras, deteccoes, chamadas, listas_placas, usuarios.</li>
+          <li><span class="path">app/core/estado.py</span> mantém status em memória, frames recentes, logs e crop de debug.</li>
+          <li><span class="path">app/core/config.py</span> lê e salva <span class="path">config.txt</span> com padrões seguros.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="doc-section">
+    <h2>API REST</h2>
+    <p><small>Porta padrão local: <span class="path">http://localhost:14000</span> (configurável). Os endpoints abaixo retornam JSON, exceto snapshots/testes que retornam JPEG.</small></p>
+
+    <h3 style="margin-top:16px">Leitura reativa</h3>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/leitura</span><div class="note">Endpoint que o roteador do posto chama. Query: <span class="path">entidade</span>, <span class="path">cnpj</span>, <span class="path">automacao</span>, <span class="path">bico</span>. Sem autenticação (rede interna). Contrato completo em <span class="path">docs/INTEGRACAO_ROTEADOR.md</span>.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/chamadas?apenas_erros&status&empresa_id&limit</span><div class="note">Chamadas recentes ao endpoint reativo, inclusive as recusadas, com o motivo.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/chamadas/resumo?horas=24</span><div class="note">Agregados: total, sucesso, acordo médio, tempo médio, por posto, motivos de falha.</div></div></div>
+
+    <h3 style="margin-top:16px">Cadastro por posto</h3>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/postos</span><div class="note">Lista postos com contagem de câmeras/automações/bicos e se está "pronto" para operar.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/postos/{empresa_id}</span><div class="note">Detalhe consolidado: câmeras (com estado "ao vivo"), automações e bicos (com área/câmera).</div></div></div>
+
+    <h3 style="margin-top:16px">Cadastro (CRUD por nível)</h3>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/entidades</span><div class="note">+ <span class="path">POST</span>, <span class="path">PUT /{id}</span>, <span class="path">DELETE /{id}</span>.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/empresas?entidade_id</span><div class="note">Posto = CNPJ. + <span class="path">POST</span>, <span class="path">PUT /{id}</span>, <span class="path">DELETE /{id}</span>.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/automacoes?empresa_id</span><div class="note">+ <span class="path">POST</span>, <span class="path">PUT /{id}</span>, <span class="path">DELETE /{id}</span>.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/bicos?automacao_id&camera_id</span><div class="note">+ <span class="path">GET /{id}</span>, <span class="path">POST</span>, <span class="path">PUT /{id}</span>, <span class="path">DELETE /{id}</span>. Câmera precisa ser do mesmo posto da automação.</div></div></div>
+    <div class="endpoint"><span class="method put">PUT</span><div><span class="path">/api/bicos/{id}/roi</span><div class="note">Salva a área de captura ({x,y,w,h}). <span class="path">DELETE</span> remove (volta a analisar o quadro inteiro).</div></div></div>
+    <div class="endpoint"><span class="method post">POST</span><div><span class="path">/api/bicos/{id}/ler-placa-teste</span><div class="note">Testa a leitura desse bico direto, sem montar a URL completa do roteador. Marca a detecção como origem "teste".</div></div></div>
+
+    <h3 style="margin-top:16px">Câmeras</h3>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/cameras?empresa_id</span><div class="note">+ <span class="path">POST</span>, <span class="path">PUT /{id}</span>, <span class="path">DELETE /{id}</span> (recusa se algum bico ainda usa a câmera). Toda câmera pertence a um posto (<span class="path">empresa_id</span> obrigatório) e tem um <span class="path">local</span> livre.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/cameras/{id}/detalhe</span><div class="note">Câmera + posto + bicos + se está em modo "ao vivo" + dimensões do frame atual — usado pela página da câmera.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/cameras/{id}/snapshot</span><div class="note">Frame atual como JPEG (do pipeline se ativo, senão captura direta).</div></div></div>
+    <div class="endpoint"><span class="method post">POST</span><div><span class="path">/api/cameras/{id}/teste</span><div class="note">Testa a conexão da câmera cadastrada e devolve JPEG.</div></div></div>
+    <div class="endpoint"><span class="method post">POST</span><div><span class="path">/api/camera/teste</span><div class="note">Testa parâmetros de câmera avulsos (ainda não salvos) e devolve JPEG.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/cameras/rede-local</span><div class="note">Sugere a sub-rede local para o scan.</div></div></div>
+    <div class="endpoint"><span class="method post">POST</span><div><span class="path">/api/cameras/scan</span><div class="note">Varre uma faixa de IP procurando porta RTSP aberta.</div></div></div>
+
+    <h3 style="margin-top:16px">Histórico, listas e sistema</h3>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/deteccoes?placa&desde&ate&empresa_id&bico_id&incluir_testes&limit&offset</span><div class="note">Histórico de detecções, com posto/bico de origem. Leituras de teste ficam fora por padrão.</div></div></div>
+    <div class="endpoint"><span class="method delete">DELETE</span><div><span class="path">/api/deteccoes/{id}</span><div class="note">Remove uma detecção do histórico.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/placa/{placa}</span><div class="note">Resumo consolidado para uma placa: última detecção, lista branca/negra, histórico recente.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/listas?tipo=branca</span><div class="note">Lista placas cadastradas em listas branca/negra. + <span class="path">POST</span>, <span class="path">DELETE /{id}</span>.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/stats</span><div class="note">Total, leituras de hoje, top placas, FPS, uptime, pipeline e modo automático.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/health</span><div class="note">Saúde por câmera em modo contínuo: thread viva, frescor do frame, histórico de reinícios.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/logs?nivel=ERROR&limit=100</span><div class="note">Logs em memória, opcionalmente filtrados por nível. + <span class="path">DELETE</span> limpa.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/config</span><div class="note">Configuração atual e padrões (campos sensíveis mascarados). + <span class="path">POST</span> salva e tenta reiniciar o pipeline.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/modelos</span><div class="note">Lista arquivos <span class="path">.onnx</span> disponíveis em <span class="path">models/</span>.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/debug/ocr_crop</span><div class="note">Retorna JPEG do último crop enviado ao OCR.</div></div></div>
+
+    <h3 style="margin-top:16px">Testes (dataset de precisão)</h3>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/testes/bicos</span><div class="note">Bicos disponíveis para captura, com posto/câmera e se têm área definida.</div></div></div>
+    <div class="endpoint"><span class="method post">POST</span><div><span class="path">/api/testes/capturar-bico/{bico_id}</span><div class="note">Captura da câmera do bico já recortada pela área — mede o mesmo caminho que a produção.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/testes/dataset</span><div class="note">Dataset rotulado. + <span class="path">POST</span> adiciona/atualiza, <span class="path">DELETE</span> remove.</div></div></div>
+    <div class="endpoint"><span class="method post">POST</span><div><span class="path">/api/testes/rodar</span><div class="note">Roda o dataset contra os engines de OCR escolhidos e devolve acurácia.</div></div></div>
+
+    <h2 style="margin-top:22px">Executar endpoint</h2>
+    <div class="api-runner">
+      <div class="runner-field" style="margin-bottom:12px">
+        <label for="runner-endpoint">Endpoint</label>
+        <select id="runner-endpoint" onchange="selecionarEndpoint()"></select>
+      </div>
+      <div class="runner-row">
+        <div class="runner-field">
+          <label for="runner-url">URL montada</label>
+          <input id="runner-url" type="text" readonly>
+        </div>
+        <div class="runner-field">
+          <label for="runner-method">Método</label>
+          <input id="runner-method" type="text" readonly>
+        </div>
+      </div>
+      <div class="doc-grid">
+        <div class="runner-field">
+          <label for="runner-params">Parâmetros JSON</label>
+          <textarea id="runner-params" oninput="atualizarRunnerUrl()"></textarea>
+        </div>
+        <div class="runner-field">
+          <label for="runner-body">Body JSON</label>
+          <textarea id="runner-body"></textarea>
+        </div>
+      </div>
+      <div class="runner-actions" style="margin-top:12px">
+        <button type="button" onclick="executarEndpoint()">Executar</button>
+        <button type="button" onclick="selecionarEndpoint()">Restaurar exemplo</button>
+        <span id="runner-status" class="runner-status"></span>
+      </div>
+      <div class="api-label" style="margin-top:14px">Resposta</div>
+      <pre id="runner-response" class="doc-code">Aguardando execução.</pre>
+      <img id="runner-image" class="runner-image" alt="Resposta em imagem">
+    </div>
+
+    <h2 style="margin-top:22px">JSON de cada requisição</h2>
+    <p><small>Quando o endpoint não possui body, a documentação indica os parâmetros de rota/query e mostra um exemplo de resposta.</small></p>
+    <div id="api-json-exemplos" class="api-examples"></div>
+  </div>
+
+  <div class="doc-grid">
+    <div class="doc-section">
+      <h2>Exemplos de Requisição</h2>
+      <div class="doc-code">GET /api/leitura?entidade=OPCAO&amp;cnpj=12345678000111&amp;automacao=1&amp;bico=1</div>
+      <br>
+      <div class="doc-code">POST /api/bicos
+Content-Type: application/json
+
+{
+  "automacao_id": 2,
+  "codigo": "1",
+  "nome": "Bico 1",
+  "camera_id": 3,
+  "bomba": 2,
+  "lado": 1
+}</div>
+      <br>
+      <div class="doc-code">POST /api/listas
+Content-Type: application/json
+
+{
+  "placa": "ABC1D23",
+  "tipo": "negra",
+  "descricao": "Monitorar acesso"
+}</div>
+    </div>
+
+    <div class="doc-section">
+      <h2>Banco de Dados</h2>
+      <ul class="doc-list">
+        <li><span class="path">entidades</span> → <span class="path">empresas</span> (posto = 1 CNPJ) → <span class="path">automacoes</span> (até 2 por posto, desempata quando o posto tem dois sistemas) → <span class="path">bicos</span> (código do GET reativo, câmera, ROI, bomba/lado opcionais).</li>
+        <li><span class="path">cameras</span>: registro de conexão (tipo, RTSP/Intelbras, senha, URL customizada), pertence a um posto (<span class="path">empresa_id</span>) e tem um <span class="path">local</span> livre. Bomba/lado e área de captura ficam no bico, não na câmera.</li>
+        <li><span class="path">deteccoes</span>: placa, padrão, confiança, snapshot (recorte) e frame (quadro inteiro), bico_id, origem (roteador/teste/pipeline), data UTC.</li>
+        <li><span class="path">chamadas</span>: log de toda chamada ao endpoint reativo, inclusive as recusadas — status, motivo, acordo, duração.</li>
+        <li><span class="path">listas_placas</span>: placa única, tipo branca/negra, descrição e data UTC.</li>
+      </ul>
+    </div>
+
+    <div class="doc-section">
+      <h2>Cuidados de Manutenção</h2>
+      <ul class="doc-list">
+        <li>Ao mudar chaves de configuração, atualize <span class="path">config.PADROES</span> e a lista permitida da API.</li>
+        <li>Ao criar campos no SQLite, adicione migração incremental em <span class="path">banco._migrar</span> — bancos de clientes já existentes precisam migrar sem perder dado.</li>
+        <li>Evite abrir duas conexões RTSP para a mesma câmera; reaproveite frame do pipeline quando possível (ver <span class="path">app/web/leitura.py:frame_ao_vivo</span>).</li>
+        <li>Para novos OCRs, implemente a mesma interface: <span class="path">carregar()</span>, <span class="path">ler()</span> e, quando aplicável, <span class="path">ler_detalhado()</span>.</li>
+        <li>Mudança no contrato de <span class="path">GET /api/leitura</span> (parâmetros, formato de resposta) precisa ser refletida em <span class="path">docs/INTEGRACAO_ROTEADOR.md</span> — é a especificação que o lado do roteador usa.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const apiExemplos = [
+  {
+    metodo: 'GET',
+    rota: '/api/leitura',
+    parametros: { entidade: 'OPCAO', cnpj: '12345678000111', automacao: '1', bico: '1' },
+    body: null,
+    resposta: { entidade: 'OPCAO', cnpj: '12345678000111', automacao: '1', bico: '1', camera_id: 3, bico_id: 2, placa: 'PGK2D93', padrao: 'mercosul', confianca: 0.91, acordo: 0.85, votos_snapshot: 5, total_snapshots: 6, tentativas: 6, parada_motivo: 'acordo', snapshot: '/static/snapshots/20260721T185912_PGK2D93.jpg', frame_url: '/static/snapshots/preview_bico_2.jpg' }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/postos',
+    parametros: null,
+    body: null,
+    resposta: [{ id: 1, nome: 'ALTIPLANO', cnpj: '12345678000111', entidade_nome: 'OPCAO', n_cameras: 2, n_automacoes: 1, n_bicos: 4, n_bicos_sem_roi: 0, pronto: true }]
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/postos/{empresa_id}',
+    parametros: { empresa_id: 1 },
+    body: null,
+    resposta: { empresa: { id: 1, nome: 'ALTIPLANO', cnpj: '12345678000111' }, entidade: { id: 1, nome: 'OPCAO' }, cameras: [{ id: 3, nome: 'itelbras', local: 'Bomba 2 - Lado 1', ao_vivo: true }], automacoes: [{ id: 2, codigo: '1', bicos: [{ id: 2, codigo: '1', tem_roi: true, camera_nome: 'itelbras' }] }] }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/chamadas/resumo',
+    parametros: { horas: 24 },
+    body: null,
+    resposta: { horas: 24, total: 12, ok: 9, sem_placa: 1, erro_cadastro: 1, erro_camera: 1, taxa_sucesso: 0.75, acordo_medio: 0.82, duracao_media_ms: 24500, por_posto: [{ posto: 'ALTIPLANO', ok: 9, total: 11 }], motivos: [{ motivo: 'cadastro não encontrado: automacao', n: 1 }] }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/bicos',
+    parametros: { automacao_id: 2 },
+    body: null,
+    resposta: [{ id: 2, automacao_id: 2, codigo: '1', nome: 'Bico 1', bomba: 2, lado: 1, camera_id: 3, roi: '{"x":591,"y":316,"w":423,"h":401}', ativo: 1 }]
+  },
+  {
+    metodo: 'POST',
+    rota: '/api/bicos',
+    parametros: null,
+    body: { automacao_id: 2, codigo: '2', nome: 'Bico 2', camera_id: 3, bomba: 2, lado: 2 },
+    resposta: { id: 5 }
+  },
+  {
+    metodo: 'PUT',
+    rota: '/api/bicos/{id}/roi',
+    parametros: { id: 2 },
+    body: { x: 591, y: 316, w: 423, h: 401 },
+    resposta: { salvo: true }
+  },
+  {
+    metodo: 'POST',
+    rota: '/api/bicos/{id}/ler-placa-teste',
+    parametros: { id: 2 },
+    body: null,
+    resposta: { camera_id: 3, bico_id: 2, placa: 'PGK2D93', padrao: 'mercosul', confianca: 0.91, acordo: 0.85, tentativas: 6, parada_motivo: 'acordo', frame_url: '/static/snapshots/preview_bico_2.jpg' }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/cameras',
+    parametros: { empresa_id: 1 },
+    body: null,
+    resposta: [{ id: 3, nome: 'itelbras', empresa_id: 1, local: 'Bomba 2 - Lado 1', camera_tipo: 'rtsp', camera_indice: '0', rtsp_url_custom: '', ativo: 1 }]
+  },
+  {
+    metodo: 'POST',
+    rota: '/api/cameras',
+    parametros: null,
+    body: { nome: 'DVR canal 3', empresa_id: 1, local: 'Cobertura bomba 2', camera_tipo: 'rtsp', camera_indice: '0', intelbras_host: '192.168.1.108', intelbras_porta: '554', intelbras_usuario: 'admin', intelbras_senha: '', intelbras_canal: '1', intelbras_subtype: '0', intelbras_formato: 'padrao', ativo: true },
+    resposta: { id: 4 }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/cameras/{id}/detalhe',
+    parametros: { id: 3 },
+    body: null,
+    resposta: { camera: { id: 3, nome: 'itelbras', local: 'Bomba 2 - Lado 1' }, posto: { id: 1, nome: 'ALTIPLANO' }, bicos: [{ id: 2, codigo: '1' }], ao_vivo: true, ultimo_frame_seg: 0.2, frame_largura: 1280, frame_altura: 720 }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/deteccoes',
+    parametros: { placa: 'ABC', desde: '2026-05-21T00:00:00Z', ate: '2026-05-21T23:59:59Z', limit: 50, offset: 0 },
+    body: null,
+    resposta: [{
+      id: 1,
+      placa: 'ABC1D23',
+      padrao: 'mercosul',
+      confianca: 0.91,
+      snapshot: '/static/snapshots/20260521T120000_ABC1D23.jpg',
+      frame: '/static/snapshots/20260521T120000_ABC1D23_frame.jpg',
+      criado_em: '2026-05-21T12:00:00+00:00',
+      bico_id: 2,
+      bico_codigo: '1',
+      empresa_nome: 'ALTIPLANO',
+      origem: 'roteador',
+      bbox: '{"x":120,"y":80,"w":220,"h":70}'
+    }]
+  },
+  {
+    metodo: 'DELETE',
+    rota: '/api/deteccoes/{id}',
+    parametros: { id: 1 },
+    body: null,
+    resposta: { removido: true }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/stats',
+    parametros: null,
+    body: null,
+    resposta: { total: 128, hoje: 12, top: [{ placa: 'ABC1D23', ocorrencias: 4 }], fps: 14.8, uptime_seg: 3600, pipeline: true, deteccao_automatica: true }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/health',
+    parametros: null,
+    body: null,
+    resposta: { status: 'ok', cameras: [{ id: 3, nome: 'itelbras', status: 'ok', thread_viva: true, ultimo_frame_seg: 0.1, restarts: 0 }], pipeline_threads: 1 }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/logs',
+    parametros: { nivel: 'ERROR', limit: 100 },
+    body: null,
+    resposta: [{ ts: '2026-05-21T12:00:00Z', level: 'ERROR', name: 'app.visao.pipeline', msg: 'Falha ao abrir câmera' }]
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/listas',
+    parametros: { tipo: 'negra' },
+    body: null,
+    resposta: [{ id: 1, placa: 'ABC1D23', tipo: 'negra', descricao: 'Monitorar acesso', criado_em: '2026-05-21T12:00:00Z' }]
+  },
+  {
+    metodo: 'POST',
+    rota: '/api/listas',
+    parametros: null,
+    body: { placa: 'ABC1D23', tipo: 'negra', descricao: 'Monitorar acesso' },
+    resposta: { id: 1 }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/config',
+    parametros: null,
+    body: null,
+    resposta: { porta: '14000', ocr_engine: 'auto', conf_threshold: '0.3', deteccao_automatica: 'sim', intelbras_senha: '', _padroes: {} }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/testes/bicos',
+    parametros: null,
+    body: null,
+    resposta: [{ id: 2, codigo: '1', tem_roi: true, camera_nome: 'itelbras', posto: 'ALTIPLANO' }]
+  },
+  {
+    metodo: 'POST',
+    rota: '/api/testes/capturar-bico/{bico_id}',
+    parametros: { bico_id: 2 },
+    body: { aplicar_roi: true },
+    resposta: { ok: true, nome: 'bico-1_20260721T142145_47a9.jpg', recortado_por_roi: true, largura: 378, altura: 494, origem: 'ALTIPLANO / bico 1' }
+  },
+  {
+    metodo: 'GET',
+    rota: '/api/debug/ocr_crop',
+    parametros: null,
+    body: null,
+    resposta: 'image/jpeg'
+  }
+];
+
+function formatarJson(valor) {
+  if (valor === null || valor === undefined) return 'Sem body JSON';
+  if (typeof valor === 'string') return valor;
+  return JSON.stringify(valor, null, 2);
+}
+
+function escaparHtml(valor) {
+  return String(valor)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function renderizarApiJson() {
+  const el = document.getElementById('api-json-exemplos');
+  if (!el) return;
+  el.innerHTML = apiExemplos.map((item) => `
+    <article class="api-card">
+      <h3><span class="method ${item.metodo.toLowerCase()}">${item.metodo}</span> <span class="path">${item.rota}</span></h3>
+      <div class="api-meta">${item.parametros ? 'Parâmetros: ' + escaparHtml(JSON.stringify(item.parametros)) : 'Parâmetros: nenhum'}</div>
+      <div class="api-label">Request JSON</div>
+      <pre class="doc-code">${escaparHtml(formatarJson(item.body))}</pre>
+      <div class="api-label">Response</div>
+      <pre class="doc-code">${escaparHtml(formatarJson(item.resposta))}</pre>
+    </article>
+  `).join('');
+}
+
+function valorJsonDoTextarea(id, fallback) {
+  const el = document.getElementById(id);
+  const texto = (el?.value || '').trim();
+  if (!texto) return fallback;
+  return JSON.parse(texto);
+}
+
+function montarEndpointUrl(item, params) {
+  const usados = new Set();
+  const rota = item.rota.replace(/\{([^}]+)\}/g, (_, chave) => {
+    usados.add(chave);
+    if (params[chave] === undefined || params[chave] === null || params[chave] === '') {
+      throw new Error(`Informe o parâmetro "${chave}"`);
+    }
+    return encodeURIComponent(params[chave]);
+  });
+
+  const query = new URLSearchParams();
+  Object.entries(params || {}).forEach(([chave, valor]) => {
+    if (usados.has(chave) || valor === undefined || valor === null || valor === '') return;
+    query.append(chave, valor);
+  });
+  const qs = query.toString();
+  return qs ? `${rota}?${qs}` : rota;
+}
+
+function endpointSelecionado() {
+  const select = document.getElementById('runner-endpoint');
+  return apiExemplos[Number(select?.value || 0)] || apiExemplos[0];
+}
+
+function atualizarRunnerUrl() {
+  const item = endpointSelecionado();
+  const status = document.getElementById('runner-status');
+  try {
+    const params = valorJsonDoTextarea('runner-params', {});
+    document.getElementById('runner-url').value = montarEndpointUrl(item, params || {});
+    if (status) status.textContent = '';
+  } catch (e) {
+    document.getElementById('runner-url').value = item.rota;
+    if (status) status.textContent = e.message;
+  }
+}
+
+function selecionarEndpoint() {
+  const item = endpointSelecionado();
+  const paramsEl = document.getElementById('runner-params');
+  const bodyEl = document.getElementById('runner-body');
+  document.getElementById('runner-method').value = item.metodo;
+  paramsEl.value = formatarJson(item.parametros || {});
+  bodyEl.value = item.body && typeof item.body !== 'string' ? formatarJson(item.body) : '';
+  bodyEl.placeholder = item.body ? '' : 'Sem body JSON para este endpoint';
+  document.getElementById('runner-response').textContent = 'Aguardando execução.';
+  document.getElementById('runner-image').style.display = 'none';
+  atualizarRunnerUrl();
+}
+
+function inicializarRunner() {
+  const select = document.getElementById('runner-endpoint');
+  if (!select) return;
+  select.innerHTML = apiExemplos.map((item, index) =>
+    `<option value="${index}">${item.metodo} ${item.rota}</option>`
+  ).join('');
+  selecionarEndpoint();
+}
+
+async function executarEndpoint() {
+  const item = endpointSelecionado();
+  const status = document.getElementById('runner-status');
+  const respostaEl = document.getElementById('runner-response');
+  const imgEl = document.getElementById('runner-image');
+  imgEl.style.display = 'none';
+
+  try {
+    const params = valorJsonDoTextarea('runner-params', {});
+    const url = montarEndpointUrl(item, params || {});
+    const bodyTexto = (document.getElementById('runner-body').value || '').trim();
+    const body = bodyTexto ? JSON.parse(bodyTexto) : null;
+
+    if (item.metodo !== 'GET') {
+      const ok = confirm(`${item.metodo} ${url}\n\nEsse endpoint pode alterar dados. Deseja executar?`);
+      if (!ok) return;
+    }
+
+    const inicio = performance.now();
+    status.textContent = 'Executando...';
+    respostaEl.textContent = '';
+
+    const opcoes = { method: item.metodo, headers: {} };
+    if (body !== null && item.metodo !== 'GET') {
+      opcoes.headers['Content-Type'] = 'application/json';
+      opcoes.body = JSON.stringify(body);
+    }
+
+    const resp = await fetch(url, opcoes);
+    const duracao = Math.round(performance.now() - inicio);
+    const tipo = resp.headers.get('content-type') || '';
+    status.textContent = `${resp.status} ${resp.statusText} · ${duracao}ms`;
+
+    if (tipo.includes('image/')) {
+      const blob = await resp.blob();
+      imgEl.src = URL.createObjectURL(blob);
+      imgEl.style.display = 'block';
+      respostaEl.textContent = `${tipo}\n${blob.size} bytes`;
+      return;
+    }
+
+    const texto = await resp.text();
+    try {
+      respostaEl.textContent = JSON.stringify(JSON.parse(texto), null, 2);
+    } catch (_) {
+      respostaEl.textContent = texto || '(resposta vazia)';
+    }
+  } catch (e) {
+    status.textContent = 'Erro';
+    respostaEl.textContent = e.message;
+  }
+}
+
+function mostrarAba(nome) {
+  const userAtiva = nome === 'user';
+  document.getElementById('panel-user').classList.toggle('active', userAtiva);
+  document.getElementById('panel-dev').classList.toggle('active', !userAtiva);
+  document.getElementById('tab-user').classList.toggle('active', userAtiva);
+  document.getElementById('tab-dev').classList.toggle('active', !userAtiva);
+  document.getElementById('tab-user').setAttribute('aria-selected', String(userAtiva));
+  document.getElementById('tab-dev').setAttribute('aria-selected', String(!userAtiva));
+}
+
+inicializarRunner();
+renderizarApiJson();
+</script>
+{% endblock %}

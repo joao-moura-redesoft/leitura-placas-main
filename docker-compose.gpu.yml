@@ -1,0 +1,26 @@
+# Override de GPU — use SEMPRE junto do compose base, não sozinho:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+# Requer NVIDIA Container Toolkit instalado no host. Sem ele, o `up` falha com
+# "could not select device driver nvidia" — é o comportamento desejado: falhar alto,
+# em vez de subir em CPU silenciosamente e ninguém perceber a lentidão.
+services:
+  alpr:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: leitura-placas:gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # O servidor tem 3 placas. `count: all` entrega todas ao container; como
+              # os locks de inferência são globais ao processo (1 inferência por vez —
+              # decisão registrada em app/visao/leitura.py), hoje isso NÃO multiplica o
+              # throughput por 3. Aproveitar as outras exige rodar mais instâncias do
+              # serviço, cada uma com sua GPU (device_ids: ["0"], ["1"], ...) atrás de um
+              # balanceador — mudança de arquitetura, não de configuração.
+              count: all
+              capabilities: [gpu]

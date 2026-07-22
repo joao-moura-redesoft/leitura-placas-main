@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Histórico — ALPR{% endblock %}
+{% block conteudo %}
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+  <h1 style="margin:0">Histórico de Leituras</h1>
+  <span id="contador" style="color:#94a3b8;font-size:13px"></span>
+</div>
+
+<div class="card" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+  <label style="flex:1;min-width:170px">Placa
+    <input id="filtro-placa" placeholder="ex: ABC1D23" style="width:100%;box-sizing:border-box;margin-top:4px">
+  </label>
+  <label style="min-width:200px">Posto
+    <select id="filtro-empresa" style="width:100%;margin-top:4px"><option value="">Todos</option></select>
+  </label>
+  <label style="min-width:170px">Bico
+    <select id="filtro-bico" style="width:100%;margin-top:4px"><option value="">Todos</option></select>
+  </label>
+  <label style="min-width:150px">Desde
+    <input id="filtro-desde" type="date" style="width:100%;box-sizing:border-box;margin-top:4px">
+  </label>
+  <button onclick="carregar()" style="height:36px">Buscar</button>
+  <button onclick="limparFiltros()" style="height:36px;background:#fff;color:#374151;border:1px solid #e2e8f0">Limpar</button>
+  <label style="display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap;height:36px">
+    <input type="checkbox" id="incluir-testes" onchange="carregar()" style="width:auto;padding:0">
+    Incluir testes
+  </label>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>Placa</th><th>Padrão</th><th>Confiança</th>
+        <th>Posto</th><th>Bico</th><th>Data</th><th>Imagens</th>
+      </tr>
+    </thead>
+    <tbody id="corpo"></tbody>
+  </table>
+  <p id="vazio" style="display:none;color:#94a3b8;margin:12px 0 0">Nenhuma leitura encontrada com esses filtros.</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const params = new URLSearchParams(location.search);
+let _bicos = [], _empresas = [], _automacoes = [];
+
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function carregarFiltros() {
+  [_empresas, _automacoes, _bicos] = await Promise.all([
+    fetch('/api/empresas').then(r => r.json()).catch(() => []),
+    fetch('/api/automacoes').then(r => r.json()).catch(() => []),
+    fetch('/api/bicos').then(r => r.json()).catch(() => []),
+  ]);
+  document.getElementById('filtro-empresa').innerHTML =
+    '<option value="">Todos</option>' +
+    _empresas.map(e => `<option value="${e.id}">${esc(e.nome)}</option>`).join('');
+  if (params.get('empresa_id')) document.getElementById('filtro-empresa').value = params.get('empresa_id');
+  if (params.get('bico_id')) document.getElementById('filtro-bico').value = params.get('bico_id');
+  atualizarBicos();
+}
+
+// O select de bico acompanha o posto escolhido — senão vira uma lista enorme de bicos
+// de clientes diferentes, todos com códigos parecidos ("1", "2"...).
+function atualizarBicos() {
+  const empId = document.getElementById('filtro-empresa').value;
+  const autosDoPosto = empId
+    ? _automacoes.filter(a => String(a.empresa_id) === String(empId)).map(a => a.id)
+    : _automacoes.map(a => a.id);
+  const lista = _bicos.filter(b => autosDoPosto.includes(b.automacao_id));
+  const sel = document.getElementById('filtro-bico');
+  const atual = sel.value;
+  sel.innerHTML = '<option value="">Todos</option>' +
+    lista.map(b => `<option value="${b.id}">${esc(b.codigo)}${b.nome ? ' — ' + esc(b.nome) : ''}</option>`).join('');
+  if (lista.some(b => String(b.id) === atual)) sel.value = atual;
+}
+
+function limparFiltros() {
+  ['filtro-placa','filtro-desde'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('filtro-empresa').value = '';
+  atualizarBicos();
+  carregar();
+}
+
+// Duas imagens por leitura: o RECORTE (o que o OCR leu) e o QUADRO INTEIRO com a
+// marcação (o contexto — qual veículo era, se a área do bico pegou o lugar certo).
+// Só o recorte não permite auditar uma leitura errada.
+function imagens(d) {
+  const partes = [];
+  if (d.snapshot) {
+    partes.push(`<a href="${esc(d.snapshot)}" target="_blank" title="Recorte lido pelo OCR"
+      style="display:inline-block;vertical-align:middle;margin-right:6px">
+      <img src="${esc(d.snapshot)}" alt="recorte" loading="lazy"
+           style="height:26px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc"></a>`);
+  }
+  if (d.frame) {
+    partes.push(`<a href="${esc(d.frame)}" target="_blank" title="Quadro inteiro da câmera"
+      style="display:inline-block;vertical-align:middle">
+      <img src="${esc(d.frame)}" alt="quadro" loading="lazy"
+           style="height:34px;border:1px solid #e2e8f0;border-radius:4px"></a>`);
+  } else if (d.snapshot) {
+    partes.push('<span style="color:#cbd5e1;font-size:12px" title="Leitura anterior à gravação do quadro">só recorte</span>');
+  }
+  return partes.join('') || '—';
+}
+
+async function carregar() {
+  const q = new URLSearchParams({ limit: '200' });
+  const placa = document.getElementById('filtro-placa').value.trim();
+  const emp   = document.getElementById('filtro-empresa').value;
+  const bico  = document.getElementById('filtro-bico').value;
+  const desde = document.getElementById('filtro-desde').value;
+  if (placa) q.set('placa', placa);
+  if (emp)   q.set('empresa_id', emp);
+  if (bico)  q.set('bico_id', bico);
+  if (desde) q.set('desde', new Date(desde).toISOString());
+  if (document.getElementById('incluir-testes').checked) q.set('incluir_testes', 'true');
+
+  const r = await fetch('/api/deteccoes?' + q).then(r => r.json());
+  document.getElementById('contador').textContent = `${r.length} leitura(s)`;
+  document.getElementById('vazio').style.display = r.length ? 'none' : '';
+  document.getElementById('corpo').innerHTML = r.map(d => {
+    // Leituras anteriores ao multi-tenant não têm bico — marca em vez de fingir que tem.
+    const posto = d.empresa_nome
+      ? `<a href="/posto/${d.empresa_id}" style="color:#16a34a;text-decoration:none">${esc(d.empresa_nome)}</a>`
+      : '<span style="color:#cbd5e1" title="leitura anterior ao cadastro multi-tenant">—</span>';
+    const bico = d.bico_codigo
+      ? esc(d.bico_codigo) + (d.bico_nome ? ` <span style="color:#94a3b8">${esc(d.bico_nome)}</span>` : '')
+      : '<span style="color:#cbd5e1">—</span>';
+    // Marca visualmente o que veio de teste, para não confundir com abastecimento real
+    const selo = d.origem === 'teste'
+      ? ' <span class="badge badge-warn" title="Leitura disparada pela interface, não pelo roteador">teste</span>'
+      : d.origem === 'pipeline'
+        ? ' <span class="badge" style="background:#f1f5f9;color:#475569" title="Detecção contínua do stream">contínuo</span>'
+        : '';
+    return `<tr${d.origem === 'teste' ? ' style="opacity:.72"' : ''}>
+      <td><strong style="font-family:'Consolas',monospace;letter-spacing:.04em">${esc(d.placa)}</strong>${selo}</td>
+      <td><span class="badge badge-${esc(d.padrao)}">${esc(d.padrao)}</span></td>
+      <td>${(d.confianca * 100).toFixed(0)}%</td>
+      <td>${posto}</td>
+      <td>${bico}</td>
+      <td style="white-space:nowrap">${new Date(d.criado_em).toLocaleString('pt-BR')}</td>
+      <td>${imagens(d)}</td>
+    </tr>`;
+  }).join('');
+}
+
+document.getElementById('filtro-empresa').addEventListener('change', atualizarBicos);
+document.getElementById('filtro-placa').addEventListener('keydown', e => { if (e.key === 'Enter') carregar(); });
+
+(async () => { await carregarFiltros(); await carregar(); })();
+</script>
+{% endblock %}

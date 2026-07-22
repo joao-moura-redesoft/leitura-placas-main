@@ -1,24 +1,82 @@
+# Servidor central multi-tenant (CPU). Deploy completo, sem passo manual nenhum:
+#
+#     docker compose up -d --build
+#
+# O entrypoint cria/ajusta os volumes, gera o config.txt inicial, baixa o detector de
+# veículo e só então baixa o privilégio para o usuário `alpr`. Depois é só abrir
+# http://localhost:14000 e criar o primeiro administrador pela tela.
+#
+# Servidor de produção com GPU NVIDIA:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
 services:
   alpr:
     build: .
+    image: leitura-placas:cpu
     container_name: leitura-placas
     ports:
-      - "14000:14000"
+      # Padrão seguro: só loopback. O endpoint /api/leitura NÃO tem autenticação
+      # (decisão de produto: chamado pelo sidecar Java do posto) e dispara detecção
+      # YOLO + OCR, caro — em 0.0.0.0 fica exposto a qualquer um que alcance a máquina.
+      #
+      # Para abrir na rede interna (ex.: acessar o painel de outra máquina, ou os
+      # roteadores dos postos chegarem direto), NÃO edite esta linha: crie um .env
+      # ao lado do compose (já está no .gitignore) com
+      #     BIND_ADDR=0.0.0.0
+      # e garanta firewall/VPN na frente. O ideal continua sendo um proxy reverso com TLS.
+      - "${BIND_ADDR:-127.0.0.1}:14000:14000"
     volumes:
-      - ./placas.db:/app/placas.db
-      - ./static/snapshots:/app/static/snapshots
+      # DIRETÓRIO, não arquivo: o SQLite roda em journal_mode=WAL e cria placas.db-wal /
+      # placas.db-shm ao lado do banco. Com o bind mount de arquivo único que existia
+      # antes (./placas.db:/app/placas.db), esses dois ficavam no filesystem efêmero do
+      # container — recriar o container descartava transações ainda não integradas ao
+      # banco, perdendo escritas sem nenhum erro. O config.txt mora no mesmo volume.
+      - ./dados:/app/dados
       - ./models:/app/models
-      - ./config.txt:/app/config.txt
+      - ./app/web/static/snapshots:/app/app/web/static/snapshots
+      # Cache de modelos baixados em runtime (open-image-models, EasyOCR, PaddleOCR):
+      # são centenas de MB e, sem volume, cada recriação do container baixa tudo de novo
+      # e a primeira leitura depois do deploy fica muito lenta.
+      - modelos-cache:/home/alpr
     environment:
       PORTA: "14000"
-      CAMERA_TIPO: "intelbras"
       LOG_LEVEL: "info"
+      # Credenciais e api_key NÃO ficam aqui (o compose é versionado no git) — vão no
+      # config.txt dentro de ./dados, que está no .gitignore. Se preferir env, use um
+      # arquivo .env (também ignorado) com `env_file: .env`.
     restart: unless-stopped
+    # PID 1 que encaminha sinais e recolhe processos zumbis. O app abre subprocessos
+    # ffmpeg (encoder HLS) — sem isto eles viram zumbi a cada reinício de encoder, e um
+    # `docker compose stop` depende do Python tratar SIGTERM sozinho como PID 1.
+    init: true
+    stop_grace_period: 30s
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:14000/api/status"]
+      # /api/healthz é público e devolve só {"status":"ok"}. Não use /api/status nem
+      # /api/health: os dois exigem sessão e devolvem 401, deixando o container
+      # eternamente "unhealthy".
+      test: ["CMD", "curl", "-sf", "http://localhost:14000/api/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
+      # O boot carrega detector + OCR (45-90s em CPU). Sem esta folga o container é
+      # marcado unhealthy antes de terminar de subir.
+      start_period: 180s
+      # Atenção: `restart: unless-stopped` reage a o processo MORRER, não a ficar
+      # unhealthy — o Docker Engine sozinho não reinicia container degradado. O
+      # healthcheck aqui serve para diagnóstico (`docker compose ps`) e para
+      # orquestradores (Swarm/Kubernetes). Se quiser reinício automático por unhealthy
+      # num host com Docker puro, é preciso um utilitário externo (ex.: willfarrell/autoheal).
+    logging:
+      # Sem limite, o json-file do Docker cresce até encher o disco — e este serviço
+      # loga cada leitura reativa de cada posto.
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
     # Para câmera USB (camera_tipo=usb), descomente:
     # devices:
     #   - "/dev/video0:/dev/video0"
+
+volumes:
+  modelos-cache:

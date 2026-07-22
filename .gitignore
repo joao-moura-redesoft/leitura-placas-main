@@ -20,8 +20,8 @@ models/*.onnx
 models/*.pt
 
 # Snapshots e mídia
-static/snapshots/*
-!static/snapshots/.gitkeep
+app/web/static/snapshots/*
+!app/web/static/snapshots/.gitkeep
 
 # IDE
 .vscode/
@@ -32,3 +32,17 @@ static/snapshots/*
 
 # Docker
 .env
+
+# Clone incompleto aninhado (só .git + .gitattributes/.gitignore), aponta para
+# o mesmo repositório remoto. Ignorado para não virar submódulo por acidente.
+leitura-placas/
+
+# Backups e cópias de banco/config (contêm senhas, hashes e dados de cliente)
+*.bak
+placas.db.*
+config.txt.*
+
+# Saídas da suíte de testes e logs transitórios
+testes/resultados/
+testes/log*.txt
+scratch/

@@ -1,0 +1,509 @@
+{% extends "base.html" %}
+{% block title %}Posto — ALPR{% endblock %}
+{% block conteudo %}
+<a href="/postos" style="color:#64748b;font-size:13px;text-decoration:none">← Postos</a>
+<div style="display:flex;align-items:baseline;gap:12px;margin:6px 0;flex-wrap:wrap">
+  <h1 id="titulo" style="margin:0">…</h1>
+  <span id="cnpj" style="font-family:monospace;color:#64748b;font-size:14px"></span>
+  <span id="situacao"></span>
+</div>
+<p id="entidade" style="color:#64748b;margin:0 0 20px;font-size:14px"></p>
+
+<div id="msg" style="margin-bottom:12px"></div>
+
+<div class="card" id="card-checklist" style="display:none;border-left:3px solid #f59e0b">
+  <h2 style="margin:0 0 12px">Falta para operar</h2>
+  <ul id="checklist" style="margin:0;padding-left:18px;color:#374151;font-size:14px;line-height:1.9"></ul>
+</div>
+
+<!-- Câmeras -->
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:10px;flex-wrap:wrap">
+    <h2 style="margin:0">Câmeras</h2>
+    <button onclick="modalCamera()">+ Câmera</button>
+  </div>
+  <div class="tabela-rolavel">
+    <table><thead><tr><th>Local</th><th>Nome</th><th>Host</th><th>Bicos</th><th>Ativa</th><th>Ações</th></tr></thead>
+      <tbody id="tb-cameras"></tbody></table>
+  </div>
+  <p id="sem-cameras" style="display:none;color:#94a3b8;margin:12px 0 0">
+    Nenhuma câmera neste posto — é o primeiro passo.
+  </p>
+</div>
+
+<!-- Automações e bicos -->
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:10px;flex-wrap:wrap">
+    <h2 style="margin:0">Automações e bicos</h2>
+    <button onclick="modalAutomacao()">+ Automação</button>
+  </div>
+  <p style="color:#94a3b8;font-size:13px;margin:0 0 14px">
+    Os códigos precisam bater exatamente com o que o roteador envia no GET.
+  </p>
+  <div id="automacoes"></div>
+  <p id="sem-automacoes" style="display:none;color:#94a3b8;margin:0">
+    Nenhuma automação. Um posto pode ter até 2.
+  </p>
+</div>
+
+<!-- Ao vivo: câmeras deste posto, leitura por bico (com a área aplicada) -->
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:10px;flex-wrap:wrap">
+    <h2 style="margin:0">Ao vivo</h2>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap">
+        <input type="checkbox" id="auto-refresh" onchange="alternarAuto()" style="width:auto;padding:0">
+        Atualizar sozinho
+      </label>
+      <select id="auto-intervalo" onchange="alternarAuto()" style="font-size:13px">
+        <option value="5">a cada 5s</option>
+        <option value="10">a cada 10s</option>
+        <option value="30">a cada 30s</option>
+      </select>
+      <button onclick="atualizarAoVivo()" id="btn-aovivo"
+              style="background:#fff;color:#374151;border:1px solid #e2e8f0">↻ Atualizar</button>
+    </div>
+  </div>
+  <p style="color:#94a3b8;font-size:13px;margin:0 0 10px">
+    Imagem atual de cada câmera do posto. O botão de cada bico lê usando a
+    <strong>área dele</strong> — igual à chamada do roteador.
+  </p>
+  <div id="aviso-auto" style="display:none" class="alert alert-err">
+    <strong>Atualização automática ligada.</strong> Cada captura ocupa a câmera por alguns
+    segundos — se o roteador chamar a leitura nesse intervalo, ela vai esperar ou falhar.
+    Use para diagnóstico e desligue depois.
+  </div>
+  <!-- Teto de 440px por câmera: com `1fr` uma câmera sozinha esticava a imagem de
+       1280px para a largura toda da página, virando um painel gigante. -->
+  <div id="ao-vivo" style="display:grid;gap:14px;
+       grid-template-columns:repeat(auto-fill,minmax(300px,440px));justify-content:start"></div>
+  <p id="sem-aovivo" style="display:none;color:#94a3b8;margin:0">Cadastre uma câmera para ver as imagens.</p>
+</div>
+
+<!-- Teste -->
+<div class="card">
+  <h2 style="margin:0 0 6px">Testar como o roteador</h2>
+  <p style="color:#94a3b8;font-size:13px;margin:0 0 12px">
+    Dispara a mesma chamada que o sistema do posto faz. Leva até 30s.
+  </p>
+  <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+    <label style="min-width:220px">Bico
+      <select id="teste-bico" style="width:100%;margin-top:4px"></select>
+    </label>
+    <button onclick="testarLeitura()" id="btn-testar" style="height:36px;background:#0f172a">Chamar leitura</button>
+  </div>
+  <div id="teste-url" style="font-family:monospace;font-size:12px;color:#64748b;margin-top:10px;word-break:break-all"></div>
+  <div id="teste-resultado" style="display:none;margin-top:12px;padding:14px;border-radius:8px;
+       background:#f8fafc;border:1px solid #e2e8f0"></div>
+</div>
+
+<!-- ── Modais ─────────────────────────────────────────────────────────────── -->
+<div id="overlay" class="modal-overlay">
+  <div class="modal-caixa">
+    <h2 id="modal-titulo" style="margin-top:0">…</h2>
+    <form id="modal-form" onsubmit="salvarModal(event)">
+      <div id="modal-campos"></div>
+      <div style="display:flex;gap:10px;margin-top:18px">
+        <button type="submit" style="background:#16a34a">Salvar</button>
+        <button type="button" onclick="fecharModal()"
+                style="background:#fff;color:#374151;border:1px solid #e2e8f0">Cancelar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<style>
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(15,23,42,.4);
+    backdrop-filter:blur(2px); z-index:100; align-items:center; justify-content:center; }
+  .modal-overlay.aberto { display:flex; }
+  .modal-caixa { background:#fff; border-radius:12px; padding:28px; width:520px; max-width:96vw;
+    max-height:90vh; overflow-y:auto; box-shadow:0 20px 60px rgba(0,0,0,.18); }
+  .linha-2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px; }
+  .modal-caixa label { display:block; margin-bottom:12px; }
+  .modal-caixa .linha-2 label { margin-bottom:0; }
+  .modal-caixa input, .modal-caixa select { width:100%; box-sizing:border-box; margin-top:4px; }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const EMPRESA_ID = {{ empresa_id }};
+let _d = null, _modal = null;
+
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function msg(ok, txt) {
+  const el = document.getElementById('msg');
+  el.className = 'alert ' + (ok ? 'alert-ok' : 'alert-err');
+  el.innerHTML = txt;
+  setTimeout(() => { el.innerHTML = ''; el.className = ''; }, 6000);
+}
+async function api(metodo, url, body) {
+  const r = await fetch(url, { method: metodo, headers: { 'Content-Type': 'application/json' },
+                               body: body ? JSON.stringify(body) : undefined });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || `erro ${r.status}`);
+  return d;
+}
+
+async function carregar() {
+  const r = await fetch(`/api/postos/${EMPRESA_ID}`);
+  if (!r.ok) { document.getElementById('titulo').textContent = 'Posto não encontrado'; return; }
+  _d = await r.json();
+  document.getElementById('titulo').textContent = _d.empresa.nome;
+  document.getElementById('cnpj').textContent = _d.empresa.cnpj;
+  document.getElementById('entidade').innerHTML =
+    _d.entidade ? `Entidade: <strong>${esc(_d.entidade.nome)}</strong>` : '';
+  renderCameras(); renderAutomacoes(); renderChecklist(); renderTeste(); renderAoVivo();
+}
+
+// ── Ao vivo ──────────────────────────────────────────────────────────────────
+// Sem pipeline contínuo não existe stream: a imagem é uma captura sob demanda.
+// Se algum dia a câmera rodar em modo contínuo, o MJPEG entra no lugar sozinho.
+function renderAoVivo() {
+  document.getElementById('sem-aovivo').style.display = _d.cameras.length ? 'none' : '';
+  document.getElementById('ao-vivo').innerHTML = _d.cameras.map(c => {
+    const bs = bicosDaCamera(c.id);
+    const botoes = bs.length
+      ? bs.map(b => `<button onclick="lerBico(${b.id}, '${esc(b.codigo)}')" id="btn-bico-${b.id}"
+             style="background:#0f172a;padding:6px 12px;font-size:13px"
+             ${b.tem_roi ? '' : 'title="Bico sem área — vai analisar o quadro inteiro"'}>
+             Ler bico ${esc(b.codigo)}${b.tem_roi ? '' : ' ⚠'}</button>`).join('')
+      : '<span style="color:#94a3b8;font-size:13px">Nenhum bico nesta câmera</span>';
+    return `
+      <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+        <div style="padding:9px 12px;background:#f8fafc;font-size:13px;font-weight:600">
+          ${esc(c.local || c.nome)}
+          <span style="font-weight:400;color:#94a3b8">${esc(c.local ? c.nome : '')}</span>
+        </div>
+        <div style="position:relative;background:#0f172a;min-height:150px">
+          <img id="img-cam-${c.id}" alt="" style="width:100%;display:block"
+               ${c.ao_vivo ? `src="/stream/${c.id}.mjpg"` : ''}>
+          <div id="carregando-${c.id}" style="position:absolute;inset:0;display:flex;align-items:center;
+               justify-content:center;color:#94a3b8;font-size:13px;${c.ao_vivo ? 'display:none' : ''}">capturando…</div>
+          ${c.ao_vivo ? `<span style="position:absolute;top:8px;left:8px;background:#dc2626;color:#fff;
+             font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px">● AO VIVO</span>` : ''}
+        </div>
+        <div style="padding:10px 12px;display:flex;gap:8px;flex-wrap:wrap">
+          ${botoes}
+          ${bs.length ? `<a href="/roi-camera/${c.id}" style="display:inline-flex;align-items:center;
+             padding:6px 12px;border-radius:7px;border:1px solid #e2e8f0;color:#374151;
+             font-size:13px;text-decoration:none">áreas</a>` : ''}
+        </div>
+        <div id="res-cam-${c.id}" style="display:none;padding:0 12px 12px;font-size:13px"></div>
+      </div>`;
+  }).join('');
+  atualizarAoVivo();
+}
+
+async function atualizarAoVivo() {
+  const btn = document.getElementById('btn-aovivo');
+  if (btn) { btn.disabled = true; btn.textContent = 'Capturando…'; }
+  // Câmeras em modo contínuo já exibem MJPEG — não precisa capturar nada para elas.
+  for (const c of _d.cameras.filter(x => !x.ao_vivo)) {
+    const img = document.getElementById(`img-cam-${c.id}`);
+    const load = document.getElementById(`carregando-${c.id}`);
+    if (!img) continue;
+    try {
+      const r = await fetch(`/api/cameras/${c.id}/snapshot?t=${Date.now()}`);
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'sem imagem');
+      img.src = URL.createObjectURL(await r.blob());
+      if (load) load.style.display = 'none';
+    } catch (ex) {
+      if (load) { load.style.display = 'flex'; load.textContent = ex.message; }
+    }
+  }
+  if (btn) { btn.disabled = false; btn.textContent = '↻ Atualizar imagens'; }
+}
+
+async function lerBico(bicoId, codigo) {
+  const bico = _d.automacoes.flatMap(a => a.bicos).find(b => b.id === bicoId);
+  const res = document.getElementById(`res-cam-${bico.camera_id}`);
+  const btn = document.getElementById(`btn-bico-${bicoId}`);
+  const t0 = Date.now();
+  btn.disabled = true;
+  res.style.display = 'block';
+  const tick = setInterval(() => {
+    res.innerHTML = `<span style="color:#94a3b8">Lendo bico ${esc(codigo)}… ${Math.round((Date.now()-t0)/1000)}s</span>`;
+  }, 250);
+  try {
+    const r = await fetch(`/api/bicos/${bicoId}/ler-placa-teste`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) res.innerHTML = `<span style="color:#b91c1c">✗ ${esc(d.detail || 'falha')}</span>`;
+    else if (!d.placa) res.innerHTML = `<span style="color:#a16207">Bico ${esc(codigo)}: nenhuma placa na área.</span>`;
+    else res.innerHTML = `
+      <span style="color:#94a3b8">Bico ${esc(codigo)}:</span>
+      <strong style="font-family:'Consolas',monospace;letter-spacing:2px;font-size:16px">${esc(d.placa)}</strong>
+      <span style="color:#94a3b8">· ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%</span>`;
+    if (d.frame_url) {
+      const img = document.getElementById(`img-cam-${bico.camera_id}`);
+      if (img) img.src = d.frame_url + '?t=' + Date.now();
+    }
+  } catch (ex) {
+    res.innerHTML = `<span style="color:#b91c1c">Erro: ${esc(ex.message)}</span>`;
+  } finally {
+    clearInterval(tick);
+    btn.disabled = false;
+  }
+}
+
+function bicosDaCamera(camId) {
+  return _d.automacoes.flatMap(a => a.bicos).filter(b => b.camera_id === camId);
+}
+
+function renderCameras() {
+  document.getElementById('sem-cameras').style.display = _d.cameras.length ? 'none' : '';
+  document.getElementById('tb-cameras').innerHTML = _d.cameras.map(c => {
+    const bs = bicosDaCamera(c.id);
+    const semArea = bs.filter(b => !b.tem_roi).length;
+    return `<tr>
+      <td>${esc(c.local || '—')}</td>
+      <td>${esc(c.nome)}</td>
+      <td style="font-family:monospace;font-size:13px">${esc(c.intelbras_host || c.rtsp_url_custom || '—')}</td>
+      <td>${bs.length ? `${bs.length}${semArea ? ` <span class="badge badge-warn">${semArea} sem área</span>` : ''}` : '—'}</td>
+      <td>${c.ativo ? '<span class="badge badge-ok">Ativa</span>' : '<span class="badge badge-err">Inativa</span>'}</td>
+      <td style="white-space:nowrap">
+        ${bs.length ? `<a href="/roi-camera/${c.id}" style="display:inline-flex;padding:8px 12px;border-radius:7px;
+           background:#0f172a;color:#fff;font-size:14px;text-decoration:none;margin-right:4px">Áreas</a>` : ''}
+        <button onclick='modalCamera(${JSON.stringify(c)})' style="background:#16a34a">Editar</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function renderAutomacoes() {
+  document.getElementById('sem-automacoes').style.display = _d.automacoes.length ? 'none' : '';
+  document.getElementById('automacoes').innerHTML = _d.automacoes.map(a => `
+    <div style="border:1px solid #e2e8f0;border-radius:8px;margin-bottom:12px;overflow:hidden">
+      <div style="background:#f8fafc;padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <strong style="font-family:monospace">${esc(a.codigo)}</strong>
+        <span style="color:#64748b;font-size:13px">${esc(a.nome || '')}</span>
+        ${a.ativo ? '' : '<span class="badge badge-err">inativa</span>'}
+        <span style="margin-left:auto;display:flex;gap:8px">
+          <button onclick='modalBico(null, ${a.id})' style="padding:5px 11px;font-size:13px">+ bico</button>
+          <button onclick='modalAutomacao(${JSON.stringify(a)})'
+                  style="padding:5px 11px;font-size:13px;background:#fff;color:#374151;border:1px solid #e2e8f0">editar</button>
+        </span>
+      </div>
+      ${a.bicos.length ? `<div class="tabela-rolavel"><table>
+        <thead><tr><th>Bico</th><th>Bomba/Lado</th><th>Câmera</th><th>Área</th><th>Ações</th></tr></thead>
+        <tbody>${a.bicos.map(b => `
+          <tr>
+            <td><strong style="font-family:monospace">${esc(b.codigo)}</strong>
+                ${b.nome ? `<span style="color:#94a3b8"> ${esc(b.nome)}</span>` : ''}</td>
+            <td>${b.bomba ?? '—'} / ${b.lado ?? '—'}</td>
+            <td>${esc(b.camera_local ? b.camera_local + ' — ' : '')}${esc(b.camera_nome)}</td>
+            <td>${b.tem_roi ? '<span class="badge badge-ok">definida</span>'
+                            : '<span class="badge badge-warn">sem área</span>'}</td>
+            <td style="white-space:nowrap">
+              <a href="/roi-camera/${b.camera_id}?bico=${b.id}"
+                 style="color:#16a34a;text-decoration:none;margin-right:10px">área</a>
+              <button onclick='modalBico(${JSON.stringify(b)}, ${a.id})'
+                      style="padding:5px 11px;font-size:13px;background:#16a34a">editar</button>
+            </td>
+          </tr>`).join('')}</tbody></table></div>`
+        : '<p style="color:#94a3b8;padding:12px 14px;margin:0">Nenhum bico nesta automação.</p>'}
+    </div>`).join('');
+}
+
+function renderChecklist() {
+  const itens = [];
+  if (!_d.cameras.length) itens.push('Cadastrar a primeira <strong>câmera</strong>');
+  if (!_d.automacoes.length) itens.push('Cadastrar a <strong>automação</strong> com o código que o roteador envia');
+  const bicos = _d.automacoes.flatMap(a => a.bicos);
+  if (_d.automacoes.length && !bicos.length) itens.push('Cadastrar os <strong>bicos</strong>');
+
+  // Agrupa por câmera: as áreas são desenhadas de uma vez por câmera, não bico a bico.
+  const porCam = {};
+  bicos.filter(b => !b.tem_roi).forEach(b => { (porCam[b.camera_id] ??= []).push(b.codigo); });
+  Object.entries(porCam).forEach(([camId, cods]) => {
+    const cam = _d.cameras.find(c => c.id === Number(camId));
+    itens.push(`Definir as <a href="/roi-camera/${camId}" style="color:#16a34a">áreas de captura</a>
+      da câmera <strong>${esc(cam ? (cam.local || cam.nome) : camId)}</strong>
+      — ${cods.length} bico(s): ${esc(cods.join(', '))}`);
+  });
+
+  document.getElementById('card-checklist').style.display = itens.length ? '' : 'none';
+  document.getElementById('checklist').innerHTML = itens.map(i => `<li>${i}</li>`).join('');
+  document.getElementById('situacao').innerHTML = itens.length
+    ? '<span class="badge badge-warn">Incompleto</span>'
+    : '<span class="badge badge-ok">Pronto para operar</span>';
+}
+
+// ── Modais ───────────────────────────────────────────────────────────────────
+function abrirModal(titulo, campos, onSalvar) {
+  document.getElementById('modal-titulo').textContent = titulo;
+  document.getElementById('modal-campos').innerHTML = campos;
+  _modal = onSalvar;
+  document.getElementById('overlay').classList.add('aberto');
+  setTimeout(() => document.querySelector('#modal-campos input, #modal-campos select')?.focus(), 50);
+}
+function fecharModal() {
+  document.getElementById('overlay').classList.remove('aberto');
+  _modal = null;
+}
+async function salvarModal(e) {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type=submit]');
+  btn.disabled = true; btn.textContent = 'Salvando…';
+  try {
+    await _modal();
+    fecharModal();
+    await carregar();
+    msg(true, 'Salvo.');
+  } catch (ex) {
+    msg(false, esc(ex.message));
+  } finally {
+    btn.disabled = false; btn.textContent = 'Salvar';
+  }
+}
+const val = id => document.getElementById(id).value.trim();
+
+function modalCamera(cam = null) {
+  abrirModal(cam ? 'Editar câmera' : 'Nova câmera', `
+    <div class="linha-2">
+      <label>Nome<input id="m-nome" value="${esc(cam?.nome || '')}" placeholder="ex: DVR canal 3" required></label>
+      <label>Local<input id="m-local" value="${esc(cam?.local || '')}" placeholder="ex: Cobertura bomba 2"></label>
+    </div>
+    <div class="linha-2">
+      <label>Host / IP<input id="m-host" value="${esc(cam?.intelbras_host || '')}" placeholder="192.168.1.108"></label>
+      <label>Porta<input id="m-porta" value="${esc(cam?.intelbras_porta || '554')}"></label>
+    </div>
+    <div class="linha-2">
+      <label>Usuário<input id="m-usuario" value="${esc(cam?.intelbras_usuario || 'admin')}"></label>
+      <label>Senha<input id="m-senha" type="password" placeholder="${cam ? 'mantém se vazio' : ''}"></label>
+    </div>
+    <div class="linha-2">
+      <label>Canal<input id="m-canal" value="${esc(cam?.intelbras_canal || '1')}"></label>
+      <label>Subtype<select id="m-subtype">
+        <option value="0"${cam?.intelbras_subtype === '0' ? ' selected' : ''}>0 — Main (HD)</option>
+        <option value="1"${cam?.intelbras_subtype === '1' ? ' selected' : ''}>1 — Sub (leve)</option>
+      </select></label>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
+      <input type="checkbox" id="m-ativo" ${!cam || cam.ativo ? 'checked' : ''} style="width:auto;margin:0">
+      Câmera ativa</label>`,
+    async () => {
+      const p = {
+        nome: val('m-nome'), local: val('m-local'), empresa_id: EMPRESA_ID,
+        camera_tipo: 'rtsp', camera_indice: '0',
+        intelbras_host: val('m-host'), intelbras_porta: val('m-porta') || '554',
+        intelbras_usuario: val('m-usuario') || 'admin',
+        intelbras_canal: val('m-canal') || '1',
+        intelbras_subtype: val('m-subtype'), intelbras_formato: cam?.intelbras_formato || 'padrao',
+        rtsp_url_custom: cam?.rtsp_url_custom || '',
+        ativo: document.getElementById('m-ativo').checked,
+      };
+      const senha = document.getElementById('m-senha').value;
+      if (senha) p.intelbras_senha = senha;
+      await api(cam ? 'PUT' : 'POST', cam ? `/api/cameras/${cam.id}` : '/api/cameras', p);
+    });
+}
+
+function modalAutomacao(a = null) {
+  abrirModal(a ? 'Editar automação' : 'Nova automação', `
+    <label>Código
+      <small style="color:#94a3b8;font-weight:400"> — exatamente o valor que o roteador envia</small>
+      <input id="m-codigo" value="${esc(a?.codigo || '')}" required></label>
+    <label>Nome / descrição<input id="m-nome" value="${esc(a?.nome || '')}" placeholder="opcional"></label>
+    <label style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="m-ativo" ${!a || a.ativo ? 'checked' : ''} style="width:auto;margin:0">
+      Automação ativa</label>`,
+    async () => api(a ? 'PUT' : 'POST', a ? `/api/automacoes/${a.id}` : '/api/automacoes', {
+      empresa_id: EMPRESA_ID, codigo: val('m-codigo'), nome: val('m-nome'),
+      ativo: document.getElementById('m-ativo').checked,
+    }));
+}
+
+function modalBico(b = null, automacaoId = null) {
+  if (!_d.cameras.length) { msg(false, 'Cadastre uma câmera antes de criar bicos.'); return; }
+  const opcoes = _d.cameras.map(c =>
+    `<option value="${c.id}"${b?.camera_id === c.id ? ' selected' : ''}>${esc(c.local ? c.local + ' — ' : '')}${esc(c.nome)}</option>`).join('');
+  abrirModal(b ? 'Editar bico' : 'Novo bico', `
+    <label>Código
+      <small style="color:#94a3b8;font-weight:400"> — exatamente o valor que o roteador envia</small>
+      <input id="m-codigo" value="${esc(b?.codigo || '')}" required></label>
+    <label>Nome<input id="m-nome" value="${esc(b?.nome || '')}" placeholder="opcional"></label>
+    <label>Câmera<select id="m-camera">${opcoes}</select></label>
+    <div class="linha-2">
+      <label>Bomba <small style="color:#94a3b8;font-weight:400">(opcional)</small>
+        <input id="m-bomba" type="number" min="1" value="${b?.bomba ?? ''}"></label>
+      <label>Lado <small style="color:#94a3b8;font-weight:400">(opcional)</small>
+        <input id="m-lado" type="number" min="1" value="${b?.lado ?? ''}"></label>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
+      <input type="checkbox" id="m-ativo" ${!b || b.ativo ? 'checked' : ''} style="width:auto;margin:0">
+      Bico ativo</label>`,
+    async () => api(b ? 'PUT' : 'POST', b ? `/api/bicos/${b.id}` : '/api/bicos', {
+      automacao_id: b ? b.automacao_id : automacaoId,
+      codigo: val('m-codigo'), nome: val('m-nome'),
+      camera_id: parseInt(val('m-camera')),
+      bomba: val('m-bomba') || null, lado: val('m-lado') || null,
+      ativo: document.getElementById('m-ativo').checked,
+    }));
+}
+
+document.getElementById('overlay').addEventListener('click', e => {
+  if (e.target.id === 'overlay') fecharModal();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') fecharModal(); });
+
+// ── Teste ────────────────────────────────────────────────────────────────────
+function renderTeste() {
+  const opts = _d.automacoes.flatMap(a =>
+    a.bicos.map(b => `<option value="${esc(a.codigo)}|${esc(b.codigo)}">${esc(a.codigo)} / ${esc(b.codigo)}${b.nome ? ' — ' + esc(b.nome) : ''}</option>`));
+  const sel = document.getElementById('teste-bico');
+  sel.innerHTML = opts.join('') || '<option value="">— nenhum bico cadastrado —</option>';
+  document.getElementById('btn-testar').disabled = !opts.length;
+  sel.onchange = mostrarUrl;
+  mostrarUrl();
+}
+function paramsTeste() {
+  const v = document.getElementById('teste-bico').value;
+  if (!v) return null;
+  const [automacao, bico] = v.split('|');
+  return new URLSearchParams({ entidade: _d.entidade ? _d.entidade.nome : '',
+                               cnpj: _d.empresa.cnpj, automacao, bico });
+}
+function mostrarUrl() {
+  const q = paramsTeste();
+  document.getElementById('teste-url').textContent = q ? `GET /api/leitura?${q}` : '';
+}
+async function testarLeitura() {
+  const q = paramsTeste();
+  if (!q) return;
+  const btn = document.getElementById('btn-testar');
+  const res = document.getElementById('teste-resultado');
+  const t0 = Date.now();
+  btn.disabled = true;
+  res.style.display = 'block';
+  // Contador visível: a chamada leva ~30s e sem isso parece travamento.
+  const tick = setInterval(() => {
+    const s = Math.round((Date.now() - t0) / 1000);
+    btn.textContent = `Lendo… ${s}s`;
+    res.innerHTML = `<span style="color:#94a3b8">Conectando à câmera e analisando (${s}s de até ~30s)…</span>`;
+  }, 250);
+  try {
+    const r = await fetch('/api/leitura?' + q);
+    const d = await r.json();
+    if (!r.ok) res.innerHTML = `<span style="color:#b91c1c">✗ ${esc(d.detail || 'falha')}</span>`;
+    else if (!d.placa) res.innerHTML = `<span style="color:#a16207">Nenhuma placa detectada.</span>
+        <span style="color:#94a3b8">${esc(d.mensagem || '')} (${d.tentativas} tentativa(s))</span>
+        ${d.frame_url ? `<br><img src="${esc(d.frame_url)}?t=${Date.now()}" style="margin-top:10px;max-width:100%;border-radius:6px">` : ''}`;
+    else res.innerHTML = `
+        <div style="font-size:28px;font-weight:700;letter-spacing:5px;color:#0f172a;font-family:'Consolas',monospace">${esc(d.placa)}</div>
+        <div style="margin-top:6px;font-size:12px;color:#94a3b8">
+          <span class="badge badge-${esc(d.padrao)}">${esc(d.padrao)}</span>
+          &nbsp;${Math.round((d.confianca||0)*100)}% confiança · acordo ${Math.round((d.acordo||0)*100)}% · ${d.tentativas} foto(s)
+        </div>
+        ${d.frame_url ? `<img src="${esc(d.frame_url)}?t=${Date.now()}" style="margin-top:10px;max-width:100%;border-radius:6px">` : ''}`;
+  } catch (ex) {
+    res.innerHTML = `<span style="color:#b91c1c">Erro de rede: ${esc(ex.message)}</span>`;
+  } finally {
+    clearInterval(tick);
+    btn.disabled = false; btn.textContent = 'Chamar leitura';
+  }
+}
+
+carregar();
+</script>
+{% endblock %}
