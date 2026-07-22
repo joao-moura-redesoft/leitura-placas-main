@@ -1,18 +1,30 @@
 """Camada SQLite — deteccoes e listas_placas."""
 from __future__ import annotations
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-DB_PATH = Path("placas.db")
+# Configurável por ambiente (mesmo padrão de config.CONFIG_PATH). Em container, aponta
+# para um DIRETÓRIO montado como volume — nunca para um arquivo montado sozinho: com
+# journal_mode=WAL o SQLite cria `placas.db-wal`/`placas.db-shm` AO LADO do banco, e um
+# bind mount de arquivo único deixa esses dois no filesystem efêmero do container.
+# Recriar o container descartaria o -wal com transações ainda não integradas = escritas
+# perdidas silenciosamente.
+DB_PATH = Path(os.environ.get("DB_PATH", "placas.db"))
 
 
 def _conn() -> sqlite3.Connection:
     c = sqlite3.connect(DB_PATH, timeout=10)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
+    # NORMAL é seguro com WAL (só FULL protege contra corrupção do SO travando no
+    # meio de um fsync, cenário que FULL não evita de qualquer forma) e evita um
+    # fsync por commit — relevante aqui porque toda leitura reativa grava em
+    # `chamadas`/`deteccoes` no caminho crítico de latência.
+    c.execute("PRAGMA synchronous=NORMAL")
     c.execute("PRAGMA foreign_keys=ON")
     return c
 
@@ -91,9 +103,25 @@ def _migrar(c: sqlite3.Connection) -> None:
     # um abastecimento real e contamina o histórico e as estatísticas.
     if "origem" not in cols_det:
         c.execute("ALTER TABLE deteccoes ADD COLUMN origem TEXT NOT NULL DEFAULT 'roteador'")
+    # `camera_id` (acima) guarda só o TIPO da câmera ("usb"/"rtsp"), não o ID real — não dá
+    # pra saber DE QUAL câmera veio uma detecção quando há mais de uma do mesmo tipo. Sem
+    # isso, não tem como cruzar uma detecção 'pipeline' (que nunca tem bico_id) com uma
+    # 'roteador'/'teste' da mesma câmera física para evitar duplicar o mesmo veículo.
+    if "camera_db_id" not in cols_det:
+        c.execute("ALTER TABLE deteccoes ADD COLUMN camera_db_id INTEGER")
+    # `deteccoes` é alimentada por toda leitura reativa de todos os postos — sem
+    # índice, listar/filtrar por bico vira table scan conforme a tabela cresce.
+    # Fica em `_migrar` (não no CREATE TABLE inicial) porque só depois daqui a
+    # coluna `bico_id` está garantidamente presente, inclusive em bancos antigos.
+    c.execute("CREATE INDEX IF NOT EXISTS idx_deteccoes_bico ON deteccoes(bico_id)")
 
 
 def inicializar() -> None:
+    # Cria o diretório do banco quando DB_PATH aponta para uma subpasta (container:
+    # /app/dados/placas.db). Sem isso o sqlite3.connect falha com "unable to open
+    # database file" numa mensagem que não deixa claro que o problema é a pasta.
+    if DB_PATH.parent != Path("."):
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with cursor() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS deteccoes (
@@ -230,15 +258,63 @@ def registrar_deteccao(
     bico_id: int | None = None,
     frame: str | None = None,
     origem: str = "roteador",
+    camera_db_id: int | None = None,
 ) -> int:
     with cursor() as c:
         cur = c.execute(
             "INSERT INTO deteccoes (placa, padrao, confianca, snapshot, criado_em, camera_id, "
-            "bbox, bico_id, frame, origem) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "bbox, bico_id, frame, origem, camera_db_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (placa, padrao, confianca, snapshot, _agora(), camera_id,
-             json.dumps(bbox) if bbox else None, bico_id, frame, origem),
+             json.dumps(bbox) if bbox else None, bico_id, frame, origem, camera_db_id),
         )
         return cur.lastrowid
+
+
+def ultima_deteccao_bico(bico_id: int, desde: str, origem: str) -> dict | None:
+    """Última detecção deste bico (mesma origem) desde `desde` (ISO) — usado para
+    mesclar leituras repetidas do mesmo veículo em vez de duplicar linha no histórico."""
+    with cursor() as c:
+        row = c.execute(
+            "SELECT * FROM deteccoes WHERE bico_id=? AND origem=? AND criado_em>=? "
+            "ORDER BY criado_em DESC LIMIT 1",
+            (bico_id, origem, desde),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def ultima_deteccao_camera(camera_db_id: int, desde: str, origem: str | None = None) -> dict | None:
+    """Última detecção NESTA câmera física (qualquer bico/origem, salvo se `origem`
+    filtrar) desde `desde` (ISO) — usado para cruzar detecções do 'pipeline' (que não
+    têm bico_id) com leituras 'roteador'/'teste' da mesma câmera e evitar duplicar o
+    mesmo veículo visto pelos dois mecanismos quase ao mesmo tempo."""
+    sql = "SELECT * FROM deteccoes WHERE camera_db_id=? AND criado_em>=?"
+    params: list = [camera_db_id, desde]
+    if origem is not None:
+        sql += " AND origem=?"
+        params.append(origem)
+    sql += " ORDER BY criado_em DESC LIMIT 1"
+    with cursor() as c:
+        row = c.execute(sql, params).fetchone()
+        return dict(row) if row else None
+
+
+def atualizar_deteccao(id_: int, *, placa: str, padrao: str, confianca: float,
+                        snapshot: str | None = None, frame: str | None = None) -> bool:
+    """Atualiza placa/padrão/confiança de uma detecção existente — usado ao mesclar uma
+    leitura nova com a detecção anterior do mesmo bico em vez de criar uma 2ª linha.
+
+    Também renova `criado_em` para AGORA: a janela de cooldown deve deslizar a cada
+    retry parecido, senão uma sequência de retries do roteador mais longa que um único
+    cooldown_seg (ex.: 3 chamadas 70s uma da outra = 140s de ponta a ponta) volta a
+    duplicar linha na 3ª chamada mesmo todas sendo o mesmo veículo.
+    """
+    with cursor() as c:
+        cur = c.execute(
+            "UPDATE deteccoes SET placa=?, padrao=?, confianca=?, criado_em=?, "
+            "snapshot=COALESCE(?, snapshot), frame=COALESCE(?, frame) WHERE id=?",
+            (placa, padrao, confianca, _agora(), snapshot, frame, id_),
+        )
+        return cur.rowcount > 0
 
 
 def listar_deteccoes(
@@ -292,6 +368,27 @@ def remover_deteccao(id_: int) -> bool:
     with cursor() as c:
         cur = c.execute("DELETE FROM deteccoes WHERE id=?", (id_,))
         return cur.rowcount > 0
+
+
+def deteccoes_e_chamadas_antigas(dias: int) -> dict:
+    """Apaga `deteccoes`/`chamadas` com mais de `dias` dias e devolve os caminhos
+    relativos dos JPEGs (snapshot + frame) que ficaram órfãos.
+
+    Só mexe no banco — apagar os arquivos em disco é responsabilidade de quem chama
+    (app/operacao/retencao.py), pra esta camada não fazer I/O de arquivo. Sem alguma
+    rotina de retenção, `deteccoes`/`chamadas` e os JPEGs em app/web/static/snapshots/
+    crescem para sempre num servidor multi-tenant de longa duração.
+    """
+    corte = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    with cursor() as c:
+        arquivos = [r[0] for r in c.execute(
+            "SELECT snapshot FROM deteccoes WHERE criado_em < ? AND snapshot IS NOT NULL "
+            "UNION SELECT frame FROM deteccoes WHERE criado_em < ? AND frame IS NOT NULL",
+            (corte, corte),
+        ).fetchall()]
+        n_det = c.execute("DELETE FROM deteccoes WHERE criado_em < ?", (corte,)).rowcount
+        n_cham = c.execute("DELETE FROM chamadas WHERE criado_em < ?", (corte,)).rowcount
+    return {"arquivos": arquivos, "deteccoes_removidas": n_det, "chamadas_removidas": n_cham}
 
 
 def stats() -> dict:
@@ -583,7 +680,7 @@ def automacoes_inserir(dados: dict) -> int:
     with cursor() as c:
         cur = c.execute(
             "INSERT INTO automacoes (empresa_id, codigo, nome, ativo, criado_em) VALUES (?,?,?,?,?)",
-            (int(dados["empresa_id"]), dados["codigo"], dados.get("nome", ""),
+            (int(dados["empresa_id"]), _normalizar_codigo(dados["codigo"]), dados.get("nome", ""),
              1 if dados.get("ativo", True) else 0, _agora()),
         )
         return cur.lastrowid
@@ -593,7 +690,7 @@ def automacoes_atualizar(id_: int, dados: dict) -> bool:
     with cursor() as c:
         cur = c.execute(
             "UPDATE automacoes SET empresa_id=?, codigo=?, nome=?, ativo=? WHERE id=?",
-            (int(dados["empresa_id"]), dados["codigo"], dados.get("nome", ""),
+            (int(dados["empresa_id"]), _normalizar_codigo(dados["codigo"]), dados.get("nome", ""),
              1 if dados.get("ativo", True) else 0, id_),
         )
         return cur.rowcount > 0
@@ -648,7 +745,7 @@ def bicos_inserir(dados: dict) -> int:
         cur = c.execute(
             """INSERT INTO bicos (automacao_id, codigo, nome, bomba, lado, camera_id, ativo, criado_em)
                VALUES (?,?,?,?,?,?,?,?)""",
-            (int(dados["automacao_id"]), dados["codigo"], dados.get("nome", ""),
+            (int(dados["automacao_id"]), _normalizar_codigo(dados["codigo"]), dados.get("nome", ""),
              bomba, lado, int(dados["camera_id"]),
              1 if dados.get("ativo", True) else 0, _agora()),
         )
@@ -661,7 +758,7 @@ def bicos_atualizar(id_: int, dados: dict) -> bool:
         cur = c.execute(
             """UPDATE bicos SET automacao_id=?, codigo=?, nome=?, bomba=?, lado=?, camera_id=?, ativo=?
                WHERE id=?""",
-            (int(dados["automacao_id"]), dados["codigo"], dados.get("nome", ""),
+            (int(dados["automacao_id"]), _normalizar_codigo(dados["codigo"]), dados.get("nome", ""),
              bomba, lado, int(dados["camera_id"]),
              1 if dados.get("ativo", True) else 0, id_),
         )
@@ -694,16 +791,21 @@ def resolver_bico(cnpj: str, automacao_codigo: str, bico_codigo: str) -> tuple[d
     Retorna (registro_mesclado, None) em caso de sucesso — registro combina campos
     da câmera (conexão) com os do bico (roi, ids) — ou (None, motivo) em caso de erro.
     `motivo` é "empresa"/"automacao"/"bico" quando o código não existe, ou
-    "empresa_inativa"/"automacao_inativa"/"bico_inativo"/"camera_inativa" quando existe
-    mas foi desativado no cadastro — distinção que importa porque a correção é diferente
-    (cadastrar vs. reativar). Antes só o "ativo" do bico era checado: desativar um posto,
-    automação ou câmera inteiros não impedia a leitura continuar respondendo por eles.
+    "entidade_inativa"/"empresa_inativa"/"automacao_inativa"/"bico_inativo"/
+    "camera_inativa" quando existe mas foi desativado no cadastro — distinção que
+    importa porque a correção é diferente (cadastrar vs. reativar). Antes só o "ativo"
+    do bico era checado: desativar um posto, automação, câmera ou a entidade dona do
+    posto não impedia a leitura continuar respondendo por eles.
     """
     empresa = empresas_obter_por_cnpj(cnpj)
     if empresa is None:
         return None, "empresa"
     if not empresa["ativo"]:
         return None, "empresa_inativa"
+
+    entidade = entidades_obter(empresa["entidade_id"])
+    if entidade is not None and not entidade["ativo"]:
+        return None, "entidade_inativa"
 
     automacao = automacoes_obter_por_codigo(empresa["id"], automacao_codigo)
     if automacao is None:
@@ -734,6 +836,44 @@ def resolver_bico(cnpj: str, automacao_codigo: str, bico_codigo: str) -> tuple[d
         "entidade_id": empresa["entidade_id"],
     }
     return reg, None
+
+
+def bico_verificar_ativo(bico_id: int) -> tuple[dict | None, str | None]:
+    """Mesmo gate de `resolver_bico()` (entidade/empresa/automação/bico/câmera ativos),
+    mas partindo direto do id do bico — para endpoints internos (ex.: teste de leitura
+    do editor de ROI) que já têm o id e não passariam pelo fluxo cnpj+automacao+bico do
+    roteador. Sem isso, um bico/automação/câmera desativados ainda respondiam ao botão
+    de teste do painel, driblando a mesma trava aplicada à leitura reativa de verdade.
+    """
+    bico = bicos_obter(bico_id)
+    if bico is None:
+        return None, "bico"
+    if not bico["ativo"]:
+        return None, "bico_inativo"
+
+    automacao = automacoes_obter(bico["automacao_id"])
+    if automacao is None:
+        return None, "automacao"
+    if not automacao["ativo"]:
+        return None, "automacao_inativa"
+
+    empresa = empresas_obter(automacao["empresa_id"])
+    if empresa is None:
+        return None, "empresa"
+    if not empresa["ativo"]:
+        return None, "empresa_inativa"
+
+    entidade = entidades_obter(empresa["entidade_id"])
+    if entidade is not None and not entidade["ativo"]:
+        return None, "entidade_inativa"
+
+    camera = cameras_obter(bico["camera_id"])
+    if camera is None:
+        return None, "bico"
+    if not camera["ativo"]:
+        return None, "camera_inativa"
+
+    return bico, None
 
 
 # ─── Chamadas do roteador (leitura reativa) ────────────────────────────────

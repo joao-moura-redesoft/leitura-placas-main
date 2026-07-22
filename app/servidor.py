@@ -27,6 +27,7 @@ from app.core import broadcaster as bc
 from app.core import config
 from app.core import estado
 from app.operacao import dns_server as dns_mod
+from app.operacao import retencao as ret_mod
 from app.operacao import supervisor as sv
 from app.seguranca import sessao as auth_mod
 from app.streaming import hls_encoder as hls_mod
@@ -49,7 +50,10 @@ log = logging.getLogger(__name__)
 # /ws é público no middleware; a autenticação é feita dentro do endpoint.
 # /api/leitura: sem auth por enquanto (rede interna do sidecar Java do posto, não exposta
 # ao público) — trocar pra api_key depois é só remover daqui, o mecanismo já existe abaixo.
-_PUBLICAS = frozenset({"/login", "/criar-admin", "/favicon.ico", "/ws", "/api/leitura"})
+# /api/healthz: liveness do container (só {"status":"ok"}, sem dado de cliente). O
+# /api/health detalhado, com nome de câmera/posto, continua exigindo autenticação.
+_PUBLICAS = frozenset({"/login", "/criar-admin", "/favicon.ico", "/ws",
+                       "/api/leitura", "/api/healthz"})
 
 
 class _AuthMiddleware(BaseHTTPMiddleware):
@@ -141,6 +145,9 @@ async def lifespan(_app: FastAPI):
     # Supervisor monitora threads de câmera e reinicia com backoff exponencial
     sv.supervisor.iniciar(cfg)
 
+    # Retenção de dados: apaga deteccoes/chamadas/JPEGs antigos (retencao_dias=0 desativa)
+    ret_mod.retencao.iniciar(config.get_int(cfg, "retencao_dias"))
+
     # DNS local embutido
     if config.get_bool(cfg, "dns_ativo"):
         dns_mod.dns_server.iniciar(
@@ -159,6 +166,7 @@ async def lifespan(_app: FastAPI):
     dns_mod.dns_server.parar()
     hls_mod.hls_manager.parar()
     sv.supervisor.parar()
+    ret_mod.retencao.parar()
     pipeline.parar()
     await asyncio.shield(_tarefa)
     await asyncio.shield(_tarefa_modelos)

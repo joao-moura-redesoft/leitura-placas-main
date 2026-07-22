@@ -154,9 +154,15 @@ class Tracker:
         assert tracker.ativo()  # sempre True
     """
 
-    def __init__(self, ocr_a_cada_n_frames: int = 5, votos_emitir: int = 2) -> None:
+    def __init__(self, ocr_a_cada_n_frames: int = 5, votos_emitir: int = 2,
+                 paciencia_frames: int = 40) -> None:
         self._ocr_intervalo = max(1, ocr_a_cada_n_frames)
         self._votos = max(1, votos_emitir)
+        # Frames (de detecção, não frames brutos) tolerados sem match antes de considerar
+        # o veículo perdido. Um valor baixo fragmenta o track de um veículo parado na
+        # bomba (oclusão momentânea por pessoa/mangueira) em vários IDs — cada um vota do
+        # zero e pode emitir uma placa levemente diferente pro mesmo carro.
+        self._paciencia = max(1, paciencia_frames)
         self._backend = None       # instância do tracker (ByteTrack ou _IoUTracker)
         self._usando_bytetrack = False
         self._estados: dict[int, _EstadoTrack] = {}
@@ -169,21 +175,22 @@ class Tracker:
                 track_high_thresh=0.5,
                 track_low_thresh=0.1,
                 new_track_thresh=0.6,
-                track_buffer=30,
+                track_buffer=self._paciencia,
                 match_thresh=0.8,
             )
             self._usando_bytetrack = True
             log.info(
-                "ByteTrack (boxmot) ativo — OCR a cada %d frames, %d voto(s) para emitir",
-                self._ocr_intervalo, self._votos,
+                "ByteTrack (boxmot) ativo — OCR a cada %d frames, %d voto(s) para emitir, "
+                "paciência %d frames",
+                self._ocr_intervalo, self._votos, self._paciencia,
             )
         except Exception as e:
             log.info(
                 "boxmot indisponível (%s) — usando tracker IoU interno "
-                "(OCR a cada %d frames, %d voto(s) para emitir)",
-                e, self._ocr_intervalo, self._votos,
+                "(OCR a cada %d frames, %d voto(s) para emitir, paciência %d frames)",
+                e, self._ocr_intervalo, self._votos, self._paciencia,
             )
-            self._backend = _IoUTracker(iou_min=0.3, max_perdido=15)
+            self._backend = _IoUTracker(iou_min=0.3, max_perdido=self._paciencia)
             self._usando_bytetrack = False
 
     def ativo(self) -> bool:

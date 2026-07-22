@@ -171,6 +171,18 @@ def health():
     return sv.supervisor.health()
 
 
+@router.get("/healthz")
+def healthz():
+    """Liveness para o healthcheck do container/orquestrador — público, sem dado nenhum.
+
+    Precisa ser público: `/api/status` e `/api/health` exigem sessão, então um
+    healthcheck apontado para eles recebe 401 (ou 303 para /login) e marca o container
+    como unhealthy para sempre. Responde só que o processo está servindo HTTP; qualquer
+    detalhe de câmera/posto continua atrás de autenticação em `/api/health`.
+    """
+    return {"status": "ok"}
+
+
 # Chaves permitidas para configuração via interface (proteção contra payloads arbitrários).
 CHAVES_CONFIG = set(config.PADROES.keys())
 
@@ -292,8 +304,13 @@ def cameras_remover(id_: int):
             409,
             f"Câmera em uso por {len(usos)} bico(s) ({codigos}) — remova ou realoque esses bicos antes.",
         )
-    if not banco.cameras_remover(id_):
-        raise HTTPException(404, "Câmera não encontrada")
+    try:
+        if not banco.cameras_remover(id_):
+            raise HTTPException(404, "Câmera não encontrada")
+    except sqlite3.IntegrityError:
+        # A checagem acima e o DELETE não são atômicos — se um bico foi cadastrado
+        # nessa câmera bem no meio da janela entre as duas, o RESTRICT dispara aqui.
+        raise HTTPException(409, "Câmera passou a estar em uso por um bico durante a remoção — tente novamente.")
     pipeline.parar_camera(id_)
     return {"removido": True}
 

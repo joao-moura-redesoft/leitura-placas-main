@@ -335,10 +335,22 @@ class MultiOCR:
         from collections import Counter
         from app.visao.validador import validar
 
+        # Mesmo hint de formato que AutoOCR passa a validar() (ver auto.py:96-106) —
+        # sem isso, MultiOCR perdia a correção posicional guiada pelo header Mercosul
+        # (ex.: moto FBI0123 → FBI0I23) só por não estar no caminho `ocr_engine=auto`.
+        formato_hint = ""
+        e_moto = False
+        if crop is not None and crop.ndim == 3 and crop.size > 0 and self._ocrs:
+            _, tinha_header, e_mercosul_header = self._ocrs[0]._remover_header(crop)
+            aspect = crop.shape[1] / max(crop.shape[0], 1)
+            e_moto = tinha_header and aspect <= 2.0
+            if tinha_header and e_mercosul_header:
+                formato_hint = "mercosul_moto" if e_moto else "mercosul"
+
         detalhes = []
         for ocr in self._ocrs:
             texto_bruto, conf = ocr.ler(crop)
-            resultado = validar(texto_bruto)
+            resultado = validar(texto_bruto, formato_hint)
             detalhes.append({
                 "engine": ocr.engine,
                 "placa": resultado[0] if resultado else None,
@@ -380,6 +392,12 @@ _ocr_leitura_id: tuple | None = None
 # diferentes. Seguro em CPU, arriscado em GPU (CUDA). Serializa por segurança.
 ocr_leitura_lock = threading.Lock()
 
+# Protege a CRIAÇÃO do OCR cacheado acima (diferente do lock acima, que protege o USO) —
+# mesmo motivo de `_detector_leitura_criacao_lock` em detector.py: sem isso, duas
+# requisições concorrentes vendo `_ocr_leitura is None` ao mesmo tempo carregam a pilha
+# de engines cada uma a sua própria vez.
+_ocr_leitura_criacao_lock = threading.Lock()
+
 
 def obter_ocr_leitura(cfg: dict):
     """OCR de alta acurácia para a leitura GET. Com ocr_engine=auto e ocr_leitura_paddle=sim,
@@ -395,20 +413,23 @@ def obter_ocr_leitura(cfg: dict):
     ident = (engine, psm, usar_paddle, tuple(extras), deskew_on, deskew_max)
 
     if _ocr_leitura is None or _ocr_leitura_id != ident:
-        if engine == "auto" and usar_paddle:
-            _ocr_leitura = AutoOCRPaddle(tesseract_psm=psm,
+        with _ocr_leitura_criacao_lock:
+            if _ocr_leitura is None or _ocr_leitura_id != ident:
+                if engine == "auto" and usar_paddle:
+                    novo = AutoOCRPaddle(tesseract_psm=psm,
                                          deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
-        elif engine == "auto":
-            _ocr_leitura = AutoOCR(tesseract_psm=psm,
+                elif engine == "auto":
+                    novo = AutoOCR(tesseract_psm=psm,
                                    deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
-        elif extras:
-            _ocr_leitura = MultiOCR(engines=[engine] + extras, tesseract_psm=psm,
+                elif extras:
+                    novo = MultiOCR(engines=[engine] + extras, tesseract_psm=psm,
                                     deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
-        else:
-            _ocr_leitura = OCR(engine=engine, tesseract_psm=psm,
+                else:
+                    novo = OCR(engine=engine, tesseract_psm=psm,
                                deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
-        _ocr_leitura.carregar()
-        _ocr_leitura_id = ident
-        log.info("OCR de leitura (GET) carregado: engine=%s paddle=%s deskew=%s",
-                 engine, usar_paddle, deskew_on)
+                novo.carregar()
+                _ocr_leitura = novo
+                _ocr_leitura_id = ident
+                log.info("OCR de leitura (GET) carregado: engine=%s paddle=%s deskew=%s",
+                         engine, usar_paddle, deskew_on)
     return _ocr_leitura

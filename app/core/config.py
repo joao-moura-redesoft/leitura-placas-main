@@ -113,6 +113,11 @@ PADROES: dict[str, str] = {
     # por isso tem interruptor próprio.
     "salvar_frame_deteccao": "sim",
     "snapshot_qualidade": "85",
+    # Dias que `deteccoes`/`chamadas` (e os JPEGs de snapshot/frame) ficam guardados antes
+    # de serem apagados automaticamente. 0 = nunca apaga (crescimento ilimitado — cuidado
+    # num servidor multi-tenant de longa duração). Ajuste conforme a política de retenção
+    # de dados/imagens do cliente (ex.: LGPD, se as imagens contêm veículo/placa de terceiros).
+    "retencao_dias": "90",
     "alerta_lista_negra": "sim",
     "webhook_todas": "nao",       # sim = dispara webhook para TODA placa detectada
     "webhook_url": "",
@@ -124,6 +129,11 @@ PADROES: dict[str, str] = {
     "tracker_ativo": "sim",
     "tracker_ocr_intervalo": "5",   # roda OCR a cada N frames do mesmo veículo rastreado
     "tracker_votos_emitir": "2",    # leituras OCR concordantes para emitir a placa
+    # Frames de detecção tolerados sem casar o veículo antes de considerá-lo perdido.
+    # Baixo demais fragmenta um veículo parado na bomba (oclusão momentânea) em vários
+    # IDs de track — cada um vota do zero e pode emitir uma placa levemente diferente
+    # pro mesmo carro, duplicando a linha no histórico.
+    "tracker_paciencia_frames": "40",
     # ── Ajuste adaptativo de imagem (brilho/contraste/saturação por ambiente) ──
     # Analisa cada frame, classifica a cena (noite/baixa_luz/nublado/sol_forte/normal)
     # e corrige a imagem antes da detecção — melhora a captura em condições ruins.

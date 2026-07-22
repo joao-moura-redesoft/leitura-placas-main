@@ -22,6 +22,23 @@ def _normalizar_cnpj(cnpj: str) -> str:
     return re.sub(r"\D", "", cnpj or "")
 
 
+def _cnpj_valido(cnpj: str) -> bool:
+    """Dígito verificador padrão (módulo 11). Sem isso, `banco.py` aceitava qualquer
+    sequência de 14 dígitos como CNPJ — inclusive erro de digitação óbvio (transposição
+    de número), que só apareceria depois, quando o roteador do posto nunca resolvesse."""
+    if len(cnpj) != 14 or cnpj == cnpj[0] * 14:
+        return False
+
+    def _dv(base: str, pesos: list[int]) -> str:
+        soma = sum(int(d) * p for d, p in zip(base, pesos))
+        resto = soma % 11
+        return "0" if resto < 2 else str(11 - resto)
+
+    d1 = _dv(cnpj[:12], [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+    d2 = _dv(cnpj[:12] + d1, [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+    return cnpj[-2:] == d1 + d2
+
+
 def _integridade(e: sqlite3.IntegrityError, conflito: str) -> HTTPException:
     if "UNIQUE" in str(e):
         return HTTPException(409, conflito)
@@ -133,6 +150,8 @@ def empresas_inserir(payload: dict):
     cnpj = _normalizar_cnpj(payload.get("cnpj", ""))
     if not nome or not cnpj:
         raise HTTPException(400, "nome e cnpj são obrigatórios")
+    if not _cnpj_valido(cnpj):
+        raise HTTPException(400, f"CNPJ {cnpj} inválido (dígito verificador não confere)")
     if not payload.get("entidade_id"):
         raise HTTPException(400, "entidade_id é obrigatório")
     try:
@@ -148,6 +167,8 @@ def empresas_atualizar(id_: int, payload: dict):
     cnpj = _normalizar_cnpj(payload.get("cnpj", ""))
     if not nome or not cnpj:
         raise HTTPException(400, "nome e cnpj são obrigatórios")
+    if not _cnpj_valido(cnpj):
+        raise HTTPException(400, f"CNPJ {cnpj} inválido (dígito verificador não confere)")
     if not payload.get("entidade_id"):
         raise HTTPException(400, "entidade_id é obrigatório")
     try:
@@ -317,10 +338,17 @@ def bicos_limpar_roi(id_: int):
 def bicos_ler_placa_teste(id_: int):
     """Testa a leitura de um bico direto (sem montar a URL completa de
     entidade+cnpj+automacao+bico) — usado pelo editor de ROI pra validar a área recém-desenhada.
+
+    Passa pelo mesmo gate de `ativo` (entidade/empresa/automação/bico/câmera) que a
+    leitura reativa de verdade — senão o botão de teste do painel responde mesmo para
+    um cadastro desativado, driblando a trava aplicada em produção.
     """
-    bico = banco.bicos_obter(id_)
-    if not bico:
-        raise HTTPException(404, "Bico não encontrado")
+    bico, motivo = banco.bico_verificar_ativo(id_)
+    if bico is None:
+        if motivo in ("bico", "empresa", "automacao"):
+            raise HTTPException(404, "Bico não encontrado")
+        nivel = motivo.rsplit("_", 1)[0]
+        raise HTTPException(409, f"Nível '{nivel}' está desativado no cadastro")
     cam = banco.cameras_obter(bico["camera_id"])
     if not cam:
         raise HTTPException(404, "Câmera do bico não encontrada")

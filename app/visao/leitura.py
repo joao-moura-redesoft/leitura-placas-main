@@ -17,7 +17,7 @@ import threading
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -28,7 +28,7 @@ from app.core import banco
 from app.core import estado
 from app.visao.camera import Camera
 from app.visao.pipeline import _expandir_bbox
-from app.visao.validador import validar
+from app.visao.validador import parecidas, validar
 
 log = logging.getLogger(__name__)
 
@@ -163,6 +163,32 @@ def _eleger_placa(candidatos: list[dict]) -> dict | None:
     return melhor
 
 
+def _mesclar_com_anterior(melhor: dict, anterior: dict) -> dict:
+    """Combina a placa desta leitura com a última detecção do MESMO bico, ainda dentro
+    do cooldown, por consenso de caractere.
+
+    O roteador costuma acionar o mesmo bico várias vezes seguidas para o mesmo veículo
+    (reflexo do bico, retry dele). `_eleger_placa` só vê as fotos de UMA chamada — aqui
+    o resultado já votado da chamada anterior entra como mais uma leitura, do jeito que
+    entraria se tivesse vindo do mesmo loop. Sem isso, ruído de 1-2 caracteres entre
+    chamadas sucessivas virava uma segunda linha diferente no histórico para o mesmo carro.
+    """
+    leituras = [(melhor["placa"], melhor["confianca"]), (anterior["placa"], anterior["confianca"])]
+    consenso = _consenso_caractere(leituras, formato=melhor.get("padrao"))
+    if consenso and validar(consenso):
+        placa_final = consenso
+    else:
+        placa_final = melhor["placa"] if melhor["confianca"] >= anterior["confianca"] else anterior["placa"]
+
+    fundido = dict(melhor)
+    fundido["placa"] = placa_final
+    v = validar(placa_final)
+    if v:
+        fundido["padrao"] = v[1]
+    fundido["confianca"] = round(max(melhor["confianca"], anterior["confianca"]), 3)
+    return fundido
+
+
 def _detectar(det_inst, frame, roi: dict | None, lock: threading.Lock):
     """Detecta placas no frame, recortando por ROI antes (mesmo padrão de
     Pipeline._processar_frame) quando o bico tem uma área própria configurada.
@@ -239,6 +265,14 @@ def ler_placa(
     timeout_seg = float(cfg.get("leitura_timeout_seg", "6"))
     acordo_min = float(cfg.get("leitura_acordo_minimo", "0.80"))
 
+    # Cobre a chamada INTEIRA, inclusive esperas antes do laço (pipeline_frame_provider,
+    # lock de câmera, conexão RTSP) — é a referência para o orçamento de tempo real que o
+    # roteador sente. Ajustada mais abaixo para excluir só a carga de modelo (linha ~344),
+    # não essas esperas: diferente da carga (custo único pós-boot), elas são latência real
+    # de cada chamada e precisam contar contra `timeout_seg`, senão o total de ponta a
+    # ponta pode passar bem além do configurado sem o laço perceber.
+    inicio_absoluto = time.time()
+
     usar_pipeline = pipeline_frame_provider is not None and deteccao_auto
     frame_inicial = pipeline_frame_provider() if usar_pipeline else None
     if usar_pipeline and frame_inicial is None:
@@ -248,13 +282,23 @@ def ler_placa(
     if cam_lock is not None:
         cam_lock.acquire()
 
+    # O pipeline contínuo já aplica AjustadorAmbiente antes de publicar o frame "limpo"
+    # que `pipeline_frame_provider` devolve — mas a conexão DIRETA (usada sempre que o
+    # pipeline não está disponível: câmera reconectando, deteccao_automatica=nao, etc.)
+    # não passava por nenhum ajuste. É justamente nesses momentos de instabilidade que a
+    # robustez a iluminação mais importaria, então instanciamos aqui também.
+    ajustador_ambiente = None
+    if not usar_pipeline:
+        from app.visao.ambiente import AjustadorAmbiente
+        ajustador_ambiente = AjustadorAmbiente(cfg, camera_db_id=camera_id)
+
     camera_direta: Camera | None = None
     candidatos: list[dict] = []
     frame_principal = None       # melhor (mais nítido) frame já visto — usado no preview
     nitidez_principal = -1.0
     tentativas = 0
     parada_motivo = "max_tentativas"
-    inicio = time.time()
+    inicio = inicio_absoluto
 
     try:
         if not usar_pipeline:
@@ -304,18 +348,23 @@ def ler_placa(
             if frame_inicial is None:
                 camera_direta.fechar()
                 raise LeituraError(503, "Câmera conectou mas não enviou frames — verifique a conexão")
+            if ajustador_ambiente is not None and ajustador_ambiente.ativo:
+                frame_inicial = ajustador_ambiente.processar(frame_inicial)
 
         # ── Detector e OCR ────────────────────────────────────────────────────
         # Leitura sob demanda usa componentes de ALTA PRECISÃO, independentes do stream ao
         # vivo: detecção 2 estágios veículo→placa (obter_detector_leitura) + OCR com reforço
         # PaddleOCR (obter_ocr_leitura). Ambos toleram a latência maior do fluxo sob demanda.
+        t_antes_modelo = time.time()
         det_inst = obter_detector_leitura(cfg)
         ocr_inst = obter_ocr_leitura(cfg)
+        tempo_carga_modelo = time.time() - t_antes_modelo
 
-        # O cronômetro do timeout começa AQUI, não na entrada da função: na primeira
-        # leitura após subir o servidor, carregar detector + OCR leva dezenas de segundos
-        # e consumiria todo o orçamento, fazendo o laço abortar sem tirar uma única foto.
-        inicio = time.time()
+        # Desloca a referência do orçamento só pelo tempo de CARGA DE MODELO: na primeira
+        # leitura após subir o servidor, isso leva dezenas de segundos e não deve consumir
+        # o orçamento (custo único, não repete nas próximas chamadas). A espera anterior
+        # (pipeline/lock/conexão) continua contando — ver comentário em `inicio_absoluto`.
+        inicio = inicio_absoluto + tempo_carga_modelo
 
         # ── Loop de leitura: acumula candidatos até o consenso ficar forte ──────
         while tentativas < n_max:
@@ -329,6 +378,8 @@ def ler_placa(
                 frame = pipeline_frame_provider()
             else:
                 frame = camera_direta.ler()
+                if frame is not None and ajustador_ambiente is not None and ajustador_ambiente.ativo:
+                    frame = ajustador_ambiente.processar(frame)
 
             if frame is None:
                 time.sleep(0.1)
@@ -393,9 +444,20 @@ def ler_placa(
 
             # Parada antecipada: só depois do mínimo de fotos, e só se o consenso for forte
             # o bastante (evita parar num acerto isolado de sorte na 1ª foto).
+            #
+            # `n_votos_snap >= 2` é essencial aqui, não redundante com `acordo >= acordo_min`:
+            # o pool de "leituras" do _eleger_placa mistura a placa de cada candidato COM
+            # cada engine individual dele (linha ~131). Para carro com boa confiança, AutoOCR
+            # nem roda o engine de fallback (só 1 entrada em detalhes_ocr) — se só 1 dos
+            # frames capturados até agora produziu detecção válida, esse único candidato
+            # entra 2x no pool e "acordo" fecha em 1.0 sozinho, sem nenhuma concordância
+            # ENTRE frames de verdade. Sem essa segunda checagem, o loop parava ali,
+            # abrindo mão do resto do orçamento de tempo/tentativas que poderia confirmar
+            # (ou contradizer) essa única leitura.
             if tentativas >= n_min and candidatos:
                 eleito_parcial = _eleger_placa(candidatos)
-                if eleito_parcial and eleito_parcial["acordo"] >= acordo_min:
+                if (eleito_parcial and eleito_parcial["acordo"] >= acordo_min
+                        and eleito_parcial["n_votos_snap"] >= 2):
                     parada_motivo = "acordo"
                     break
 
@@ -414,13 +476,37 @@ def ler_placa(
             raise LeituraError(
                 503,
                 f"Tempo esgotado ({timeout_seg:.0f}s) antes de analisar qualquer imagem. "
-                "Se foi logo após reiniciar o servidor, os modelos ainda estavam carregando "
-                "— tente de novo. Caso persista, aumente `leitura_timeout_seg`.",
+                "Pode ter sido demora para conectar à câmera/pipeline, ou (se foi logo após "
+                "reiniciar o servidor) carga inicial de modelo — tente de novo. Caso "
+                "persista, aumente `leitura_timeout_seg`.",
             )
         raise LeituraError(503, "Câmera conectou mas não enviou frames — verifique a conexão")
 
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     melhor = _eleger_placa(candidatos) if candidatos else None
+
+    # Mescla com a detecção anterior do MESMO bico se ainda dentro do cooldown e a placa
+    # for parecida — o roteador aciona de novo pro mesmo veículo (retry dele, novo pulso
+    # do bico) e sem isto cada chamada emitia sua própria linha, mesmo quando só 1-2
+    # caracteres divergiam por ruído de OCR entre as duas leituras.
+    anterior_id: int | None = None
+    if melhor is not None and bico_id is not None:
+        cooldown_seg = float(cfg.get("cooldown_seg", "120"))
+        desde = (datetime.now(timezone.utc) - timedelta(seconds=cooldown_seg)).isoformat()
+        anterior = banco.ultima_deteccao_bico(bico_id, desde, origem)
+        if anterior and parecidas(anterior["placa"], melhor["placa"], max_diff=3):
+            anterior_id = anterior["id"]
+            melhor = _mesclar_com_anterior(melhor, anterior)
+        else:
+            # Sem match no mesmo bico: cruza com o 'pipeline' (monitoramento contínuo da
+            # MESMA câmera física, sem bico_id) — o mesmo veículo é comum aparecer nos
+            # dois quase ao mesmo tempo. A leitura reativa é o evento com significado de
+            # negócio (ligada ao bico), então ABSORVE o 'pipeline' em vez do contrário:
+            # some com aquela linha e grava só a reativa.
+            pipeline_anterior = banco.ultima_deteccao_camera(camera_id, desde, origem="pipeline")
+            if pipeline_anterior and parecidas(pipeline_anterior["placa"], melhor["placa"], max_diff=3):
+                melhor = _mesclar_com_anterior(melhor, pipeline_anterior)
+                banco.remover_deteccao(pipeline_anterior["id"])
 
     # Preview: quando houve leitura, mostra o FRAME DE ONDE a placa vencedora saiu, com a
     # caixa exata que o OCR usou. Antes rodava uma segunda detecção sobre o frame mais
@@ -478,11 +564,20 @@ def ler_placa(
         snapshot_rel = f"/static/snapshots/{nome}"
 
     # ── Persiste ──────────────────────────────────────────────────────────────
-    det_id = banco.registrar_deteccao(
-        placa=melhor["placa"], padrao=melhor["padrao"], confianca=melhor["confianca"],
-        snapshot=snapshot_rel, camera_id=especificacao.camera_tipo, bbox=melhor["bbox"],
-        bico_id=bico_id, frame=frame_rel, origem=origem,
-    )
+    # Se mesclou com a detecção anterior do mesmo bico, ATUALIZA aquela linha em vez de
+    # inserir uma nova — o histórico mostra um evento por veículo, não um por chamada.
+    if anterior_id is not None:
+        banco.atualizar_deteccao(
+            anterior_id, placa=melhor["placa"], padrao=melhor["padrao"],
+            confianca=melhor["confianca"], snapshot=snapshot_rel, frame=frame_rel,
+        )
+        det_id = anterior_id
+    else:
+        det_id = banco.registrar_deteccao(
+            placa=melhor["placa"], padrao=melhor["padrao"], confianca=melhor["confianca"],
+            snapshot=snapshot_rel, camera_id=especificacao.camera_tipo, bbox=melhor["bbox"],
+            bico_id=bico_id, frame=frame_rel, origem=origem, camera_db_id=camera_id,
+        )
     estado.adicionar_deteccao({
         "id": det_id, "placa": melhor["placa"], "padrao": melhor["padrao"],
         "confianca": melhor["confianca"], "snapshot": snapshot_rel,

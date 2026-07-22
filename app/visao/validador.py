@@ -157,6 +157,19 @@ def validar(texto: str, formato_hint: str = "") -> tuple[str, str] | None:
     return None
 
 
+def parecidas(a: str, b: str, max_diff: int = 2) -> bool:
+    """True se `a` e `b` têm o mesmo tamanho e diferem em até `max_diff` posições.
+
+    Usado para tratar duas leituras próximas no tempo (mesmo bico/câmera) como o
+    MESMO veículo apesar de ruído de OCR: confusões clássicas como 0/O/D/Q ou I/1/J
+    trocam 1-2 caracteres sem trocar o carro. Evita que esse ruído vire duas linhas
+    diferentes no histórico.
+    """
+    if len(a) != len(b):
+        return False
+    return sum(1 for x, y in zip(a, b) if x != y) <= max_diff
+
+
 def formatar(placa: str, padrao: str) -> str:
     """Aplica hífen para exibição (ex: ABC-1234 / ABC1D23)."""
     if padrao == "antigo" and len(placa) == 7:

@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import cv2
@@ -15,7 +15,7 @@ from app.core import estado
 from app.visao.camera import Camera
 from app.visao.detector import Detector
 from app.visao.ocr import OCR
-from app.visao.validador import validar
+from app.visao.validador import parecidas, validar
 
 log = logging.getLogger(__name__)
 
@@ -119,6 +119,7 @@ class Pipeline:
             self.tracker: _Tracker | None = _Tracker(
                 ocr_a_cada_n_frames=int(cfg.get("tracker_ocr_intervalo", "5")),
                 votos_emitir=int(cfg.get("tracker_votos_emitir", "2")),
+                paciencia_frames=int(cfg.get("tracker_paciencia_frames", "40")),
             )
         else:
             self.tracker = None
@@ -127,8 +128,15 @@ class Pipeline:
         SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         estado.camera_tipo = self.cfg["camera_tipo"]
         if self.deteccao_automatica:
+            # Mesmo lock por câmera que a leitura reativa/direta usa (app/visao/leitura.py)
+            # — sem isso, abrir a conexão RTSP do pipeline podia coincidir com uma leitura
+            # reativa da MESMA câmera abrindo conexão direta ao mesmo tempo (ex.: pipeline
+            # subindo enquanto um bico já chama), e a Intelbras só tolera 1 conexão por vez.
+            # Import local para evitar ciclo (leitura.py importa `_expandir_bbox` daqui).
+            from app.visao.leitura import lock_camera
             try:
-                self.camera.abrir()
+                with lock_camera(self.camera_db_id):
+                    self.camera.abrir()
                 estado.camera_conectada = True
             except Exception as e:
                 log.error("Câmera não encontrada ao iniciar (%s) — pipeline aguardará reconexão", e)
@@ -179,7 +187,13 @@ class Pipeline:
                     elif agora - sem_frame_desde >= 3.0:
                         log.warning("Câmera %d sem resposta por 3s — tentando reconectar...", self.camera_db_id)
                         estado.camera_conectada = False
-                        if self.camera.reconectar():
+                        # Mesmo lock de `iniciar()` acima — a reconexão também abre RTSP
+                        # do zero, e pode coincidir com uma leitura reativa da mesma
+                        # câmera caindo para conexão direta nesse exato momento instável.
+                        from app.visao.leitura import lock_camera
+                        with lock_camera(self.camera_db_id):
+                            reconectou = self.camera.reconectar()
+                        if reconectou:
                             estado.camera_conectada = True
                             sem_frame_desde = None
                             log.info("Câmera %d reconectada", self.camera_db_id)
@@ -340,11 +354,28 @@ class Pipeline:
         Respeita cooldown_seg para evitar re-emissão do mesmo veículo parado.
         Usado por ambos os paths: tracker e clássico.
         """
-        agora = time.time()
-        ultimo = estado.ultima_placa_emitida.get(placa, 0)
-        if agora - ultimo < self.cooldown_seg:
+        # Cooldown por SIMILARIDADE, não string exata: ruído de OCR de 1-2 caracteres
+        # (0/O/D/Q, I/1/J...) fazia o mesmo veículo escapar do cooldown e virar uma
+        # nova linha no histórico a cada leitura levemente diferente. Escopado por
+        # câmera (camera_db_id) — duas câmeras diferentes não se afetam.
+        recentes = estado.obter_emissoes_recentes(self.camera_db_id, self.cooldown_seg)
+        casada = next((p for p, _ in recentes if parecidas(placa, p)), None)
+        if casada is not None:
+            estado.registrar_emissao(self.camera_db_id, casada)  # desliza o cooldown
             return
-        estado.ultima_placa_emitida[placa] = agora
+
+        # Além da própria câmera, cruza com leituras 'roteador'/'teste' já gravadas por
+        # esta câmera: o mesmo veículo costuma ser lido tanto pelo monitoramento contínuo
+        # quanto pela chamada reativa do bico quase ao mesmo tempo. A leitura reativa é o
+        # evento com significado de negócio (ligada a um bico/abastecimento) — o pipeline
+        # não precisa duplicar o que ela já registrou.
+        desde = (datetime.now(timezone.utc) - timedelta(seconds=self.cooldown_seg)).isoformat()
+        anterior = banco.ultima_deteccao_camera(self.camera_db_id, desde)
+        if anterior and anterior["origem"] != "pipeline" and parecidas(placa, anterior["placa"]):
+            estado.registrar_emissao(self.camera_db_id, placa)
+            return
+
+        estado.registrar_emissao(self.camera_db_id, placa)
 
         snapshot_rel = None
         if self.salvar_snapshot:
@@ -364,6 +395,7 @@ class Pipeline:
             camera_id=self.cfg["camera_tipo"],
             bbox={"x": bbox[0], "y": bbox[1], "w": bbox[2], "h": bbox[3]},
             origem="pipeline",
+            camera_db_id=self.camera_db_id,
         )
         criado_em = datetime.now(timezone.utc).isoformat()
         estado.adicionar_deteccao({
@@ -463,7 +495,13 @@ def iniciar_camera(camera_db_id: int, cfg: dict[str, str]) -> None:
     try:
         p.iniciar()
     except Exception:
-        _instancias.pop(camera_db_id, None)
+        # NÃO remove de `_instancias` (diferente de antes): sem thread viva e com
+        # `iniciando=False`, a instância cai no mesmo caminho de "thread morta" que o
+        # supervisor (app/operacao/supervisor.py) já trata com backoff exponencial.
+        # Removê-la fazia essa câmera desaparecer de vez do supervisor após uma falha
+        # no boot (ex.: modelo não carregou) — sem retry algum, exigindo intervenção
+        # manual pra sempre recuperar.
+        p.iniciando = False
         raise
 
 

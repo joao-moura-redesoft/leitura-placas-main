@@ -512,6 +512,13 @@ _detector_leitura_id: tuple | None = None
 # serializa o acesso: sem paralelismo entre leituras concorrentes, mas sem risco de crash.
 detector_leitura_lock = threading.Lock()
 
+# Protege a CRIAÇÃO do detector cacheado acima (diferente do lock acima, que protege o
+# USO). Sem isso, duas requisições concorrentes vendo `_detector_leitura is None` ao
+# mesmo tempo (ex.: logo após o boot, antes do aquecimento terminar) carregam a pilha de
+# modelo cada uma a sua própria vez — carga duplicada, e em GPU risco real de sessões
+# CUDA sendo inicializadas concorrentemente.
+_detector_leitura_criacao_lock = threading.Lock()
+
 
 def obter_detector_leitura(cfg: dict):
     """Detector de alta precisão para a leitura manual/GET (padrão: s-608).
@@ -535,23 +542,27 @@ def obter_detector_leitura(cfg: dict):
     ident = (*ident_placa, dois_estagios, cfg.get("veiculo_modelo_path", "") if dois_estagios else "")
 
     if _detector_leitura is None or _detector_leitura_id != ident:
-        if backend == "open_image_models":
-            det_placa = OpenImageDetector(modelo=ident_placa[1], conf=float(cfg.get("conf_threshold", "0.3")))
-        else:
-            det_placa = criar_detector(cfg)
+        with _detector_leitura_criacao_lock:
+            # Reconfirma dentro do lock — outra thread pode ter carregado enquanto
+            # esperávamos aqui.
+            if _detector_leitura is None or _detector_leitura_id != ident:
+                if backend == "open_image_models":
+                    det_placa = OpenImageDetector(modelo=ident_placa[1], conf=float(cfg.get("conf_threshold", "0.3")))
+                else:
+                    det_placa = criar_detector(cfg)
 
-        if dois_estagios:
-            det = DetectorDoisEstagios(
-                det_placa, _criar_detector_veiculo(cfg),
-                padding=float(cfg.get("veiculo_padding", "0.05")),
-                obrigatorio=_bool_cfg(cfg, "veiculo_obrigatorio"),
-                max_veiculos=int(cfg.get("veiculo_max_veiculos", "5")),
-            )
-        else:
-            det = det_placa
+                if dois_estagios:
+                    det = DetectorDoisEstagios(
+                        det_placa, _criar_detector_veiculo(cfg),
+                        padding=float(cfg.get("veiculo_padding", "0.05")),
+                        obrigatorio=_bool_cfg(cfg, "veiculo_obrigatorio"),
+                        max_veiculos=int(cfg.get("veiculo_max_veiculos", "5")),
+                    )
+                else:
+                    det = det_placa
 
-        det.carregar()
-        _detector_leitura = det
-        _detector_leitura_id = ident
-        log.info("Detector de leitura (GET) carregado: %s (2 estágios=%s)", ident_placa[1], dois_estagios)
+                det.carregar()
+                _detector_leitura = det
+                _detector_leitura_id = ident
+                log.info("Detector de leitura (GET) carregado: %s (2 estágios=%s)", ident_placa[1], dois_estagios)
     return _detector_leitura

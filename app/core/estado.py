@@ -15,7 +15,7 @@ logs_recentes: deque = deque(maxlen=200)
 fps_atual: float = 0.0
 iniciado_em: float = time.time()
 pipeline_rodando: bool = False
-ultima_placa_emitida: dict[str, float] = {}
+emissoes_recentes: dict[int, list] = {}  # camera_db_id -> [(placa, timestamp), ...]
 frames_processados: int = 0
 camera_conectada: bool = False
 modelo_carregado: bool = False
@@ -66,6 +66,25 @@ def adicionar_deteccao(deteccao: dict) -> None:
 def listar_recentes() -> list[dict]:
     with lock:
         return list(ultimas_deteccoes)
+
+
+def obter_emissoes_recentes(camera_db_id: int, cooldown_seg: float) -> list[tuple[str, float]]:
+    """Emissões dessa câmera ainda dentro da janela de cooldown (poda as expiradas)."""
+    agora = time.time()
+    with lock:
+        vivas = [e for e in emissoes_recentes.get(camera_db_id, []) if agora - e[1] < cooldown_seg]
+        emissoes_recentes[camera_db_id] = vivas
+        return list(vivas)
+
+
+def registrar_emissao(camera_db_id: int, placa: str) -> None:
+    """Registra (ou renova, se já presente) o timestamp desta placa — chamado tanto numa
+    emissão nova quanto quando uma leitura parecida repete dentro do cooldown, para a
+    janela deslizar e cobrir sequências de retries mais longas que um único cooldown_seg."""
+    with lock:
+        lst = emissoes_recentes.setdefault(camera_db_id, [])
+        lst[:] = [e for e in lst if e[0] != placa]
+        lst.append((placa, time.time()))
 
 
 def atualizar_fps(valor: float) -> None:
