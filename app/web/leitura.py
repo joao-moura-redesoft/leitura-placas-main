@@ -96,10 +96,18 @@ def leitura_reativa(
 
     reg, motivo = banco.resolver_bico(cnpj_norm, automacao, bico)
     if reg is None:
-        _registrar("erro_cadastro", f"cadastro não encontrado: {motivo}")
+        # "_inativa"/"_inativo": o cadastro existe mas foi desativado — mensagem
+        # diferente de "não existe", porque a correção é diferente (reativar, não criar).
+        if motivo.endswith(("_inativa", "_inativo")):
+            nivel = motivo.rsplit("_", 1)[0]
+            detalhe = f"nível '{nivel}' está desativado no cadastro"
+        else:
+            nivel = motivo
+            detalhe = f"não encontrado no nível '{nivel}'"
+        _registrar("erro_cadastro", f"cadastro: {detalhe}")
         raise HTTPException(
             404,
-            f"Cadastro não encontrado no nível '{motivo}' "
+            f"Cadastro {detalhe} "
             f"(cnpj={cnpj_norm} automacao={automacao} bico={bico})",
         )
     base.update(bico_id=reg["bico_id"], empresa_id=reg["empresa_id"])

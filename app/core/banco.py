@@ -559,10 +559,22 @@ def automacoes_obter(id_: int) -> dict | None:
         return dict(r) if r else None
 
 
+def _normalizar_codigo(codigo: str) -> str:
+    """Tolera diferença de espaço/maiúscula no código vindo do roteador.
+
+    O código não tem significado numérico — é só um rótulo opaco — então "1", " 1 " e
+    "1 " são o mesmo bico/automação para qualquer humano. Como o lado que envia (roteador
+    Java) é integração nova, é o tipo de diferença boba mais provável de acontecer.
+    """
+    return (codigo or "").strip().upper()
+
+
 def automacoes_obter_por_codigo(empresa_id: int, codigo: str) -> dict | None:
+    alvo = _normalizar_codigo(codigo)
     with cursor() as c:
         r = c.execute(
-            "SELECT * FROM automacoes WHERE empresa_id=? AND codigo=?", (empresa_id, codigo)
+            "SELECT * FROM automacoes WHERE empresa_id=? AND UPPER(TRIM(codigo))=?",
+            (empresa_id, alvo),
         ).fetchone()
         return dict(r) if r else None
 
@@ -614,9 +626,11 @@ def bicos_obter(id_: int) -> dict | None:
 
 
 def bicos_obter_por_codigo(automacao_id: int, codigo: str) -> dict | None:
+    alvo = _normalizar_codigo(codigo)
     with cursor() as c:
         r = c.execute(
-            "SELECT * FROM bicos WHERE automacao_id=? AND codigo=?", (automacao_id, codigo)
+            "SELECT * FROM bicos WHERE automacao_id=? AND UPPER(TRIM(codigo))=?",
+            (automacao_id, alvo),
         ).fetchone()
         return dict(r) if r else None
 
@@ -678,24 +692,36 @@ def resolver_bico(cnpj: str, automacao_codigo: str, bico_codigo: str) -> tuple[d
     ("pode ser que tenha um cadastro do bico errado").
 
     Retorna (registro_mesclado, None) em caso de sucesso — registro combina campos
-    da câmera (conexão) com os do bico (roi, ids) — ou (None, motivo) em caso de erro,
-    motivo em {"empresa", "automacao", "bico"}.
+    da câmera (conexão) com os do bico (roi, ids) — ou (None, motivo) em caso de erro.
+    `motivo` é "empresa"/"automacao"/"bico" quando o código não existe, ou
+    "empresa_inativa"/"automacao_inativa"/"bico_inativo"/"camera_inativa" quando existe
+    mas foi desativado no cadastro — distinção que importa porque a correção é diferente
+    (cadastrar vs. reativar). Antes só o "ativo" do bico era checado: desativar um posto,
+    automação ou câmera inteiros não impedia a leitura continuar respondendo por eles.
     """
     empresa = empresas_obter_por_cnpj(cnpj)
     if empresa is None:
         return None, "empresa"
+    if not empresa["ativo"]:
+        return None, "empresa_inativa"
 
     automacao = automacoes_obter_por_codigo(empresa["id"], automacao_codigo)
     if automacao is None:
         return None, "automacao"
+    if not automacao["ativo"]:
+        return None, "automacao_inativa"
 
     bico = bicos_obter_por_codigo(automacao["id"], bico_codigo)
-    if bico is None or not bico["ativo"]:
+    if bico is None:
         return None, "bico"
+    if not bico["ativo"]:
+        return None, "bico_inativo"
 
     camera = cameras_obter(bico["camera_id"])
     if camera is None:
         return None, "bico"
+    if not camera["ativo"]:
+        return None, "camera_inativa"
 
     reg = {
         **camera,
