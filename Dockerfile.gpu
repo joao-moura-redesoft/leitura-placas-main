@@ -76,6 +76,8 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir -r requirements.txt \
     && python -m pip uninstall -y onnxruntime \
     && python -m pip install --no-cache-dir onnxruntime-gpu==1.25.1 \
+    && python -m pip uninstall -y opencv-python-headless \
+    && python -m pip install --no-cache-dir --force-reinstall --no-deps opencv-contrib-python==4.10.0.84 \
     && python -c "import torch; assert torch.version.cuda, 'torch sem CUDA na imagem'; print('torch CUDA:', torch.version.cuda)"
 
 # PaddleOCR em GPU: o requirements.txt registra que NÃO foi validado em GPU real neste

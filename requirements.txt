@@ -25,6 +25,11 @@ python-multipart==0.0.27
 opencv-contrib-python==4.10.0.84
 numpy==2.3.5
 onnxruntime==1.25.1
+# protobuf é dependência transitiva (onnxruntime/paddle) e ninguém a fixa, então um build
+# limpo puxa a mais nova (7.x). O ecossistema ML historicamente quebra com protobuf 4+;
+# 3.20.2 é o valor testado no dev. Sem este pin, cada rebuild pode subir uma protobuf
+# incompatível e quebrar onnxruntime/paddle em runtime.
+protobuf==3.20.2
 # Detector de VEÍCULO (1º estágio da detecção em 2 estágios, veiculo_dois_estagios_*) —
 # YOLOX-s ONNX, licença Apache-2.0. Sem dependência nova: reusa onnxruntime + opencv já
 # instalados. Baixe com: python scripts/baixar_modelo.py --veiculo
