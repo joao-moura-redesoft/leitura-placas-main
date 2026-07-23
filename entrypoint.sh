@@ -71,4 +71,11 @@ echo "[entrypoint] Iniciando como usuário alpr (UID $UID_APP)."
 # setpriv em vez de gosu/su-exec: vem do util-linux, já presente nas duas imagens base —
 # sem pacote extra. `exec` mantém o processo como PID 1 do container, para o SIGTERM do
 # `docker stop` chegar ao servidor e o shutdown do FastAPI rodar.
-exec setpriv --reuid="$UID_APP" --regid="$GID_APP" --init-groups "$@"
+#
+# --clear-groups (não --init-groups): --init-groups exige resolver o UID para um nome no
+# /etc/passwd para descobrir os grupos suplementares, e essa resolução falha em algumas
+# imagens ("--init-groups requires an user that can be found on the system"). Aqui o
+# usuário só tem o próprio grupo primário (1000), então não há grupo suplementar a
+# inicializar. --clear-groups usa os IDs numéricos direto, sem lookup, e ainda descarta
+# os grupos do root em vez de herdá-los — mais seguro.
+exec setpriv --reuid="$UID_APP" --regid="$GID_APP" --clear-groups "$@"
