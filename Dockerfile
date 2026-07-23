@@ -36,10 +36,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 # O que entra aqui é filtrado pelo .dockerignore (sem .venv/.git/config.txt/placas.db).
 COPY --chown=alpr:alpr . .
 
+# Diretórios de escrita em runtime que ficam DENTRO de /app (não são volumes montados):
+#   - hls/                       segmentos HLS (só quando streaming_modo=hls)
+#   - testes/fotos, .../crops    saídas da aba de testes (o .dockerignore os exclui)
+# O app cria essas pastas via os.makedirs no boot, mas roda como alpr (UID 1000) e /app
+# pertence ao root (WORKDIR cria /app como root; o --chown acima só afeta o CONTEÚDO
+# copiado). Sem criá-las aqui, com dono alpr, o boot morre com "Permission denied" ao
+# tentar criar /app/hls. Criadas e chowneadas no build resolve de vez.
+RUN mkdir -p /app/hls /app/testes/fotos /app/testes/resultados/crops \
+    && chown -R alpr:alpr /app/hls /app/testes
+
 # `COPY` + `RUN chmod` (em vez de `COPY --chmod`) porque --chmod exige BuildKit; assim a
-# imagem também constrói com o builder clássico de Docker antigo. Precisa vir ANTES do
-# `USER alpr`: depois dele o build não teria permissão de escrever em /.
-# O bit de execução não sobrevive ao repositório (checkout em Windows), por isso o chmod.
+# imagem também constrói com o builder clássico. O bit de execução não sobrevive ao
+# checkout em Windows, por isso o chmod.
 RUN cp /app/entrypoint.sh /entrypoint.sh && chmod 755 /entrypoint.sh
 
 # HOME define onde os modelos são baixados em runtime (~/.cache/open-image-models,

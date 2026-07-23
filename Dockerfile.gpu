@@ -87,8 +87,13 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
 
 COPY --chown=alpr:alpr . .
 
-# Ver nota de portabilidade no Dockerfile (CPU): `COPY --chmod` exigiria BuildKit, e
-# isto precisa rodar antes do `USER alpr` para poder escrever em /.
+# Diretórios de escrita em runtime dentro de /app (hls/ e saídas da aba de testes).
+# Ver a nota completa no Dockerfile (CPU): o app roda como alpr mas /app é do root, então
+# criá-las no build com dono alpr evita "Permission denied" no boot.
+RUN mkdir -p /app/hls /app/testes/fotos /app/testes/resultados/crops \
+    && chown -R alpr:alpr /app/hls /app/testes
+
+# Ver nota de portabilidade no Dockerfile (CPU): `COPY --chmod` exigiria BuildKit.
 RUN cp /app/entrypoint.sh /entrypoint.sh && chmod 755 /entrypoint.sh
 
 ENV HOME=/home/alpr \
