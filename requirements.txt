@@ -38,8 +38,11 @@ requests==2.33.1
 # ocr_engine = easyocr  →  pip install easyocr
 easyocr==1.7.2
 
-# ocr_engine = fast_plate_ocr  →  pip install fast-plate-ocr
-# fast-plate-ocr
+# OCR de placa de CARRO no modo ocr_engine=auto (self._fast do AutoOCR). Precisa vir
+# instalado na imagem: sem ele, o app tenta instalar em runtime como usuário sem
+# privilégio (vai para ~/.local, fora do PATH/sys.path do processo) e cai para tesseract,
+# que é bem pior para placa de carro. Versão fixada na testada em acurácia (dev).
+fast-plate-ocr==1.1.0
 
 # PaddleOCR — reforço do OCR na leitura GET (ocr_leitura_paddle=sim), Apache-2.0.
 # Melhora placa antiga borrada (UFPR-ALPR: 49%→64%). Compatível com numpy 2.x.
