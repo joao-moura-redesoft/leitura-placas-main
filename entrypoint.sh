@@ -15,8 +15,15 @@ DADOS_DIR="$(dirname "${CONFIG_PATH:-/app/dados/config.txt}")"
 SNAPSHOTS_DIR=/app/app/web/static/snapshots
 MODELS_DIR=/app/models
 VEICULO_ONNX="$MODELS_DIR/vehicle_detector.onnx"
+# Pastas de escrita em runtime que ficam DENTRO de /app (não são volumes): o app as cria
+# no boot via os.makedirs, mas rodando como alpr (UID 1000), e /app pertence ao root — daí
+# "Permission denied: 'testes/fotos'". Criadas e chowneadas aqui (contexto root) elas ficam
+# graváveis independentemente do que o Dockerfile fez, à prova de imagem desatualizada.
+HLS_DIR=/app/hls
+TESTES_DIR=/app/testes
 
-mkdir -p "$DADOS_DIR" "$MODELS_DIR" "$SNAPSHOTS_DIR"
+mkdir -p "$DADOS_DIR" "$MODELS_DIR" "$SNAPSHOTS_DIR" \
+         "$HLS_DIR" "$TESTES_DIR/fotos" "$TESTES_DIR/resultados/crops"
 
 # ── Detector de veículo (1º estágio de veiculo_dois_estagios_get=sim, ligado por padrão)
 # 36 MB, licença Apache-2.0, repositório PÚBLICO do HuggingFace (sem credencial). Não é
@@ -61,7 +68,7 @@ fi
 # ── Permissões ────────────────────────────────────────────────────────────────────
 # `chown -R` só quando o diretório ainda não pertence ao app: em snapshots com milhares
 # de imagens, um -R incondicional atrasaria todo restart.
-for d in "$DADOS_DIR" "$MODELS_DIR" "$SNAPSHOTS_DIR"; do
+for d in "$DADOS_DIR" "$MODELS_DIR" "$SNAPSHOTS_DIR" "$HLS_DIR" "$TESTES_DIR"; do
   if [ "$(stat -c %u "$d")" != "$UID_APP" ]; then
     chown -R "$UID_APP:$GID_APP" "$d"
   fi
@@ -71,4 +78,11 @@ echo "[entrypoint] Iniciando como usuário alpr (UID $UID_APP)."
 # setpriv em vez de gosu/su-exec: vem do util-linux, já presente nas duas imagens base —
 # sem pacote extra. `exec` mantém o processo como PID 1 do container, para o SIGTERM do
 # `docker stop` chegar ao servidor e o shutdown do FastAPI rodar.
-exec setpriv --reuid="$UID_APP" --regid="$GID_APP" --init-groups "$@"
+#
+# --clear-groups (não --init-groups): --init-groups exige resolver o UID para um nome no
+# /etc/passwd para descobrir os grupos suplementares, e essa resolução falha em algumas
+# imagens ("--init-groups requires an user that can be found on the system"). Aqui o
+# usuário só tem o próprio grupo primário (1000), então não há grupo suplementar a
+# inicializar. --clear-groups usa os IDs numéricos direto, sem lookup, e ainda descarta
+# os grupos do root em vez de herdá-los — mais seguro.
+exec setpriv --reuid="$UID_APP" --regid="$GID_APP" --clear-groups "$@"

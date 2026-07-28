@@ -76,6 +76,8 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir -r requirements.txt \
     && python -m pip uninstall -y onnxruntime \
     && python -m pip install --no-cache-dir onnxruntime-gpu==1.25.1 \
+    && python -m pip uninstall -y opencv-python-headless \
+    && python -m pip install --no-cache-dir --force-reinstall --no-deps opencv-contrib-python==4.10.0.84 \
     && python -c "import torch; assert torch.version.cuda, 'torch sem CUDA na imagem'; print('torch CUDA:', torch.version.cuda)"
 
 # PaddleOCR em GPU: o requirements.txt registra que NÃO foi validado em GPU real neste
@@ -87,8 +89,13 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
 
 COPY --chown=alpr:alpr . .
 
-# Ver nota de portabilidade no Dockerfile (CPU): `COPY --chmod` exigiria BuildKit, e
-# isto precisa rodar antes do `USER alpr` para poder escrever em /.
+# Diretórios de escrita em runtime dentro de /app (hls/ e saídas da aba de testes).
+# Ver a nota completa no Dockerfile (CPU): o app roda como alpr mas /app é do root, então
+# criá-las no build com dono alpr evita "Permission denied" no boot.
+RUN mkdir -p /app/hls /app/testes/fotos /app/testes/resultados/crops \
+    && chown -R alpr:alpr /app/hls /app/testes
+
+# Ver nota de portabilidade no Dockerfile (CPU): `COPY --chmod` exigiria BuildKit.
 RUN cp /app/entrypoint.sh /entrypoint.sh && chmod 755 /entrypoint.sh
 
 ENV HOME=/home/alpr \

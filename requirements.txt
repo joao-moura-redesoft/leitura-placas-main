@@ -1,29 +1,35 @@
-# ── GPU em produção (opcional) ──────────────────────────────────────────────────
+# ── Este arquivo instala tudo em CPU ────────────────────────────────────────────
 # Todo detector/OCR pede CUDA automaticamente quando disponível (hardware.py) e cai
-# para CPU sem erro se não houver — não precisa mudar código, só trocar pacotes no
-# servidor de destino (requer driver NVIDIA + CUDA/cuDNN instalados no SO):
-#   pip uninstall onnxruntime && pip install onnxruntime-gpu   # detecção (2 estágios)
-#   pip install torch --index-url https://download.pytorch.org/whl/cu121  # EasyOCR
-#   pip uninstall paddlepaddle && pip install paddlepaddle-gpu  # PaddleOCR (não
-#     testado em GPU real neste projeto — validar após instalar)
-# Este ambiente de desenvolvimento é CPU-only; os testes de precisão/latência deste
-# projeto foram medidos em CPU (i3-8100T) — em produção com GPU, latência tende a cair
-# bastante (detecção e OCR são a maior parte do custo por tentativa no loop de leitura).
+# para CPU sem erro se não houver. Os testes de precisão/latência do projeto foram
+# medidos em CPU; em produção com GPU a latência cai bastante.
+#
+# Para a GPU de produção NÃO edite este arquivo — use o Dockerfile.gpu, que instala
+# torch CUDA (cu124) e troca onnxruntime por onnxruntime-gpu na versão certa:
+#     docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+# (PaddleOCR segue em CPU mesmo na imagem GPU — paddlepaddle-gpu não foi validado aqui.)
+#
+# Versões fixas (==) de propósito: é um servidor de produção, e a acurácia foi medida
+# contra estas versões exatas. Um rebuild não pode puxar uma versão nova não testada.
 
 # ── Dependências principais ───────────────────────────────────────────────────
-bcrypt>=4.2
+bcrypt==5.0.0
 # Detector de placas — YOLOv9-t ONNX, licença MIT (uso comercial OK).
 # Backend padrão (detector_backend = open_image_models). Baixa o modelo no 1º uso.
-open-image-models>=0.5
+open-image-models==0.5.1
 fastapi==0.136.1
 uvicorn[standard]==0.46.0
 jinja2==3.1.6
 python-multipart==0.0.27
 # opencv-contrib-python (não headless): o PaddleOCR depende dessa variante. Serve o app
 # também (mesmo módulo cv2 + contrib). Substitui o opencv-python-headless.
-opencv-contrib-python>=4.10
+opencv-contrib-python==4.10.0.84
 numpy==2.3.5
 onnxruntime==1.25.1
+# protobuf é dependência transitiva (onnxruntime/paddle) e ninguém a fixa, então um build
+# limpo puxa a mais nova (7.x). O ecossistema ML historicamente quebra com protobuf 4+;
+# 3.20.2 é o valor testado no dev. Sem este pin, cada rebuild pode subir uma protobuf
+# incompatível e quebrar onnxruntime/paddle em runtime.
+protobuf==3.20.2
 # Detector de VEÍCULO (1º estágio da detecção em 2 estágios, veiculo_dois_estagios_*) —
 # YOLOX-s ONNX, licença Apache-2.0. Sem dependência nova: reusa onnxruntime + opencv já
 # instalados. Baixe com: python scripts/baixar_modelo.py --veiculo
@@ -38,14 +44,17 @@ requests==2.33.1
 # ocr_engine = easyocr  →  pip install easyocr
 easyocr==1.7.2
 
-# ocr_engine = fast_plate_ocr  →  pip install fast-plate-ocr
-# fast-plate-ocr
+# OCR de placa de CARRO no modo ocr_engine=auto (self._fast do AutoOCR). Precisa vir
+# instalado na imagem: sem ele, o app tenta instalar em runtime como usuário sem
+# privilégio (vai para ~/.local, fora do PATH/sys.path do processo) e cai para tesseract,
+# que é bem pior para placa de carro. Versão fixada na testada em acurácia (dev).
+fast-plate-ocr==1.1.0
 
 # PaddleOCR — reforço do OCR na leitura GET (ocr_leitura_paddle=sim), Apache-2.0.
 # Melhora placa antiga borrada (UFPR-ALPR: 49%→64%). Compatível com numpy 2.x.
 # Precisa de enable_mkldnn=False (bug do oneDNN no executor PIR em CPU) — já tratado no código.
-paddlepaddle>=3.3
-paddleocr>=3.7
+paddlepaddle==3.3.1
+paddleocr==3.7.0
 
 # ocr_engine = doctr  →  pip install "python-doctr[torch]"
 # python-doctr[torch]
@@ -61,7 +70,7 @@ paddleocr>=3.7
 # ── Reload automático (python main.py --reload) ───────────────────────────────
 # Necessário para o uvicorn detectar alterações de arquivo no Windows.
 # Sem este pacote o --reload não funciona.
-watchfiles>=1.0
+watchfiles==1.2.0
 
 # ── Tracker (ByteTrack) ───────────────────────────────────────────────────────
 # tracker_ativo = sim  →  pip install boxmot

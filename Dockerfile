@@ -31,15 +31,31 @@ WORKDIR /app
 # requirements primeiro, em camada própria: mudar código da aplicação não invalida o
 # cache do pip (que baixa torch/paddle/easyocr — a parte lenta do build).
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# easyocr/fast-plate-ocr/open-image-models dependem de opencv-python-headless, enquanto
+# paddlex fixa opencv-contrib-python==4.10.0.84 — os dois fornecem o MESMO módulo cv2 e se
+# sobrescrevem no disco; qual "vence" depende da ordem de instalação. O ambiente testado
+# usa só o contrib. Removemos o headless e reinstalamos o contrib por último, garantindo
+# que o cv2 final é o 4.10 validado, de forma determinística.
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip uninstall -y opencv-python-headless \
+    && pip install --no-cache-dir --force-reinstall --no-deps opencv-contrib-python==4.10.0.84
 
 # O que entra aqui é filtrado pelo .dockerignore (sem .venv/.git/config.txt/placas.db).
 COPY --chown=alpr:alpr . .
 
+# Diretórios de escrita em runtime que ficam DENTRO de /app (não são volumes montados):
+#   - hls/                       segmentos HLS (só quando streaming_modo=hls)
+#   - testes/fotos, .../crops    saídas da aba de testes (o .dockerignore os exclui)
+# O app cria essas pastas via os.makedirs no boot, mas roda como alpr (UID 1000) e /app
+# pertence ao root (WORKDIR cria /app como root; o --chown acima só afeta o CONTEÚDO
+# copiado). Sem criá-las aqui, com dono alpr, o boot morre com "Permission denied" ao
+# tentar criar /app/hls. Criadas e chowneadas no build resolve de vez.
+RUN mkdir -p /app/hls /app/testes/fotos /app/testes/resultados/crops \
+    && chown -R alpr:alpr /app/hls /app/testes
+
 # `COPY` + `RUN chmod` (em vez de `COPY --chmod`) porque --chmod exige BuildKit; assim a
-# imagem também constrói com o builder clássico de Docker antigo. Precisa vir ANTES do
-# `USER alpr`: depois dele o build não teria permissão de escrever em /.
-# O bit de execução não sobrevive ao repositório (checkout em Windows), por isso o chmod.
+# imagem também constrói com o builder clássico. O bit de execução não sobrevive ao
+# checkout em Windows, por isso o chmod.
 RUN cp /app/entrypoint.sh /entrypoint.sh && chmod 755 /entrypoint.sh
 
 # HOME define onde os modelos são baixados em runtime (~/.cache/open-image-models,
