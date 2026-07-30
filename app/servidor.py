@@ -84,12 +84,20 @@ class _AuthMiddleware(BaseHTTPMiddleware):
             h = request.headers.get("X-API-Key", "")
             q = request.query_params.get("api_key", "")
             if h == api_key or q == api_key:
-                return await call_next(request)
+                resp = await call_next(request)
+                if token:
+                    resp.delete_cookie("sessao")
+                return resp
 
-        # Não autenticado
+        # Não autenticado — limpa cookie de sessão morto (expirado ou de antes de um
+        # restart) pra não ficar sendo reenviado por dias sem nunca mais validar.
         if path.startswith("/api/") or path.startswith("/stream/"):
-            return JSONResponse({"detail": "Não autenticado."}, status_code=401)
-        return RedirectResponse("/login", status_code=303)
+            resp = JSONResponse({"detail": "Não autenticado."}, status_code=401)
+        else:
+            resp = RedirectResponse("/login", status_code=303)
+        if token:
+            resp.delete_cookie("sessao")
+        return resp
 
 
 def _iniciar_pipeline_bg(cfg: dict) -> None:

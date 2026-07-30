@@ -13,12 +13,18 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/web/templates")
 
 
+def _no_store(resp):
+    """Evita que o navegador guarde página/redirect de login em cache entre restarts."""
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 # ── Criar administrador (primeiro acesso — sem usuários no banco) ─────────────
 
 @router.get("/criar-admin")
 def criar_admin_get(request: Request):
     if banco.contar_usuarios() > 0:
-        return RedirectResponse("/login", status_code=303)
+        return _no_store(RedirectResponse("/login", status_code=303))
     flash: dict = {}
     raw = request.cookies.get("_flash_admin")
     if raw:
@@ -32,7 +38,7 @@ def criar_admin_get(request: Request):
         "email": flash.get("email", ""),
     })
     resp.delete_cookie("_flash_admin")
-    return resp
+    return _no_store(resp)
 
 
 @router.post("/criar-admin")
@@ -43,7 +49,7 @@ async def criar_admin_post(
     confirmar: str = Form(...),
 ):
     if banco.contar_usuarios() > 0:
-        return RedirectResponse("/login", status_code=303)
+        return _no_store(RedirectResponse("/login", status_code=303))
 
     nome_v  = nome.strip()
     email_v = email.strip().lower()
@@ -61,7 +67,7 @@ async def criar_admin_post(
         resp.set_cookie("_flash_admin",
                         json.dumps({"erro": erro, "nome": nome_v, "email": email_v}),
                         httponly=True, samesite="lax", max_age=60)
-        return resp
+        return _no_store(resp)
 
     uid = banco.criar_usuario(nome_v, email_v, auth_mod.hash_senha(senha), papel="admin")
     if uid is None:
@@ -69,14 +75,14 @@ async def criar_admin_post(
         resp.set_cookie("_flash_admin",
                         json.dumps({"erro": "Erro ao criar usuário. Tente novamente.", "nome": nome_v, "email": email_v}),
                         httponly=True, samesite="lax", max_age=60)
-        return resp
+        return _no_store(resp)
 
     token = auth_mod.criar_sessao(uid)
     # Cai em /postos: é onde o trabalho começa (implantação e diagnóstico por cliente).
     # "Ao Vivo" só é útil com o pipeline contínuo, que o servidor central não usa.
     resp = RedirectResponse("/postos", status_code=303)
     resp.set_cookie("sessao", token, httponly=True, samesite="lax", max_age=86400 * 7)
-    return resp
+    return _no_store(resp)
 
 
 # ── Login ─────────────────────────────────────────────────────────────────────
@@ -84,7 +90,7 @@ async def criar_admin_post(
 @router.get("/login")
 def login_get(request: Request):
     if banco.contar_usuarios() == 0:
-        return RedirectResponse("/criar-admin", status_code=303)
+        return _no_store(RedirectResponse("/criar-admin", status_code=303))
     flash: dict = {}
     raw = request.cookies.get("_flash_login")
     if raw:
@@ -98,26 +104,26 @@ def login_get(request: Request):
         "email":   flash.get("email", ""),
     })
     resp.delete_cookie("_flash_login")
-    return resp
+    return _no_store(resp)
 
 
 @router.post("/login")
 async def login_post(request: Request, email: str = Form(...), senha: str = Form(...)):
     if banco.contar_usuarios() == 0:
-        return RedirectResponse("/criar-admin", status_code=303)
+        return _no_store(RedirectResponse("/criar-admin", status_code=303))
 
     user = banco.buscar_usuario_email(email.strip().lower())
     if not user or not auth_mod.verificar_senha(senha, user["senha"]):
-        return templates.TemplateResponse(request, "login.html", {
+        return _no_store(templates.TemplateResponse(request, "login.html", {
             "erro":    "E-mail ou senha incorretos.",
             "sucesso": None,
             "email":   email.strip().lower(),
-        })
+        }))
 
     token = auth_mod.criar_sessao(user["id"])
     resp = RedirectResponse("/postos", status_code=303)
     resp.set_cookie("sessao", token, httponly=True, samesite="lax", max_age=86400 * 7)
-    return resp
+    return _no_store(resp)
 
 
 # ── Logout ────────────────────────────────────────────────────────────────────
@@ -129,4 +135,4 @@ def logout(request: Request):
         auth_mod.remover_sessao(token)
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie("sessao")
-    return resp
+    return _no_store(resp)

@@ -6,8 +6,8 @@ import time
 
 import bcrypt
 
-_SESSION_TTL = 60 * 60       # 1 hora
-_CLEANUP_INTERVAL = 300      # limpeza a cada 5 minutos
+_SESSION_TTL = 60 * 60 * 24 * 7   # 7 dias — bate com o max_age do cookie (auth.py)
+_CLEANUP_INTERVAL = 300           # limpeza a cada 5 minutos
 
 # token → (user_id, expires_at)
 _sessions: dict[str, tuple[int, float]] = {}
