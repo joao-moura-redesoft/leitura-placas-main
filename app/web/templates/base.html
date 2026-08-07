@@ -383,13 +383,19 @@ document.addEventListener('DOMContentLoaded', () => {
   <a href="/historico">Histórico</a>
   <a href="/listas">Listas</a>
 
+  {# Itens de administração só aparecem para admin — as mesmas rotas são recusadas no
+     middleware, e mostrar link para tela que só devolve erro é pior que não mostrar. #}
+  {% set eh_admin = request.state.usuario and request.state.usuario.papel == 'admin' %}
   <div class="nav-menu">
     <button type="button" class="nav-menu-trigger" aria-haspopup="true" aria-expanded="false">Sistema ▾</button>
     <div class="nav-menu-itens" role="menu">
+      {% if eh_admin %}
       <a href="/cameras">Todas as câmeras</a>
       <a href="/configuracao">Configuração</a>
       <a href="/testes">Testes</a>
+      {% endif %}
       <a href="/documentacao">Documentação</a>
+      {% if eh_admin %}
       <div class="nav-sep"></div>
       <div style="padding:4px 12px;font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em">
         Cadastro avulso
@@ -398,9 +404,20 @@ document.addEventListener('DOMContentLoaded', () => {
       <a href="/empresas">Postos (lista simples)</a>
       <a href="/automacoes">Automações</a>
       <a href="/bicos">Bicos</a>
+      <div class="nav-sep"></div>
+      <div style="padding:4px 12px;font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em">
+        Administração
+      </div>
+      <a href="/usuarios">Usuários</a>
+      {% endif %}
     </div>
   </div>
 
+  {% if request.state.usuario %}
+  <span style="padding:0 10px;font-size:13px;color:#94a3b8;white-space:nowrap">
+    {{ request.state.usuario.nome }}{% if not eh_admin %} · operador{% endif %}
+  </span>
+  {% endif %}
   <a href="/logout" class="nav-logout">Sair</a>
 </nav>
 <main>

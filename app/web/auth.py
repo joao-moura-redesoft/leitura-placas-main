@@ -1,6 +1,7 @@
 """Rotas de autenticação: /criar-admin  /login  /logout"""
 from __future__ import annotations
 import json
+import logging
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
@@ -8,9 +9,16 @@ from fastapi.templating import Jinja2Templates
 
 from app.core import banco
 from app.seguranca import sessao as auth_mod
+from app.seguranca import tentativas as freio
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/web/templates")
+
+
+def _ip(request: Request) -> str:
+    return request.client.host if request.client else "?"
 
 
 def _no_store(resp):
@@ -112,14 +120,36 @@ async def login_post(request: Request, email: str = Form(...), senha: str = Form
     if banco.contar_usuarios() == 0:
         return _no_store(RedirectResponse("/criar-admin", status_code=303))
 
-    user = banco.buscar_usuario_email(email.strip().lower())
-    if not user or not auth_mod.verificar_senha(senha, user["senha"]):
+    email_v = email.strip().lower()
+    ip = _ip(request)
+
+    def _falha(msg: str):
         return _no_store(templates.TemplateResponse(request, "login.html", {
-            "erro":    "E-mail ou senha incorretos.",
-            "sucesso": None,
-            "email":   email.strip().lower(),
+            "erro": msg, "sucesso": None, "email": email_v,
         }))
 
+    # Força bruta: depois de algumas falhas o par e-mail/IP fica de castigo por um tempo
+    # que dobra a cada nova falha. Checado ANTES do bcrypt — verificar a senha aqui só
+    # gastaria CPU para dar a mesma resposta.
+    espera = freio.segundos_de_bloqueio(email_v, ip)
+    if espera > 0:
+        log.warning("Login bloqueado por excesso de tentativas: email=%s ip=%s (faltam %ds)",
+                    email_v, ip, espera)
+        return _falha(f"Muitas tentativas. Aguarde {espera} segundo(s) e tente de novo.")
+
+    user = banco.buscar_usuario_email(email_v)
+    if not user or not auth_mod.verificar_senha(senha, user["senha"]):
+        freio.registrar_falha(email_v, ip)
+        log.info("Login falhou: email=%s ip=%s", email_v, ip)
+        return _falha("E-mail ou senha incorretos.")
+
+    # Conta desativada no painel de usuários. Sem esta trava o campo `ativo` não fazia
+    # nada: desativar alguém deixava o login dele funcionando normalmente.
+    if not user["ativo"]:
+        freio.registrar_falha(email_v, ip)
+        return _falha("Esta conta está desativada. Procure um administrador.")
+
+    freio.registrar_sucesso(email_v, ip)
     token = auth_mod.criar_sessao(user["id"])
     resp = RedirectResponse("/postos", status_code=303)
     resp.set_cookie("sessao", token, httponly=True, samesite="lax", max_age=86400 * 7)

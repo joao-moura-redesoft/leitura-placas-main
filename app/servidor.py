@@ -38,6 +38,7 @@ from app.web import cadastro as cadastro_rotas
 from app.web import leitura as leitura_rotas
 from app.web import stream as stream_rotas
 from app.web import testes as testes_rotas
+from app.web import usuarios as usuarios_rotas
 
 # Garante MIME types corretos para servir arquivos HLS via StaticFiles
 mimetypes.add_type("application/vnd.apple.mpegurl", ".m3u8")
@@ -48,12 +49,39 @@ log = logging.getLogger(__name__)
 
 # Rotas que não exigem autenticação via middleware
 # /ws é público no middleware; a autenticação é feita dentro do endpoint.
-# /api/leitura: sem auth por enquanto (rede interna do sidecar Java do posto, não exposta
-# ao público) — trocar pra api_key depois é só remover daqui, o mecanismo já existe abaixo.
 # /api/healthz: liveness do container (só {"status":"ok"}, sem dado de cliente). O
 # /api/health detalhado, com nome de câmera/posto, continua exigindo autenticação.
-_PUBLICAS = frozenset({"/login", "/criar-admin", "/favicon.ico", "/ws",
-                       "/api/leitura", "/api/healthz"})
+#
+# /api/leitura NÃO está mais aqui: era totalmente público sob a justificativa de rodar
+# na rede interna do posto, mas este servidor é central e multi-tenant — quem alcançasse
+# a porta disparava leitura para qualquer CNPJ e recebia a placa de volta, além de poder
+# prender a câmera por `leitura_timeout_seg` a cada chamada. Agora exige a api_key, que
+# é exatamente o mecanismo pensado para integração sem browser (o sidecar Java do posto).
+_PUBLICAS = frozenset({"/login", "/criar-admin", "/favicon.ico", "/ws", "/api/healthz"})
+
+# ── Autorização por papel ────────────────────────────────────────────────────
+# Só admin pode ALTERAR o sistema. A regra é por método, não por rota: qualquer
+# POST/PUT/DELETE exige admin, salvo o que estiver em `_MUTACOES_OPERACIONAIS`.
+# Feito assim de propósito — uma rota de escrita nova nasce protegida por padrão,
+# em vez de depender de alguém lembrar de anotá-la.
+_METODOS_LEITURA = frozenset({"GET", "HEAD", "OPTIONS"})
+
+# Escritas que fazem parte da OPERAÇÃO do dia a dia, não da administração — quem só
+# opera precisa delas. Prefixos, casados com `startswith`.
+_MUTACOES_OPERACIONAIS = (
+    "/api/bicos/",       # .../ler-placa-teste — disparar leitura é operação, não cadastro
+)
+
+# Páginas de administração: quem não é admin nem chega a renderizá-las (a API por trás
+# já recusaria, mas abrir uma tela inteira que só devolve erro é pior que não ter o link).
+_PAGINAS_ADMIN = frozenset({
+    "/configuracao", "/usuarios", "/entidades", "/empresas", "/automacoes",
+    "/bicos", "/cameras", "/testes", "/posto/novo", "/setup",
+})
+
+
+def _pode_escrever(path: str) -> bool:
+    return any(path.startswith(p) for p in _MUTACOES_OPERACIONAIS)
 
 
 class _AuthMiddleware(BaseHTTPMiddleware):
@@ -66,18 +94,29 @@ class _AuthMiddleware(BaseHTTPMiddleware):
                 or path in _PUBLICAS):
             return await call_next(request)
 
+        # Autenticação via cookie de sessão. Vem ANTES do check de bootstrap porque é o
+        # caminho comum (toda request de quem já está logado) — assim o caso normal paga
+        # uma consulta ao banco, não duas.
+        token = request.cookies.get("sessao")
+        usuario = auth_mod.usuario_autenticado(token)
+        # Publicado em `request.state` (compartilhado via scope) para rotas e templates
+        # saberem QUEM está logado sem repetir a consulta que o middleware acabou de fazer.
+        request.state.usuario = usuario
+        if usuario is not None:
+            negado = self._negar_por_papel(request, path, usuario)
+            if negado is not None:
+                return negado
+            return await call_next(request)
+
         # Sem usuários → redireciona para criar o primeiro admin
         if banco.contar_usuarios() == 0:
             if path.startswith("/api/"):
                 return JSONResponse({"detail": "Servidor não configurado. Acesse /criar-admin."}, status_code=503)
             return RedirectResponse("/criar-admin", status_code=303)
 
-        # Autenticação via cookie de sessão
-        token = request.cookies.get("sessao")
-        if token and auth_mod.obter_user_id(token) is not None:
-            return await call_next(request)
-
-        # Autenticação via api_key (para integrações externas sem browser)
+        # Autenticação via api_key (para integrações externas sem browser). A chave é
+        # configurada por um admin e vale como acesso de admin — é o canal do roteador
+        # do posto, que não tem sessão nem papel.
         cfg = config.carregar()
         api_key = cfg.get("api_key", "").strip()
         if api_key:
@@ -98,6 +137,21 @@ class _AuthMiddleware(BaseHTTPMiddleware):
         if token:
             resp.delete_cookie("sessao")
         return resp
+
+    @staticmethod
+    def _negar_por_papel(request: Request, path: str, usuario: dict):
+        """Recusa a request quando o papel não alcança. Devolve a resposta de recusa,
+        ou None se estiver liberada."""
+        if usuario.get("papel") == "admin":
+            return None
+        if path in _PAGINAS_ADMIN:
+            return RedirectResponse("/postos", status_code=303)
+        if request.method not in _METODOS_LEITURA and not _pode_escrever(path):
+            return JSONResponse(
+                {"detail": "Apenas administradores podem alterar esta configuração."},
+                status_code=403,
+            )
+        return None
 
 
 def _iniciar_pipeline_bg(cfg: dict) -> None:
@@ -130,6 +184,30 @@ def _aquecer_modelos_bg(cfg: dict) -> None:
                     "na primeira leitura", e)
 
 
+def _garantir_api_key(cfg: dict) -> dict:
+    """Gera a api_key no primeiro boot se ela ainda não existir.
+
+    `/api/leitura` deixou de ser público e passou a exigir a chave. Sem gerar uma aqui,
+    uma instalação com `api_key` vazia ficaria com a integração do posto morta e sem
+    pista do motivo — o roteador só veria 401. Gerando e logando em destaque, o caminho
+    para consertar (copiar a chave para a configuração do roteador) fica explícito.
+    """
+    if cfg.get("api_key", "").strip():
+        return cfg
+    import secrets as _secrets
+    chave = _secrets.token_urlsafe(32)
+    cfg = {**cfg, "api_key": chave}
+    config.salvar(cfg)
+    log.warning(
+        "api_key gerada agora (não havia nenhuma): %s\n"
+        "  GET /api/leitura passou a exigir esta chave — configure-a no roteador do posto\n"
+        "  como header 'X-API-Key' ou parâmetro '?api_key='.\n"
+        "  Ela fica em %s e pode ser copiada em /configuracao → aba Sistema.",
+        chave, config.CONFIG_PATH,
+    )
+    return cfg
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     cfg = config.carregar()
@@ -140,6 +218,7 @@ async def lifespan(_app: FastAPI):
     estado.instalar_log_handler()
     banco.inicializar()
     auth_mod.iniciar_cleanup()
+    cfg = _garantir_api_key(cfg)
 
     # Registra o loop para o broadcaster poder empurrar eventos do pipeline
     loop = asyncio.get_running_loop()
@@ -199,6 +278,7 @@ app.include_router(api.router)
 app.include_router(testes_rotas.router)
 app.include_router(leitura_rotas.router)
 app.include_router(cadastro_rotas.router)
+app.include_router(usuarios_rotas.router)
 
 
 @app.websocket("/ws")
@@ -206,7 +286,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     """Feed de detecções em tempo real. Requer sessão válida ou api_key."""
     # Autenticação dentro do endpoint (middleware já deixou passar /ws)
     token = websocket.cookies.get("sessao")
-    autenticado = bool(token and auth_mod.obter_user_id(token) is not None)
+    autenticado = auth_mod.usuario_autenticado(token) is not None
 
     if not autenticado:
         cfg = config.carregar()
