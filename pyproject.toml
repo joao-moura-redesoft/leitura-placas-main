@@ -8,6 +8,18 @@ requires-python = ">=3.10"
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+[tool.pytest.ini_options]
+# Só `testes/unitarios`: o resto de `testes/` é o harness manual de acurácia de OCR
+# (baixa imagem, roda modelo, leva minutos) e não deve entrar numa rodada de regressão.
+testpaths = ["testes/unitarios"]
+addopts = "-q --strict-markers"
+filterwarnings = [
+    # As dependências de visão (torch/easyocr/paddle) despejam avisos de deprecação a
+    # cada import e afogam a saída da suíte.
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

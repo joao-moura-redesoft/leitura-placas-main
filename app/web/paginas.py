@@ -2,6 +2,7 @@
 from __future__ import annotations
 from app.core import banco
 from app.core import config
+from app.web.usuarios import usuario_atual
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -103,6 +104,16 @@ def roi_bico(bico_id: int):
     if not b:
         return RedirectResponse("/postos", status_code=303)
     return RedirectResponse(f"/roi-camera/{b['camera_id']}?bico={bico_id}", status_code=303)
+
+
+@router.get("/usuarios")
+def usuarios(request: Request):
+    """Somente admin — a API (/api/usuarios) já bloqueia com 403, isto aqui evita
+    renderizar o painel inteiro pra quem não pode usá-lo."""
+    user = usuario_atual(request)
+    if not user or user.get("papel") != "admin":
+        return RedirectResponse("/postos", status_code=303)
+    return templates.TemplateResponse(request, "usuarios.html")
 
 
 @router.get("/configuracao")

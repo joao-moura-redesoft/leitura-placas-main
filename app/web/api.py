@@ -108,9 +108,10 @@ def consultar_placa(placa: str):
     """
     placa = placa.upper().strip()
 
-    deteccoes = banco.listar_deteccoes(placa=placa, limit=50)
-    # filtra exato (listar_deteccoes usa LIKE %placa%)
-    deteccoes = [d for d in deteccoes if d["placa"] == placa]
+    deteccoes = banco.listar_deteccoes(placa=placa, limit=50, placa_exata=True)
+    # O total vem de um COUNT próprio: `deteccoes` está limitado a 50 e serve só para
+    # mostrar a última e o histórico recente.
+    total = banco.contar_deteccoes_placa(placa)
 
     lista_entry = banco.listas_buscar(placa)
 
@@ -128,7 +129,7 @@ def consultar_placa(placa: str):
         "padrao":             ultima["padrao"] if ultima else None,
         "lista":              lista_entry["tipo"] if lista_entry else None,
         "lista_descricao":    lista_entry["descricao"] if lista_entry else None,
-        "total_deteccoes":    len(deteccoes),
+        "total_deteccoes":    total,
         "ultima_deteccao":    ultima,
         "historico":          deteccoes[1:10],
     }
@@ -312,6 +313,7 @@ def cameras_remover(id_: int):
         # nessa câmera bem no meio da janela entre as duas, o RESTRICT dispara aqui.
         raise HTTPException(409, "Câmera passou a estar em uso por um bico durante a remoção — tente novamente.")
     pipeline.parar_camera(id_)
+    estado.esquecer_camera(id_)
     return {"removido": True}
 
 
