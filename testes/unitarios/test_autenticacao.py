@@ -34,17 +34,18 @@ class TestLogin:
         assert r.status_code == 200          # volta pro formulário
         assert not r.cookies.get("sessao")
 
-    def test_conta_desativada_nao_entra(self, admin, operador, ambiente):
+    def test_conta_desativada_nao_entra(self, admin, cliente_logado, posto, ambiente):
         """Regressão: `ativo` era gravado mas nunca consultado no login — desativar
         um usuário no painel não impedia o login dele."""
         uid = admin.get("/api/usuarios").json()[-1]["id"]
         admin.put(f"/api/usuarios/{uid}", json={
-            "nome": "Operador", "email": "op@teste.com", "papel": "usuario", "ativo": False,
+            "nome": "Cliente", "email": "cliente@teste.com", "papel": "cliente",
+            "empresa_id": posto["empresa_id"], "ativo": False,
         })
         from app.servidor import app
-        r = _login(TestClient(app), "op@teste.com", "senha-operador-1")
+        r = _login(TestClient(app), "cliente@teste.com", "senha-cliente-1")
         assert not r.cookies.get("sessao")
-        assert "desativada" in r.text
+        assert "incorretos" in r.text
 
 
 class TestSessao:
@@ -65,25 +66,18 @@ class TestSessao:
         admin.cookies.set("sessao", token)
         assert admin.get("/api/stats").status_code == 401
 
-    def test_desativar_usuario_derruba_a_sessao_aberta(self, admin, operador):
+    def test_desativar_usuario_derruba_a_sessao_aberta(self, admin, cliente_logado, posto):
         """Regressão: a sessão não era confrontada com o estado da conta, então
         desativar alguém não tirava quem já estava dentro."""
-        assert operador.get("/api/stats").status_code == 200
+        assert cliente_logado.get("/api/postos").status_code == 200
         uid = admin.get("/api/usuarios").json()[-1]["id"]
         admin.put(f"/api/usuarios/{uid}", json={
-            "nome": "Operador", "email": "op@teste.com", "papel": "usuario", "ativo": False,
+            "nome": "Cliente", "email": "cliente@teste.com", "papel": "cliente",
+            "empresa_id": posto["empresa_id"], "ativo": False,
         })
-        assert operador.get("/api/stats").status_code == 401
+        assert cliente_logado.get("/api/postos").status_code == 401
 
-    def test_remover_usuario_derruba_a_sessao_aberta(self, admin, operador):
-        """Regressão: um usuário REMOVIDO seguia com acesso total até o token expirar
-        — e o TTL se renovava a cada uso, ou seja, indefinidamente."""
-        uid = admin.get("/api/usuarios").json()[-1]["id"]
-        admin.delete(f"/api/usuarios/{uid}")
-        assert operador.get("/api/stats").status_code == 401
-        assert operador.get("/postos", follow_redirects=False).status_code == 303
-
-    def test_rebaixar_papel_derruba_a_sessao(self, admin, ambiente):
+    def test_rebaixar_papel_derruba_a_sessao(self, admin, posto, ambiente):
         """Sem isto o navegador já aberto continuaria operando como admin depois do
         rebaixamento — `ativo` continua 1, então nada mais o barraria."""
         r = admin.post("/api/usuarios", json={
@@ -95,7 +89,8 @@ class TestSessao:
         assert cli.get("/api/usuarios").status_code == 200
 
         admin.put(f"/api/usuarios/{uid}", json={
-            "nome": "Dois", "email": "d@teste.com", "papel": "usuario", "ativo": True})
+            "nome": "Dois", "email": "d@teste.com", "papel": "cliente",
+            "empresa_id": posto["empresa_id"], "ativo": True})
         assert cli.get("/api/stats").status_code == 401
 
     def test_trocar_a_propria_senha_nao_expulsa_quem_trocou(self, admin):

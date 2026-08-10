@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import banco, config
+from app.seguranca import limitador
 from app.seguranca import sessao as auth_mod
 from app.seguranca import tentativas
 
@@ -38,6 +39,7 @@ def ambiente(tmp_path, monkeypatch):
     banco.definir_caminho(tmp_path / "teste.db")
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.txt")
     tentativas._resetar_para_teste()
+    limitador._resetar_para_teste()
     banco.inicializar()
     yield tmp_path
     banco.fechar_conexao()
@@ -78,23 +80,6 @@ def admin(cliente):
 
 
 @pytest.fixture
-def operador(admin, ambiente):
-    """Cliente logado com papel 'usuario' — criado pelo admin, em sessão separada."""
-    from app.servidor import app
-    r = admin.post("/api/usuarios", json={
-        "nome": "Operador", "email": "op@teste.com",
-        "senha": "senha-operador-1", "papel": "usuario",
-    })
-    assert r.status_code == 200, r.text
-
-    cli = TestClient(app)
-    r = cli.post("/login", follow_redirects=False,
-                 data={"email": "op@teste.com", "senha": "senha-operador-1"})
-    assert r.status_code == 303, "login do operador falhou"
-    return _autenticar(cli, r)
-
-
-@pytest.fixture
 def posto(admin):
     """Cadastro mínimo completo: entidade → empresa → automação → câmera → bico.
 
@@ -117,6 +102,24 @@ def posto(admin):
     assert bico.status_code == 200, bico.text
     return {"entidade_id": ent, "empresa_id": emp, "automacao_id": auto,
             "camera_id": cam, "bico_id": bico.json()["id"], "cnpj": "11222333000181"}
+
+
+@pytest.fixture
+def cliente_logado(admin, posto):
+    """Cliente HTTP logado como usuário 'cliente' — restrito ao posto da fixture
+    `posto`, em sessão separada da do admin."""
+    from app.servidor import app
+    r = admin.post("/api/usuarios", json={
+        "nome": "Cliente", "email": "cliente@teste.com",
+        "senha": "senha-cliente-1", "papel": "cliente", "empresa_id": posto["empresa_id"],
+    })
+    assert r.status_code == 200, r.text
+
+    cli = TestClient(app)
+    r = cli.post("/login", follow_redirects=False,
+                 data={"email": "cliente@teste.com", "senha": "senha-cliente-1"})
+    assert r.status_code == 303, "login do cliente falhou"
+    return _autenticar(cli, r)
 
 
 @pytest.fixture(autouse=True)

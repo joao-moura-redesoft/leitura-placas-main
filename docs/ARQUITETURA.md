@@ -674,3 +674,71 @@ assumir que o servidor aguenta qualquer volume de clientes simultâneos.
 
 Nenhuma dessas foi decidida — a decisão certa depende do número que
 `medir_concorrencia.py` trouxer.
+
+---
+
+## 21. RBAC: o que ficou de uma branch paralela e o que foi resolvido
+
+Durante o desenvolvimento do RBAC (papel `admin` × `cliente` restrito a um posto —
+seções acima), uma branch paralela (`feat: administração de usuários e testes`)
+implementou, ao mesmo tempo e sem visibilidade de uma pra outra, uma **segunda**
+solução de gestão de usuários. O merge das duas não gerou conflito de texto (os
+dois trabalhos mexiam em arquivos/caminhos técnicamente diferentes), mas deixou
+metade do código órfão — `app/core/banco.py` (modificado nesta sessão) coexistindo
+com `app/core/banco/` (pacote da outra branch), com o pacote vencendo a resolução
+de import do Python **silenciosamente**. Só apareceu ao rodar `pytest
+testes/unitarios` pela primeira vez com sucesso — os 60 testes que a outra branch
+trouxe testavam um desenho que tinha virado código morto.
+
+Decisão, revisada teste a teste:
+
+**Adotado** (portado para dentro de `app/core/banco/`, hoje em produção):
+- **Sessões em SQLite** (`banco.sessao_*`) em vez de dict em memória —
+  sobrevivem a restart do servidor e, mais importante pro momento (ver §20), abrem
+  a porta pra rodar múltiplos workers uvicorn sem cada um ter sua própria sessão.
+  `app/seguranca/sessao.py` manteve a mesma interface pública; ninguém que já
+  chamava `criar_sessao`/`obter_user_id`/etc. precisou mudar.
+- **`GET /api/usuarios/eu`** — "quem sou eu", usado pela UI e pelas travas abaixo.
+- **Autoproteção**: um admin não consegue alterar o PRÓPRIO papel/status via
+  `PUT /api/usuarios/{id}` (precisa pedir a outro admin) — trava a mais além de "não
+  pode ser o último admin ativo", que sozinha só cobre o caso de sobrar zero.
+- **Edição de nome/e-mail** no mesmo `PUT` (antes só papel/posto/ativo).
+- **`app/seguranca/tentativas.py`** (freio de força bruta por e-mail+IP, com espera
+  progressiva) substituiu o limitador genérico só-por-IP no `/login` — mais preciso
+  contra os dois padrões de ataque (varrer e-mails de um IP, atacar um e-mail de
+  vários IPs).
+
+**Rejeitado** (removido/não usado — decisão de produto, não técnica):
+- **`api_key` obrigatória por padrão em `/api/leitura`** (com geração automática no
+  boot) — contradiz a decisão já tomada de opt-in por posto (README, §"Autenticação").
+  Ativar isso hoje derrubaria a integração de todo posto sem api_key configurada.
+- **Papel genérico `operador`** (não ligado a um posto específico, só "opera mas não
+  administra") — eixo diferente do `cliente` (que É ligado a um posto). Pode fazer
+  sentido — equipe interna que opera o painel sem poder reconfigurar o sistema — mas
+  é decisão de produto nova, não uma consequência óbvia do merge; fica para quando
+  alguém pedir.
+- **`DELETE /api/usuarios/{id}`** (exclusão definitiva) — só desativação
+  (`ativo=False`), reversível e preserva o registro para auditoria.
+- Gate de escrita **por middleware genérico** (`_negar_por_papel`, qualquer
+  POST/PUT/DELETE exige admin por padrão, salvo lista curta) — arquitetura
+  interessante (uma rota nova nasce protegida sem precisar que alguém lembre de
+  anotá-la) mas trocar o modelo já testado (`Depends(deps.exigir_admin)` por rota)
+  por esse no meio da reconciliação era risco desnecessário. Fica registrado como
+  ideia pra quando o número de rotas justificar.
+
+`testes/unitarios/test_autenticacao.py`, `test_autorizacao.py` e `test_usuarios.py`
+foram reescritos linha a linha pra testar o que ficou de pé (nenhum teste foi só
+apagado por dar trabalho — cada um foi adaptado pro design real ou removido com
+justificativa, registrada nos próprios arquivos).
+
+### Recomendação de processo
+
+O incidente só foi possível porque duas sessões desenvolveram RBAC ao mesmo tempo
+sem se ver. Não tem solução técnica — é hábito de equipe:
+- `git fetch origin` (ou olhar PRs abertas) antes de embarcar em algo grande que
+  mexe em superfície compartilhada (auth, cadastro, schema).
+- Merges menores e mais frequentes em vez de branches longas divergindo — quanto
+  maior a janela, maior a chance de duas pessoas (ou duas sessões) resolverem o
+  mesmo problema em paralelo sem saber.
+- Depois de um merge não-trivial, rodar a suíte de testes (agora automático via CI,
+  ver `.github/workflows/testes.yml`) antes de considerar o merge "resolvido".

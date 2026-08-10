@@ -7,8 +7,8 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.core import banco
-from app.seguranca import limitador
 from app.seguranca import sessao as auth_mod
+from app.seguranca import tentativas
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/web/templates")
@@ -107,26 +107,33 @@ async def login_post(request: Request, email: str = Form(...), senha: str = Form
     if banco.contar_usuarios() == 0:
         return RedirectResponse("/criar-admin", status_code=303)
 
-    # Freio de força bruta por IP — 10 tentativas/minuto é folgado para um humano
-    # errando a senha, apertado para quem está tentando adivinhar.
+    email_norm = email.strip().lower()
     ip = request.client.host if request.client else "?"
-    if not limitador.permitido("login", ip, limite=10, janela_seg=60):
+
+    # Freio de força bruta contado por E-MAIL e por IP juntos (ver docstring de
+    # tentativas.py): só por e-mail deixaria varrer vários e-mails de um IP só; só por
+    # IP deixaria uma botnet atacar a mesma conta de vários lugares. Checado ANTES de
+    # olhar a senha — inclusive uma senha CORRETA fica bloqueada enquanto durar a espera.
+    espera = tentativas.segundos_de_bloqueio(email_norm, ip)
+    if espera > 0:
         return templates.TemplateResponse(request, "login.html", {
-            "erro":    "Muitas tentativas — aguarde um minuto e tente de novo.",
+            "erro":    f"Muitas tentativas — aguarde {espera}s e tente de novo.",
             "sucesso": None,
-            "email":   email.strip().lower(),
+            "email":   email_norm,
         })
 
-    user = banco.buscar_usuario_email(email.strip().lower())
+    user = banco.buscar_usuario_email(email_norm)
     # `not user["ativo"]`: antes um usuário desativado (banco.usuarios_atualizar) ainda
     # conseguia logar normalmente — nada checava esse campo no fluxo de login.
     if not user or not user["ativo"] or not auth_mod.verificar_senha(senha, user["senha"]):
+        tentativas.registrar_falha(email_norm, ip)
         return templates.TemplateResponse(request, "login.html", {
             "erro":    "E-mail ou senha incorretos.",
             "sucesso": None,
-            "email":   email.strip().lower(),
+            "email":   email_norm,
         })
 
+    tentativas.registrar_sucesso(email_norm, ip)
     token = auth_mod.criar_sessao(user["id"])
     resp = RedirectResponse("/postos", status_code=303)
     resp.set_cookie("sessao", token, httponly=True, samesite="lax", max_age=86400 * 7)
