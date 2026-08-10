@@ -202,7 +202,7 @@ app.include_router(api.router)
 app.include_router(testes_rotas.router, dependencies=[Depends(web_deps.exigir_admin)])
 app.include_router(leitura_rotas.router)
 app.include_router(cadastro_rotas.router)
-app.include_router(usuarios_rotas.router, dependencies=[Depends(web_deps.exigir_admin)])
+app.include_router(usuarios_rotas.router)  # cada rota decide sozinha (ver app/web/usuarios.py)
 
 
 @app.websocket("/ws")

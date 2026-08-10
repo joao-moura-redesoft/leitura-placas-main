@@ -404,7 +404,8 @@ document.addEventListener('DOMContentLoaded', () => {
   </div>
   {% endif %}
 
-  <a href="/logout" class="nav-logout">Sair</a>
+  <a href="/minha-conta" class="nav-logout">{{ usuario.nome if usuario else 'Minha conta' }}</a>
+  <a href="/logout" class="nav-logout" style="margin-left:0 !important">Sair</a>
 </nav>
 <main>
   {% block conteudo %}{% endblock %}

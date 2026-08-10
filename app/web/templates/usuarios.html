@@ -6,9 +6,9 @@
 <div class="card" style="margin-bottom:16px">
   <button onclick="abrirModal()">+ Novo Usuário</button>
   <p style="margin-top:10px;color:#64748b;font-size:13px">
-    <strong>admin</strong> vê e edita tudo. <strong>cliente</strong> só vê os dados do
-    posto escolhido (postos, câmeras, histórico, integração) — sem acesso a
-    configuração do sistema nem ao cadastro de outros clientes.
+    <strong>admin</strong> vê e edita tudo. <strong>operador</strong> vê todos os
+    postos e opera o dia a dia, mas não administra (sem configuração do sistema nem
+    cadastro estrutural). <strong>cliente</strong> só vê os dados do posto escolhido.
   </p>
 </div>
 
@@ -42,6 +42,7 @@
       <label style="display:block;margin-bottom:12px">Papel
         <select id="f-papel" style="width:100%;box-sizing:border-box;margin-top:4px" onchange="atualizarCampoEmpresa()">
           <option value="cliente">cliente (restrito a um posto)</option>
+          <option value="operador">operador (opera, não administra)</option>
           <option value="admin">admin (vê tudo)</option>
         </select>
       </label>
@@ -113,6 +114,8 @@ function renderTabela() {
       : '<span class="badge badge-err">Inativo</span>';
     const papel = it.papel === 'admin'
       ? '<span class="badge badge-mercosul">admin</span>'
+      : it.papel === 'operador'
+      ? '<span class="badge badge-ok">operador</span>'
       : '<span class="badge badge-antigo">cliente</span>';
     tbody.innerHTML += `<tr>
       <td>${esc(it.nome)}</td>

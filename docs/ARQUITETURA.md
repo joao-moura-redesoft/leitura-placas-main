@@ -707,16 +707,23 @@ Decisão, revisada teste a teste:
   progressiva) substituiu o limitador genérico só-por-IP no `/login` — mais preciso
   contra os dois padrões de ataque (varrer e-mails de um IP, atacar um e-mail de
   vários IPs).
+- **Papel `operador`** (adotado numa segunda passada, a pedido — não ligado a um
+  posto específico, vê todos como admin, mas não passa em `deps.exigir_admin`):
+  equipe interna que opera o painel no dia a dia sem poder reconfigurar o sistema.
+  `deps.empresa_do_usuario` trata `operador` igual a `admin` (sem restrição de
+  escopo) — a única diferença dos dois é `eh_admin`.
+- **Troca de senha self-service** (`POST /api/usuarios/eu/senha`) — qualquer usuário
+  logado (admin, operador ou cliente) troca a PRÓPRIA senha sem depender de um
+  admin, mediante a senha atual. Isso obrigou a tirar o gate de admin do
+  `include_router` de `/api/usuarios` (era bloqueio geral) e mover pra cada rota
+  individualmente — `GET /api/usuarios/eu` e a troca de senha ficaram abertas a
+  qualquer logado; listar/criar/editar outros usuários continuam admin-only.
+  Página `/minha-conta` (link no nav, visível a todo mundo logado).
 
 **Rejeitado** (removido/não usado — decisão de produto, não técnica):
 - **`api_key` obrigatória por padrão em `/api/leitura`** (com geração automática no
   boot) — contradiz a decisão já tomada de opt-in por posto (README, §"Autenticação").
   Ativar isso hoje derrubaria a integração de todo posto sem api_key configurada.
-- **Papel genérico `operador`** (não ligado a um posto específico, só "opera mas não
-  administra") — eixo diferente do `cliente` (que É ligado a um posto). Pode fazer
-  sentido — equipe interna que opera o painel sem poder reconfigurar o sistema — mas
-  é decisão de produto nova, não uma consequência óbvia do merge; fica para quando
-  alguém pedir.
 - **`DELETE /api/usuarios/{id}`** (exclusão definitiva) — só desativação
   (`ativo=False`), reversível e preserva o registro para auditoria.
 - Gate de escrita **por middleware genérico** (`_negar_por_papel`, qualquer

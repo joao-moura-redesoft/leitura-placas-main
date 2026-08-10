@@ -1,13 +1,16 @@
-"""Gestão de usuários do painel (papel 'admin' × 'cliente' preso a um posto).
+"""Gestão de usuários do painel: papéis 'admin' (tudo) × 'operador' (opera, não
+administra, não preso a posto) × 'cliente' (preso a UM posto).
 
-Router inteiro exige admin — dependency aplicada no include_router (app/servidor.py),
-não rota a rota, porque não existe aqui NENHUMA ação que um 'cliente' deva poder fazer
-(nem ver a lista dos outros usuários).
+Diferente da versão anterior, este router NÃO tem gate de admin no `include_router`
+(app/servidor.py) — cada rota decide sozinha. Existem rotas de verdade acessíveis a
+QUALQUER usuário logado (saber quem é, trocar a própria senha); o resto (listar,
+criar, editar outros usuários) continua atrás de `Depends(deps.exigir_admin)`.
 """
 from __future__ import annotations
 import sqlite3
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.core import banco
@@ -17,35 +20,71 @@ from app.web import deps
 router = APIRouter()
 templates = Jinja2Templates(directory="app/web/templates")
 
-_PAPEIS_VALIDOS = ("admin", "cliente")
+_PAPEIS_VALIDOS = ("admin", "operador", "cliente")
 
 
 def _sem_senha(user: dict) -> dict:
     return {k: v for k, v in user.items() if k != "senha"}
 
 
+# ── Acessível a QUALQUER usuário logado ──────────────────────────────────────────
+
 @router.get("/usuarios")
 def pagina(request: Request):
+    if not deps.eh_admin(request):
+        return RedirectResponse("/postos", status_code=303)
     return templates.TemplateResponse(request, "usuarios.html", {"usuario": deps.usuario_atual(request)})
 
 
-@router.get("/api/usuarios")
-def listar():
-    return banco.usuarios_listar()
+@router.get("/minha-conta")
+def pagina_minha_conta(request: Request):
+    return templates.TemplateResponse(request, "minha_conta.html", {"usuario": deps.usuario_atual(request)})
 
 
 @router.get("/api/usuarios/eu")
 def eu(request: Request):
-    """Quem está logado — usado pela UI pra saber o próprio nome/papel sem repetir a
-    lógica de sessão, e pelas travas de autoproteção abaixo (não mexer no próprio
-    admin). 404 na leitura via api_key: não é uma sessão de usuário, não tem "eu"."""
+    """Quem está logado — usado pela UI pra saber o próprio nome/papel, e pela troca
+    de senha self-service abaixo. 404 na leitura via api_key: não é uma sessão de
+    usuário, não tem "eu"."""
     usuario = deps.usuario_atual(request)
     if usuario is None:
         raise HTTPException(404, "Sem sessão de usuário (acesso via api_key)")
     return _sem_senha(usuario)
 
 
-@router.post("/api/usuarios")
+@router.post("/api/usuarios/eu/senha")
+def trocar_a_propria_senha(payload: dict, request: Request):
+    """Self-service: qualquer usuário logado troca a PRÓPRIA senha, sem precisar de
+    admin. Exige a senha atual (diferente do reset feito por um admin em
+    `/api/usuarios/{id}/senha`) — é o que distingue "eu decidi trocar" de "alguém com
+    a sessão aberta decidiu trocar por mim"."""
+    usuario = deps.usuario_atual(request)
+    if usuario is None:
+        raise HTTPException(404, "Sem sessão de usuário (acesso via api_key)")
+
+    senha_atual = payload.get("senha_atual") or ""
+    senha_nova = payload.get("senha_nova") or ""
+    if not auth_mod.verificar_senha(senha_atual, usuario["senha"]):
+        raise HTTPException(400, "Senha atual incorreta.")
+    if len(senha_nova) < 8:
+        raise HTTPException(400, "A nova senha deve ter pelo menos 8 caracteres.")
+
+    banco.usuarios_definir_senha(usuario["id"], auth_mod.hash_senha(senha_nova))
+    # Derruba as OUTRAS sessões (ex.: cookie vazado em outro navegador) — preserva a
+    # que está fazendo a troca agora, senão a própria pessoa seria expulsa da tela.
+    token_atual = request.cookies.get("sessao")
+    auth_mod.remover_sessoes_usuario(usuario["id"], exceto_token=token_atual)
+    return {"trocada": True}
+
+
+# ── Admin-only ────────────────────────────────────────────────────────────────────
+
+@router.get("/api/usuarios", dependencies=[Depends(deps.exigir_admin)])
+def listar():
+    return banco.usuarios_listar()
+
+
+@router.post("/api/usuarios", dependencies=[Depends(deps.exigir_admin)])
 def criar(payload: dict):
     nome = (payload.get("nome") or "").strip()
     email = (payload.get("email") or "").strip().lower()
@@ -74,7 +113,7 @@ def criar(payload: dict):
     return {"id": uid}
 
 
-@router.put("/api/usuarios/{id_}")
+@router.put("/api/usuarios/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def atualizar(id_: int, payload: dict, request: Request):
     atual = banco.buscar_usuario_id(id_)
     if not atual:
@@ -140,8 +179,11 @@ def atualizar(id_: int, payload: dict, request: Request):
     return {"atualizado": True}
 
 
-@router.post("/api/usuarios/{id_}/senha")
+@router.post("/api/usuarios/{id_}/senha", dependencies=[Depends(deps.exigir_admin)])
 def redefinir_senha(id_: int, payload: dict, request: Request):
+    """Admin redefine a senha de OUTRO usuário — sem pedir a senha atual dele (é
+    autoridade administrativa, não self-service; ver `trocar_a_propria_senha` acima
+    para o caso do próprio usuário)."""
     senha = payload.get("senha") or ""
     if len(senha) < 8:
         raise HTTPException(400, "senha deve ter pelo menos 8 caracteres")
@@ -149,7 +191,8 @@ def redefinir_senha(id_: int, payload: dict, request: Request):
         raise HTTPException(404, "Usuário não encontrado")
     # Redefinir senha é tipicamente resposta a "acho que vazou" — de nada adianta
     # trocar a senha e deixar a sessão antiga (cookie já vazado) continuar valendo.
-    # Exceção: a própria sessão de quem está redefinindo AGORA (self-service).
+    # Exceção: a própria sessão de quem está redefinindo AGORA (admin resetando a si
+    # mesmo via este endpoint, em vez do self-service acima).
     quem_pede = deps.usuario_atual(request)
     eh_auto_edicao = quem_pede is not None and quem_pede["id"] == id_
     token_atual = request.cookies.get("sessao") if eh_auto_edicao else None

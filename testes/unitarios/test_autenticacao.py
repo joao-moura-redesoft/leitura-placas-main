@@ -192,6 +192,53 @@ class TestBootstrapDoPrimeiroAdmin:
         assert banco.contar_usuarios() == 0
 
 
+class TestTrocaDeSenhaSelfService:
+    """Qualquer usuário logado (admin, operador ou cliente) troca a PRÓPRIA senha sem
+    depender de admin — ver app/web/usuarios.py:trocar_a_propria_senha."""
+
+    def test_qualquer_usuario_logado_troca_a_propria_senha(self, admin):
+        r = admin.post("/api/usuarios/eu/senha", json={
+            "senha_atual": "senha-admin-1", "senha_nova": "senha-nova-do-admin-1"})
+        assert r.status_code == 200
+        assert admin.get("/api/stats").status_code == 200  # sessão atual continua valendo
+
+    def test_cliente_tambem_troca_a_propria_senha(self, cliente_logado):
+        r = cliente_logado.post("/api/usuarios/eu/senha", json={
+            "senha_atual": "senha-cliente-1", "senha_nova": "senha-nova-do-cliente-1"})
+        assert r.status_code == 200
+        assert cliente_logado.get("/api/postos").status_code == 200
+
+    def test_senha_atual_errada_e_recusada(self, admin):
+        r = admin.post("/api/usuarios/eu/senha", json={
+            "senha_atual": "senha-errada", "senha_nova": "senha-nova-123"})
+        assert r.status_code == 400
+
+    def test_nova_senha_curta_e_recusada(self, admin):
+        r = admin.post("/api/usuarios/eu/senha", json={
+            "senha_atual": "senha-admin-1", "senha_nova": "123"})
+        assert r.status_code == 400
+
+    def test_deixa_de_entrar_com_a_senha_antiga(self, admin, ambiente):
+        admin.post("/api/usuarios/eu/senha", json={
+            "senha_atual": "senha-admin-1", "senha_nova": "senha-nova-do-admin-1"})
+        from app.servidor import app
+        r = _login(TestClient(app), "admin@teste.com", "senha-admin-1")
+        assert not r.cookies.get("sessao")
+
+    def test_derruba_as_outras_sessoes_mas_preserva_a_atual(self, admin):
+        from app.servidor import app
+        outra = TestClient(app)
+        r = _login(outra, "admin@teste.com", "senha-admin-1")
+        outra.cookies.set("sessao", r.cookies["sessao"])
+        assert outra.get("/api/stats").status_code == 200
+
+        admin.post("/api/usuarios/eu/senha", json={
+            "senha_atual": "senha-admin-1", "senha_nova": "senha-nova-do-admin-1"})
+
+        assert admin.get("/api/stats").status_code == 200   # sessão que trocou continua
+        assert outra.get("/api/stats").status_code == 401   # a outra sessão morreu
+
+
 def test_hash_de_senha_nao_guarda_texto_puro():
     h = auth_mod.hash_senha("minha-senha-secreta")
     assert h != "minha-senha-secreta"

@@ -122,6 +122,24 @@ def cliente_logado(admin, posto):
     return _autenticar(cli, r)
 
 
+@pytest.fixture
+def operador_logado(admin):
+    """Cliente HTTP logado como usuário 'operador' — vê todos os postos (não é preso
+    a nenhum), mas não passa em `deps.exigir_admin`."""
+    from app.servidor import app
+    r = admin.post("/api/usuarios", json={
+        "nome": "Operador", "email": "operador@teste.com",
+        "senha": "senha-operador-1", "papel": "operador",
+    })
+    assert r.status_code == 200, r.text
+
+    cli = TestClient(app)
+    r = cli.post("/login", follow_redirects=False,
+                 data={"email": "operador@teste.com", "senha": "senha-operador-1"})
+    assert r.status_code == 303, "login do operador falhou"
+    return _autenticar(cli, r)
+
+
 @pytest.fixture(autouse=True)
 def _sem_visao(monkeypatch):
     """Mantém a suíte fora de câmera e de modelo de visão.

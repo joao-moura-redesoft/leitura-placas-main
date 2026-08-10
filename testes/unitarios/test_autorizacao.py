@@ -60,6 +60,28 @@ class TestClienteNaoAltera:
         assert nomes == ["Posto 1"]
 
 
+class TestOperadorVeTudoMasNaoAdministra:
+    """'operador' não é preso a posto nenhum (vê tudo, como admin) mas não passa no
+    gate de admin (não administra, como cliente) — ver app/web/deps.py."""
+
+    def test_ve_todos_os_postos_nao_so_o_seu(self, operador_logado, admin, posto):
+        ent2 = admin.post("/api/entidades", json={"nome": "Rede Y"}).json()["id"]
+        admin.post("/api/empresas", json={
+            "entidade_id": ent2, "nome": "Posto 2", "cnpj": "11444777000161"})
+        nomes = {p["nome"] for p in operador_logado.get("/api/postos").json()}
+        assert nomes == {"Posto 1", "Posto 2"}
+
+    def test_nao_administra(self, operador_logado):
+        assert operador_logado.post("/api/entidades", json={"nome": "X"}).status_code == 403
+        assert operador_logado.post("/api/config", json={"log_level": "debug"}).status_code == 403
+        assert operador_logado.get("/api/usuarios").status_code == 403
+
+    def test_pagina_de_administracao_manda_de_volta_pro_postos(self, operador_logado):
+        r = operador_logado.get("/configuracao", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/postos"
+
+
 class TestApiKeyPorPosto:
     """`/api/leitura` é público por padrão; api_key só passa a ser exigida quando o
     POSTO TEM uma chave própria configurada (opt-in) — não existe api_key global

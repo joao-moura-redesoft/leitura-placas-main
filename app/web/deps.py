@@ -1,11 +1,16 @@
-"""Dependências FastAPI de autorização por usuário (RBAC leve: admin × cliente).
+"""Dependências FastAPI de autorização por usuário (RBAC leve: admin × operador × cliente).
 
 `_AuthMiddleware` (app/servidor.py) já garante que só chega às rotas quem está
 autenticado (sessão ou api_key global do servidor) — o que falta aqui é DIFERENCIAR
-quem chegou: um admin (vê e edita tudo, comportamento de sempre) de um usuário
-'cliente' (só vê os dados do próprio posto). A distinção nunca é feita por vir de
-`banco.buscar_usuario_id` direto nas rotas — sempre por aqui, para o escopo ficar
-num lugar só.
+quem chegou. Três papéis:
+
+- `admin`: vê e edita tudo, inclusive configuração do sistema e cadastro estrutural.
+- `operador`: NÃO preso a um posto (vê todos, como admin) mas não administra —
+  mesmo gate de `exigir_admin` que barra 'cliente' também barra 'operador'.
+- `cliente`: preso a UM posto (`empresa_id`), só vê os dados dele.
+
+A distinção nunca é feita direto de `banco.buscar_usuario_id` nas rotas — sempre por
+aqui, para o escopo ficar num lugar só.
 """
 from __future__ import annotations
 from fastapi import HTTPException, Request
@@ -34,18 +39,19 @@ def exigir_admin(request: Request) -> None:
 
 def empresa_do_usuario(request: Request) -> int | None:
     """empresa_id ao qual o usuário logado está restrito — None significa SEM
-    restrição (admin, ou acesso via api_key global): todo código que consome esta
-    função trata `None` como "não filtra".
+    restrição (admin, operador, ou acesso via api_key global): todo código que
+    consome esta função trata `None` como "não filtra". 'operador' não é preso a
+    posto nenhum — a diferença dele pro admin é só não passar em `exigir_admin`.
 
-    Por isso um usuário 'cliente' cuja empresa foi apagada (`empresa_id` cai para NULL
-    via `ON DELETE SET NULL`, ver banco.py) NÃO pode devolver None aqui — isso seria
-    lido como admin e destravaria acesso a TUDO. Devolve -1 (id que nunca existe): toda
-    comparação de escopo falha e o usuário órfão não vê nada, em vez de ver tudo.
-    `banco.empresas_remover`/`_apagar_empresas` também desativam esses usuários — isto
-    aqui é a segunda camada, não a única.
+    Um usuário 'cliente' cuja empresa foi apagada (`empresa_id` cai para NULL via
+    `ON DELETE SET NULL`, ver banco.py) NÃO pode devolver None aqui — isso seria lido
+    como "sem restrição" e destravaria acesso a TUDO. Devolve -1 (id que nunca
+    existe): toda comparação de escopo falha e o usuário órfão não vê nada, em vez de
+    ver tudo. `banco.empresas_remover`/`_apagar_empresas` também desativam esses
+    usuários — isto aqui é a segunda camada, não a única.
     """
     user = usuario_atual(request)
-    if user is None or user.get("papel") == "admin":
+    if user is None or user.get("papel") in ("admin", "operador"):
         return None
     return user.get("empresa_id") if user.get("empresa_id") is not None else -1
 
