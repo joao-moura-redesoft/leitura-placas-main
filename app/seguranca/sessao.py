@@ -11,13 +11,19 @@ from app.seguranca import limitador
 _SESSION_TTL = 60 * 60       # 1 hora
 _CLEANUP_INTERVAL = 300      # limpeza a cada 5 minutos
 
+# Custo do bcrypt — módulo-nível (não parâmetro de função) para a suíte de testes poder
+# baixá-lo via `monkeypatch.setattr(auth_mod, "_BCRYPT_ROUNDS", 4)` (ver
+# testes/unitarios/conftest.py): no custo de produção, cada usuário criado numa fixture
+# custaria ~0,2s e a suíte passaria a maior parte do tempo derivando hash à toa.
+_BCRYPT_ROUNDS = 12
+
 # token → (user_id, expires_at)
 _sessions: dict[str, tuple[int, float]] = {}
 _lock = threading.Lock()
 
 
 def hash_senha(senha: str) -> str:
-    return bcrypt.hashpw(senha.encode(), bcrypt.gensalt(12)).decode()
+    return bcrypt.hashpw(senha.encode(), bcrypt.gensalt(_BCRYPT_ROUNDS)).decode()
 
 
 def verificar_senha(senha: str, hashed: str) -> bool:

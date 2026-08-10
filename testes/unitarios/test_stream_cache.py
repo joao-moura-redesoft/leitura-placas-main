@@ -14,6 +14,15 @@ import pytest
 
 from app.streaming import stream
 
+# Capturados na COLETA do módulo (antes de qualquer fixture rodar) — a fixture autouse
+# `_sem_visao` (conftest.py) substitui `pipeline.parar_camera`/`parar_todas` por no-op
+# para o resto da suíte não arriscar tocar câmera/modelo real, mas os testes de
+# integração abaixo testam exatamente o efeito colateral dessas duas funções (descartar
+# o cache) — precisam da implementação de verdade, restaurada por teste.
+import app.visao.pipeline as _pipeline_mod
+_PARAR_CAMERA_REAL = _pipeline_mod.parar_camera
+_PARAR_TODAS_REAL = _pipeline_mod.parar_todas
+
 
 @pytest.fixture(autouse=True)
 def _cache_limpo():
@@ -135,6 +144,7 @@ class TestIntegracaoComPipeline:
 
     def test_parar_camera_descarta_o_cache_daquela_camera(self, monkeypatch):
         import app.visao.pipeline as pipeline_mod
+        monkeypatch.setattr(pipeline_mod, "parar_camera", _PARAR_CAMERA_REAL)
         monkeypatch.setitem(pipeline_mod._instancias, 42, _PipelineFalso())
         stream._jpeg_cacheado(42, _frame(), 75)
         pipeline_mod.parar_camera(42)
@@ -142,6 +152,7 @@ class TestIntegracaoComPipeline:
 
     def test_parar_todas_descarta_o_cache_inteiro(self, monkeypatch):
         import app.visao.pipeline as pipeline_mod
+        monkeypatch.setattr(pipeline_mod, "parar_todas", _PARAR_TODAS_REAL)
         monkeypatch.setitem(pipeline_mod._instancias, 1, _PipelineFalso())
         monkeypatch.setitem(pipeline_mod._instancias, 2, _PipelineFalso())
         stream._jpeg_cacheado(1, _frame(), 75)

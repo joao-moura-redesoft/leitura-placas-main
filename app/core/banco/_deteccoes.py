@@ -77,18 +77,30 @@ def atualizar_deteccao(id_: int, *, placa: str, padrao: str, confianca: float,
         return cur.rowcount > 0
 
 
-def contar_deteccoes_placa(placa: str, incluir_testes: bool = False) -> int:
+def contar_deteccoes_placa(placa: str, incluir_testes: bool = False,
+                            empresa_id: int | None = None) -> int:
     """Total de detecções de uma placa EXATA — sem o teto de `limit`.
 
     A consulta de placa fazia LIKE com limite de 50 e depois filtrava a igualdade em
     Python: o total saturava em 50 e, entre placas parecidas, as exatas podiam nem
     caber nas 50 primeiras linhas.
+
+    `empresa_id`: escopa ao posto de um usuário 'cliente' (deps.py:empresa_do_usuario) —
+    precisa do mesmo JOIN via bico→automação que `listar_deteccoes` usa, senão a
+    contagem batia com todas as empresas e a listada (escopada) batia só com a dele.
     """
-    sql = "SELECT COUNT(*) FROM deteccoes WHERE placa=?"
+    sql = ("SELECT COUNT(*) FROM deteccoes d "
+           "LEFT JOIN bicos b ON d.bico_id = b.id "
+           "LEFT JOIN automacoes a ON b.automacao_id = a.id "
+           "WHERE d.placa=?")
+    params: list = [placa]
     if not incluir_testes:
-        sql += " AND COALESCE(origem, 'roteador') <> 'teste'"
+        sql += " AND COALESCE(d.origem, 'roteador') <> 'teste'"
+    if empresa_id is not None:
+        sql += " AND a.empresa_id = ?"
+        params.append(empresa_id)
     with cursor() as c:
-        return c.execute(sql, (placa,)).fetchone()[0]
+        return c.execute(sql, params).fetchone()[0]
 
 
 def listar_deteccoes(
@@ -214,30 +226,42 @@ def deteccoes_e_chamadas_antigas(dias: int) -> dict:
             ).rowcount
 
         # 2) Todo o resto (sem override, inclusive detecções sem empresa resolvida —
-        # ex.: leituras antigas pré-multi-tenant) usa o prazo padrão. `dias <= 0` =
-        # padrão global desativado ("nunca apaga") — mas os overrides do passo 1 já
-        # rodaram, então um prazo específico por cliente continua valendo mesmo com o
-        # padrão global desligado.
+        # ex.: leituras antigas pré-multi-tenant, ou de teste, sem bico/câmera) usa o
+        # prazo padrão. `dias <= 0` = padrão global desativado ("nunca apaga") — mas os
+        # overrides do passo 1 já rodaram, então um prazo específico por cliente
+        # continua valendo mesmo com o padrão global desligado.
+        #
+        # IS NULL em vez de COALESCE(...,-1) NOT IN (...): com COALESCE, uma detecção
+        # sem empresa resolvida virava -1, e se não houvesse NENHUM override cadastrado
+        # o placeholder de "nenhuma empresa a excluir" TAMBÉM era -1 — a comparação
+        # `-1 NOT IN (-1)` dava falso e a detecção nunca era apagada pelo prazo padrão
+        # (bug real, pego pelo teste `test_apaga_o_que_passou_do_prazo_...`).
         if dias > 0:
             corte_padrao = _corte(dias)
-            ids_override = tuple(overrides) or (-1,)
-            marcadores = ",".join("?" * len(ids_override))
+            if overrides:
+                marcadores = ",".join("?" * len(overrides))
+                filtro = f"AND ({_EMPRESA_DETECCAO} IS NULL OR {_EMPRESA_DETECCAO} NOT IN ({marcadores}))"
+                filtro_cham = f"AND (empresa_id IS NULL OR empresa_id NOT IN ({marcadores}))"
+                params_extra = tuple(overrides)
+            else:
+                filtro = filtro_cham = ""
+                params_extra = ()
             linhas = c.execute(
                 f"SELECT d.snapshot, d.frame FROM deteccoes d {_JOIN_EMPRESA_DETECCAO} "
-                f"WHERE d.criado_em < ? AND COALESCE({_EMPRESA_DETECCAO}, -1) NOT IN ({marcadores})",
-                (corte_padrao, *ids_override),
+                f"WHERE d.criado_em < ? {filtro}",
+                (corte_padrao, *params_extra),
             ).fetchall()
             arquivos += [r["snapshot"] for r in linhas if r["snapshot"]]
             arquivos += [r["frame"] for r in linhas if r["frame"]]
             n_det += c.execute(
                 f"DELETE FROM deteccoes WHERE id IN ("
                 f"  SELECT d.id FROM deteccoes d {_JOIN_EMPRESA_DETECCAO} "
-                f"  WHERE d.criado_em < ? AND COALESCE({_EMPRESA_DETECCAO}, -1) NOT IN ({marcadores}))",
-                (corte_padrao, *ids_override),
+                f"  WHERE d.criado_em < ? {filtro})",
+                (corte_padrao, *params_extra),
             ).rowcount
             n_cham += c.execute(
-                f"DELETE FROM chamadas WHERE criado_em < ? AND COALESCE(empresa_id, -1) NOT IN ({marcadores})",
-                (corte_padrao, *ids_override),
+                f"DELETE FROM chamadas WHERE criado_em < ? {filtro_cham}",
+                (corte_padrao, *params_extra),
             ).rowcount
 
     return {"arquivos": arquivos, "deteccoes_removidas": n_det, "chamadas_removidas": n_cham}

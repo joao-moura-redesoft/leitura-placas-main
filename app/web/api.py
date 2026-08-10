@@ -122,11 +122,13 @@ def consultar_placa(placa: str, request: Request):
     última detecção, status na lista branca/negra e resumo do histórico.
     """
     placa = placa.upper().strip()
+    escopo = deps.empresa_do_usuario(request)
 
-    deteccoes = banco.listar_deteccoes(placa=placa, limit=50,
-                                       empresa_id=deps.empresa_do_usuario(request))
-    # filtra exato (listar_deteccoes usa LIKE %placa%)
-    deteccoes = [d for d in deteccoes if d["placa"] == placa]
+    deteccoes = banco.listar_deteccoes(placa=placa, limit=50, empresa_id=escopo, placa_exata=True)
+    # Total de verdade, não capado pelo `limit=50` acima (que existe só para não trazer
+    # o histórico inteiro) — sem isto, uma placa com mais de 50 detecções sempre
+    # aparecia com total "50", nunca o número real.
+    total = banco.contar_deteccoes_placa(placa, empresa_id=escopo)
 
     lista_entry = banco.listas_buscar(placa)
 
@@ -144,7 +146,7 @@ def consultar_placa(placa: str, request: Request):
         "padrao":             ultima["padrao"] if ultima else None,
         "lista":              lista_entry["tipo"] if lista_entry else None,
         "lista_descricao":    lista_entry["descricao"] if lista_entry else None,
-        "total_deteccoes":    len(deteccoes),
+        "total_deteccoes":    total,
         "ultima_deteccao":    ultima,
         "historico":          deteccoes[1:10],
     }
