@@ -156,24 +156,90 @@ def remover_deteccao(id_: int) -> bool:
         return cur.rowcount > 0
 
 
+def _corte(dias: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+
+
+# JOIN que resolve a empresa "dona" de uma detecção: pelo bico (leitura reativa/teste)
+# ou, faltando isso, pela câmera (detecção do modo contínuo, que não tem bico_id).
+_JOIN_EMPRESA_DETECCAO = """
+    LEFT JOIN bicos b       ON d.bico_id = b.id
+    LEFT JOIN automacoes au ON b.automacao_id = au.id
+    LEFT JOIN cameras cam   ON d.camera_db_id = cam.id
+"""
+_EMPRESA_DETECCAO = "COALESCE(au.empresa_id, cam.empresa_id)"
+
+
 def deteccoes_e_chamadas_antigas(dias: int) -> dict:
-    """Apaga `deteccoes`/`chamadas` com mais de `dias` dias e devolve os caminhos
-    relativos dos JPEGs (snapshot + frame) que ficaram órfãos.
+    """Apaga `deteccoes`/`chamadas` antigas e devolve os caminhos relativos dos JPEGs
+    (snapshot + frame) que ficaram órfãos.
+
+    `dias` é o prazo PADRÃO. Empresas com `retencao_dias_override` preenchido (LGPD por
+    cliente — ver `empresas_definir_retencao`) usam o prazo próprio em vez do padrão;
+    as demais (override NULL) caem no padrão, exatamente como antes deste mecanismo.
 
     Só mexe no banco — apagar os arquivos em disco é responsabilidade de quem chama
     (app/operacao/retencao.py), pra esta camada não fazer I/O de arquivo. Sem alguma
     rotina de retenção, `deteccoes`/`chamadas` e os JPEGs em app/web/static/snapshots/
     crescem para sempre num servidor multi-tenant de longa duração.
     """
-    corte = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    arquivos: list[str] = []
+    n_det = n_cham = 0
     with cursor() as c:
-        arquivos = [r[0] for r in c.execute(
-            "SELECT snapshot FROM deteccoes WHERE criado_em < ? AND snapshot IS NOT NULL "
-            "UNION SELECT frame FROM deteccoes WHERE criado_em < ? AND frame IS NOT NULL",
-            (corte, corte),
-        ).fetchall()]
-        n_det = c.execute("DELETE FROM deteccoes WHERE criado_em < ?", (corte,)).rowcount
-        n_cham = c.execute("DELETE FROM chamadas WHERE criado_em < ?", (corte,)).rowcount
+        overrides = {r["id"]: r["retencao_dias_override"] for r in c.execute(
+            "SELECT id, retencao_dias_override FROM empresas "
+            "WHERE retencao_dias_override IS NOT NULL"
+        ).fetchall()}
+
+        # 1) Empresas com prazo próprio — uma passada por empresa (lista tipicamente
+        # pequena: só quem pediu prazo diferente do padrão).
+        for emp_id, dias_emp in overrides.items():
+            corte_emp = _corte(dias_emp)
+            linhas = c.execute(
+                f"SELECT d.snapshot, d.frame FROM deteccoes d {_JOIN_EMPRESA_DETECCAO} "
+                f"WHERE d.criado_em < ? AND {_EMPRESA_DETECCAO} = ?",
+                (corte_emp, emp_id),
+            ).fetchall()
+            arquivos += [r["snapshot"] for r in linhas if r["snapshot"]]
+            arquivos += [r["frame"] for r in linhas if r["frame"]]
+            n_det += c.execute(
+                f"DELETE FROM deteccoes WHERE id IN ("
+                f"  SELECT d.id FROM deteccoes d {_JOIN_EMPRESA_DETECCAO} "
+                f"  WHERE d.criado_em < ? AND {_EMPRESA_DETECCAO} = ?)",
+                (corte_emp, emp_id),
+            ).rowcount
+            n_cham += c.execute(
+                "DELETE FROM chamadas WHERE criado_em < ? AND empresa_id = ?",
+                (corte_emp, emp_id),
+            ).rowcount
+
+        # 2) Todo o resto (sem override, inclusive detecções sem empresa resolvida —
+        # ex.: leituras antigas pré-multi-tenant) usa o prazo padrão. `dias <= 0` =
+        # padrão global desativado ("nunca apaga") — mas os overrides do passo 1 já
+        # rodaram, então um prazo específico por cliente continua valendo mesmo com o
+        # padrão global desligado.
+        if dias > 0:
+            corte_padrao = _corte(dias)
+            ids_override = tuple(overrides) or (-1,)
+            marcadores = ",".join("?" * len(ids_override))
+            linhas = c.execute(
+                f"SELECT d.snapshot, d.frame FROM deteccoes d {_JOIN_EMPRESA_DETECCAO} "
+                f"WHERE d.criado_em < ? AND COALESCE({_EMPRESA_DETECCAO}, -1) NOT IN ({marcadores})",
+                (corte_padrao, *ids_override),
+            ).fetchall()
+            arquivos += [r["snapshot"] for r in linhas if r["snapshot"]]
+            arquivos += [r["frame"] for r in linhas if r["frame"]]
+            n_det += c.execute(
+                f"DELETE FROM deteccoes WHERE id IN ("
+                f"  SELECT d.id FROM deteccoes d {_JOIN_EMPRESA_DETECCAO} "
+                f"  WHERE d.criado_em < ? AND COALESCE({_EMPRESA_DETECCAO}, -1) NOT IN ({marcadores}))",
+                (corte_padrao, *ids_override),
+            ).rowcount
+            n_cham += c.execute(
+                f"DELETE FROM chamadas WHERE criado_em < ? AND COALESCE(empresa_id, -1) NOT IN ({marcadores})",
+                (corte_padrao, *ids_override),
+            ).rowcount
+
     return {"arquivos": arquivos, "deteccoes_removidas": n_det, "chamadas_removidas": n_cham}
 
 

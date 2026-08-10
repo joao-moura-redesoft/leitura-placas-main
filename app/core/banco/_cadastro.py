@@ -144,6 +144,11 @@ def _apagar_empresas(c: sqlite3.Connection, where_sql: str, params: tuple) -> No
     explicitamente, o RESTRICT continua protegendo a exclusão avulsa de câmera.
     """
     emp = f"SELECT id FROM empresas WHERE {where_sql}"
+    # Usuários 'cliente' deste posto ficam órfãos (empresa_id vira NULL por ON DELETE
+    # SET NULL) — desativa explicitamente em vez de deixá-los soltos: um usuário
+    # 'cliente' sem empresa_id não deve continuar logando (ver deps.py:empresa_do_usuario,
+    # que trata esse caso como "não vê nada", mas aqui evitamos até chegar nesse caso).
+    c.execute(f"UPDATE usuarios SET ativo=0 WHERE papel='cliente' AND empresa_id IN ({emp})", params)
     c.execute(f"DELETE FROM bicos WHERE automacao_id IN "
               f"(SELECT id FROM automacoes WHERE empresa_id IN ({emp}))", params)
     c.execute(f"DELETE FROM automacoes WHERE empresa_id IN ({emp})", params)
@@ -192,12 +197,41 @@ def empresas_inserir(dados: dict) -> int:
 
 
 def empresas_atualizar(id_: int, dados: dict) -> bool:
+    # `api_key` e `retencao_dias_override` são geridos por endpoints próprios
+    # (gerar/revogar chave, definir prazo) — este UPDATE nunca mexe neles, senão um
+    # PUT comum de nome/CNPJ apagaria a chave/prazo sem intenção.
     with cursor() as c:
         cur = c.execute(
             "UPDATE empresas SET entidade_id=?, cnpj=?, nome=?, ativo=? WHERE id=?",
             (int(dados["entidade_id"]), dados["cnpj"], dados["nome"],
              1 if dados.get("ativo", True) else 0, id_),
         )
+        return cur.rowcount > 0
+
+
+def empresas_gerar_api_key(id_: int) -> str | None:
+    """Gera (ou substitui) a api_key própria da empresa — opt-in: só quando ligada
+    aqui essa empresa passa a exigir `X-API-Key`/`?api_key=` em `/api/leitura`."""
+    import secrets
+    chave = secrets.token_urlsafe(32)
+    with cursor() as c:
+        cur = c.execute("UPDATE empresas SET api_key=? WHERE id=?", (chave, id_))
+        if cur.rowcount == 0:
+            return None
+    return chave
+
+
+def empresas_revogar_api_key(id_: int) -> bool:
+    """Volta a empresa para o padrão público (sem chave própria)."""
+    with cursor() as c:
+        cur = c.execute("UPDATE empresas SET api_key='' WHERE id=?", (id_,))
+        return cur.rowcount > 0
+
+
+def empresas_definir_retencao(id_: int, dias: int | None) -> bool:
+    """`dias=None` volta a empresa a usar o `retencao_dias` global."""
+    with cursor() as c:
+        cur = c.execute("UPDATE empresas SET retencao_dias_override=? WHERE id=?", (dias, id_))
         return cur.rowcount > 0
 
 
@@ -403,6 +437,9 @@ def resolver_bico(cnpj: str, automacao_codigo: str, bico_codigo: str) -> tuple[d
         "automacao_id": automacao["id"],
         "empresa_id": empresa["id"],
         "entidade_id": empresa["entidade_id"],
+        # Chave própria do cliente (opt-in) — vazia = /api/leitura continua público
+        # para este posto. Ver app/web/leitura.py:leitura_reativa.
+        "empresa_api_key": empresa["api_key"],
     }
     return reg, None
 

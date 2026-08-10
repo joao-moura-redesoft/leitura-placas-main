@@ -14,15 +14,22 @@ def contar_usuarios() -> int:
         return c.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0]
 
 
-def criar_usuario(nome: str, email: str, senha_hash: str, papel: str = "admin", ativo: int = 1) -> int | None:
+def criar_usuario(nome: str, email: str, senha_hash: str, papel: str = "admin",
+                   ativo: int = 1, empresa_id: int | None = None) -> int | None:
     """None = e-mail já cadastrado. Só o conflito de UNIQUE vira None: engolir todo
     `Exception` fazia disco cheio ou banco travado se passarem por "e-mail duplicado",
-    escondendo a falha real de quem estivesse cadastrando."""
+    escondendo a falha real de quem estivesse cadastrando.
+
+    `papel='cliente'` exige `empresa_id` — é o que restringe esse usuário a só ver os
+    dados do próprio posto (ver app/web/deps.py:empresa_do_usuario). `papel='admin'`
+    ignora `empresa_id` (mantido por compatibilidade se vier preenchido por engano)."""
     try:
         with cursor() as c:
             cur = c.execute(
-                "INSERT INTO usuarios (nome, email, senha, papel, ativo, criado_em) VALUES (?,?,?,?,?,?)",
-                (nome, email, senha_hash, papel, ativo, _agora()),
+                "INSERT INTO usuarios (nome, email, senha, papel, ativo, empresa_id, criado_em) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (nome, email, senha_hash, papel, ativo,
+                 empresa_id if papel == "cliente" else None, _agora()),
             )
             return cur.lastrowid
     except sqlite3.IntegrityError:
@@ -42,29 +49,42 @@ def buscar_usuario_id(id_: int) -> dict | None:
 
 
 def usuarios_listar() -> list[dict]:
-    # Sem a coluna `senha` — hash nunca deve sair numa resposta de listagem.
+    # Sem a coluna `senha` — hash nunca deve sair numa resposta de listagem. `empresa_nome`
+    # é o posto ao qual um usuário 'cliente' está restrito (NULL para admin).
     with cursor() as c:
         return [dict(r) for r in c.execute(
-            "SELECT id, nome, email, papel, ativo, criado_em FROM usuarios ORDER BY nome"
+            "SELECT u.id, u.nome, u.email, u.papel, u.ativo, u.empresa_id, u.criado_em, "
+            "em.nome AS empresa_nome FROM usuarios u LEFT JOIN empresas em ON u.empresa_id = em.id "
+            "ORDER BY u.papel, u.nome"
         ).fetchall()]
 
 
 def usuarios_atualizar(id_: int, dados: dict) -> bool:
-    """Atualiza nome/email/papel/ativo. Senha só é trocada quando `senha_hash` vem
-    preenchido — campo vazio no formulário significa "manter a senha atual", mesmo
-    padrão usado em `cameras_atualizar` para não sobrescrever com string vazia."""
+    """Atualiza nome/email/papel/ativo/empresa_id. Senha só é trocada quando
+    `senha_hash` vem preenchido — campo vazio no formulário significa "manter a senha
+    atual", mesmo padrão usado em `cameras_atualizar` para não sobrescrever com string
+    vazia. `empresa_id` só é gravado quando `papel='cliente'` (ver `criar_usuario`)."""
     senha_hash = dados.get("senha_hash")
+    empresa_id = dados.get("empresa_id") if dados.get("papel") == "cliente" else None
     with cursor() as c:
         if senha_hash:
             cur = c.execute(
-                "UPDATE usuarios SET nome=?, email=?, papel=?, ativo=?, senha=? WHERE id=?",
-                (dados["nome"], dados["email"], dados["papel"], dados["ativo"], senha_hash, id_),
+                "UPDATE usuarios SET nome=?, email=?, papel=?, ativo=?, empresa_id=?, senha=? WHERE id=?",
+                (dados["nome"], dados["email"], dados["papel"], dados["ativo"], empresa_id, senha_hash, id_),
             )
         else:
             cur = c.execute(
-                "UPDATE usuarios SET nome=?, email=?, papel=?, ativo=? WHERE id=?",
-                (dados["nome"], dados["email"], dados["papel"], dados["ativo"], id_),
+                "UPDATE usuarios SET nome=?, email=?, papel=?, ativo=?, empresa_id=? WHERE id=?",
+                (dados["nome"], dados["email"], dados["papel"], dados["ativo"], empresa_id, id_),
             )
+        return cur.rowcount > 0
+
+
+def usuarios_definir_senha(id_: int, senha_hash: str) -> bool:
+    """Redefinição de senha isolada (sem precisar reenviar nome/email/papel/ativo) —
+    usada pelo botão dedicado "Senha" da tela de usuários."""
+    with cursor() as c:
+        cur = c.execute("UPDATE usuarios SET senha=? WHERE id=?", (senha_hash, id_))
         return cur.rowcount > 0
 
 

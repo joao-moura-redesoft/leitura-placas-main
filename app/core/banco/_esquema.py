@@ -84,6 +84,22 @@ def _migrar(c: sqlite3.Connection) -> None:
     # coluna `bico_id` está garantidamente presente, inclusive em bancos antigos.
     c.execute("CREATE INDEX IF NOT EXISTS idx_deteccoes_bico ON deteccoes(bico_id)")
 
+    # Chave de API própria por cliente (opt-in): vazia = /api/leitura continua público
+    # para esse posto (comportamento de sempre); preenchida = passa a exigir a chave
+    # nas chamadas daquele CNPJ. Não é obrigatório para ninguém só por existir a coluna.
+    cols_emp = {row[1] for row in c.execute("PRAGMA table_info(empresas)").fetchall()}
+    if "api_key" not in cols_emp:
+        c.execute("ALTER TABLE empresas ADD COLUMN api_key TEXT NOT NULL DEFAULT ''")
+    # Prazo de retenção próprio (LGPD por cliente): NULL = usa o `retencao_dias` global.
+    if "retencao_dias_override" not in cols_emp:
+        c.execute("ALTER TABLE empresas ADD COLUMN retencao_dias_override INTEGER")
+
+    # Usuário do painel restrito a UMA empresa ("cliente"): NULL = admin, vê tudo (papel
+    # continua sendo o que manda — isto só faz sentido quando papel='cliente').
+    cols_usr = {row[1] for row in c.execute("PRAGMA table_info(usuarios)").fetchall()}
+    if "empresa_id" not in cols_usr:
+        c.execute("ALTER TABLE usuarios ADD COLUMN empresa_id INTEGER REFERENCES empresas(id) ON DELETE SET NULL")
+
 
 def inicializar() -> None:
     # Cria o diretório do banco quando o caminho aponta para uma subpasta (container:

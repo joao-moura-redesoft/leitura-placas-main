@@ -18,13 +18,6 @@ templates = Jinja2Templates(directory="app/web/templates")
 _PAPEIS_VALIDOS = ("admin", "cliente")
 
 
-def _admins_ativos_restantes(excluir_id: int) -> int:
-    """Quantos admins ATIVOS existem sem contar `excluir_id` — usado para nunca deixar
-    o sistema sem nenhum admin que consiga entrar e desfazer um erro de cadastro."""
-    return sum(1 for u in banco.usuarios_listar()
-               if u["papel"] == "admin" and u["ativo"] and u["id"] != excluir_id)
-
-
 @router.get("/usuarios")
 def pagina(request: Request):
     return templates.TemplateResponse(request, "usuarios.html", {"usuario": deps.usuario_atual(request)})
@@ -83,16 +76,20 @@ def atualizar(id_: int, payload: dict):
             raise HTTPException(400, f"Empresa {empresa_id} não encontrada")
 
     vira_nao_admin = atual["papel"] == "admin" and (papel != "admin" or not ativo)
-    if vira_nao_admin and _admins_ativos_restantes(excluir_id=id_) == 0:
+    if vira_nao_admin and banco.usuarios_contar_admins_ativos(excluir_id=id_) == 0:
         raise HTTPException(
             400,
             "Este é o último administrador ativo — promova outro usuário a admin "
             "antes de rebaixar ou desativar este.",
         )
 
-    banco.usuarios_atualizar(
-        id_, papel=papel, empresa_id=int(empresa_id) if empresa_id else None, ativo=ativo,
-    )
+    # nome/email não são editáveis por esta tela (só papel/posto/ativo) — mantém os
+    # valores atuais para não apagá-los na mesma UPDATE que a camada de dados exige.
+    banco.usuarios_atualizar(id_, {
+        "nome": atual["nome"], "email": atual["email"],
+        "papel": papel, "empresa_id": int(empresa_id) if empresa_id else None,
+        "ativo": ativo,
+    })
     if not ativo:
         # Corta o acesso AGORA, não só em novos logins — sem isto uma sessão já aberta
         # continuava válida por até 1h depois de "desativado" no painel.
