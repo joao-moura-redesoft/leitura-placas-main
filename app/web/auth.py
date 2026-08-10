@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.core import banco
+from app.seguranca import limitador
 from app.seguranca import sessao as auth_mod
 
 router = APIRouter()
@@ -106,8 +107,20 @@ async def login_post(request: Request, email: str = Form(...), senha: str = Form
     if banco.contar_usuarios() == 0:
         return RedirectResponse("/criar-admin", status_code=303)
 
+    # Freio de força bruta por IP — 10 tentativas/minuto é folgado para um humano
+    # errando a senha, apertado para quem está tentando adivinhar.
+    ip = request.client.host if request.client else "?"
+    if not limitador.permitido("login", ip, limite=10, janela_seg=60):
+        return templates.TemplateResponse(request, "login.html", {
+            "erro":    "Muitas tentativas — aguarde um minuto e tente de novo.",
+            "sucesso": None,
+            "email":   email.strip().lower(),
+        })
+
     user = banco.buscar_usuario_email(email.strip().lower())
-    if not user or not auth_mod.verificar_senha(senha, user["senha"]):
+    # `not user["ativo"]`: antes um usuário desativado (banco.usuarios_atualizar) ainda
+    # conseguia logar normalmente — nada checava esse campo no fluxo de login.
+    if not user or not user["ativo"] or not auth_mod.verificar_senha(senha, user["senha"]):
         return templates.TemplateResponse(request, "login.html", {
             "erro":    "E-mail ou senha incorretos.",
             "sucesso": None,

@@ -237,11 +237,8 @@
           <option value="nao">Não — somente pelo botão</option>
         </select>
       </label>
-      <label>FPS máx de detecção <span class="help" data-tip="Limita quantas vezes por segundo o YOLO é executado. O stream continua em camera_fps. Reduzir alivia CPU. Recomendado: 5.">?</span>
+      <label>FPS máx de detecção <span class="help" data-tip="Limita quantas vezes por segundo o YOLO é executado — e também a frequência do ajuste de imagem (aba Detecção → Ajuste de Ambiente), que roda junto. Reduzir alivia CPU bastante. Recomendado: 5.">?</span>
         <input type="number" name="deteccao_fps_max" min="1" max="30">
-      </label>
-      <label>Processar a cada N frames <span class="help" data-tip="Pula frames entre detecções para aliviar CPU. 1 = todo frame. 2 = 1 a cada 2 (recomendado). O stream de vídeo continua fluido.">?</span>
-        <input type="number" name="processar_a_cada_n_frames" min="1" max="10">
       </label>
       <label>Fotos mínimas por leitura (botão) <span class="help" data-tip="Número MÍNIMO de fotos tiradas ao clicar 'Ler Placa' antes de considerar parar. O sistema continua tirando fotos até o consenso ficar forte (ver 'Loop de leitura' abaixo) ou até o máximo. Recomendado: 3.">?</span>
         <input type="number" name="snapshots_votacao" min="1" max="10">
@@ -302,7 +299,7 @@
       <label>Brilho alvo (0–255) <span class="help" data-tip="Luminância média que o gamma automático tenta atingir. Maior = imagem mais clara. Recomendado: 120.">?</span>
         <input type="number" name="ajuste_brilho_alvo" min="60" max="220">
       </label>
-      <label>Reclassificar a cada N frames <span class="help" data-tip="A cada quantos frames a cena é reanalisada. Menor = adapta mais rápido, custa mais CPU. Recomendado: 8.">?</span>
+      <label>Reclassificar a cada N frames <span class="help" data-tip="A cada quantos frames (de detecção — ver FPS máx de detecção, aba Detecção) a cena é reanalisada. Menor = adapta mais rápido, custa mais CPU. Recomendado: 3.">?</span>
         <input type="number" name="ajuste_recalc_frames" min="1" max="60">
       </label>
       <label>Contraste local (CLAHE) <span class="help" data-tip="Realça detalhe local — ótimo em neblina/chuva/baixo contraste. Recomendado: Sim.">?</span>

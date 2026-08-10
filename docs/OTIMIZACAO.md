@@ -3,6 +3,12 @@
 Documento vivo — registra gargalos identificados, impacto estimado e estratégias de melhoria.
 Atualizar sempre que um gargalo for resolvido ou um novo for descoberto.
 
+> ⚠️ Escrito para o modo contínuo/single-camera (pipeline por câmera, seções 2.1–2.10
+> abaixo) — ainda válido tecnicamente (esse modo continua existindo, opcional). O modo
+> alvo hoje é a leitura REATIVA multi-tenant (`GET /api/leitura`), cujo gargalo de
+> capacidade é outro (lock global de detector/OCR sob concorrência entre clientes, não
+> CPU do loop contínuo) — ver [ARQUITETURA.md §20](ARQUITETURA.md#20-capacidade-e-escala-multi-tenant).
+
 ---
 
 ## Índice

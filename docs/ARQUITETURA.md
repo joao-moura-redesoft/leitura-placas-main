@@ -2,6 +2,20 @@
 
 > Estado atual · julho/2026 · reorganizado em pacote `app/` (core/visao/streaming/operacao/seguranca/web) · sincronizado com o código.
 
+> ⚠️ **Este documento descreve a fase single-camera/diagnóstico do projeto (YOLO26n,
+> foco em 1 câmera local) e não foi atualizado linha a linha desde então.** O modo de
+> operação ALVO hoje é outro: servidor central **reativo multi-tenant** (`GET
+> /api/leitura` por entidade→posto/CNPJ→automação→bico, ver [README.md](../README.md)
+> e [INTEGRACAO_ROTEADOR.md](INTEGRACAO_ROTEADOR.md)), detector padrão
+> `open_image_models` (não YOLO26n — ver `docs/`/memória do projeto sobre
+> incompatibilidade do YOLO26 com a versão atual do ultralytics), e cadastro com 7
+> tabelas (`entidades`, `empresas`, `automacoes`, `bicos`, `cameras`, `deteccoes`,
+> `chamadas`), não as 5 listadas na seção 19. O pipeline contínuo descrito abaixo
+> (seções 1–18) continua existindo e correto tecnicamente — é o modo "diagnóstico
+> visual", opcional e inerte por padrão — só não é mais o caminho principal. A seção
+> 20, abaixo, cobre o que este documento ainda não tinha: capacidade e escala do modo
+> multi-tenant.
+
 ---
 
 ## 1. Visão Geral
@@ -608,3 +622,55 @@ rtsp://HOST:554/user=USUARIO&password=SENHA&channel=N&stream=S.sdp?
 | CPU em operação (estimativa) | 8–15% (era ~60% antes do rate-limit) |
 | Precisão OCR (engine `auto`) | **92.9%** (39/42) no dataset de testes |
 | Redução de chamadas OCR (tracker) | **80–99%** dependendo de FPS e cooldown |
+
+---
+
+## 20. Capacidade e escala (multi-tenant)
+
+O modo alvo (seção "Visão Geral" acima) é **um processo Python só atendendo todos os
+postos de todos os clientes** via `GET /api/leitura`. Isso tem uma implicação de
+capacidade que as seções 1–19 (escritas para o modo diagnóstico single-camera) não
+cobrem.
+
+### O gargalo: lock global de detector/OCR
+
+`app/visao/detector.py:detector_leitura_lock` e `app/visao/ocr/auto.py:ocr_leitura_lock`
+serializam TODA leitura reativa do processo — não por câmera, por **todo o servidor**.
+Isso não é um bug a corrigir: em `CUDAExecutionProvider` (GPU), chamadas concorrentes
+`Run()` na mesma sessão onnxruntime podem travar/crashar (handles cuDNN compartilhados
+entre threads) — o lock é o que torna isso seguro. A consequência é que duas leituras
+de **clientes diferentes**, acionadas ao mesmo tempo, competem pelo mesmo recurso.
+
+O loop de leitura (`app/visao/leitura.py:ler_placa`) é limitado por TEMPO
+(`leitura_timeout_seg`), não por número fixo de fotos — então sob disputa, cada
+chamada simplesmente consegue menos tentativas dentro do mesmo orçamento. A latência
+quase não muda (por isso não aparece "no relógio"); quem cai é a taxa de acerto, e só
+sob carga.
+
+### Pergunta em aberto: quantos postos cabem por servidor?
+
+`testes/medir_concorrencia.py` mede exatamente isso (dispara N leituras simultâneas
+via `POST /api/bicos/{id}/ler-placa-teste` e compara tentativas/duração por nível de
+concorrência) — mas **precisa rodar no servidor de produção real (GPU)** para dar uma
+resposta que valha alguma coisa; medir em CPU de desenvolvimento não representa a
+capacidade real. Enquanto esse número não existe, tratar como desconhecido — não
+assumir que o servidor aguenta qualquer volume de clientes simultâneos.
+
+### Quando esse teto aparecer, opções de escala (nenhuma implementada ainda)
+
+- **Vertical primeiro**: GPU mais forte, mais VRAM — adia o problema, não resolve para
+  sempre.
+- **Múltiplos processos na mesma máquina**, cada um com sua própria sessão
+  onnxruntime/lock — precisa de um roteador na frente (nginx/Traefik) decidindo qual
+  processo atende qual `cnpj`, e um banco compartilhado (ou um banco por processo, com
+  o custo de perder a visão consolidada num painel só).
+- **Sharding de clientes por servidor** (réplicas completas — banco + processo — cada
+  uma dona de um subconjunto de clientes): mais simples de operar que múltiplos
+  processos numa máquina só, mas perde o "servidor central único" que é a proposta
+  atual (o cadastro/painel deixa de ser um lugar só).
+- **Fila de leitura com prioridade/timeout explícito** em vez de deixar o lock
+  enfileirar tudo às cegas — devolve 503 rápido a quem está esperando demais, em vez
+  de segurar a conexão até o `leitura_timeout_seg` estourar.
+
+Nenhuma dessas foi decidida — a decisão certa depende do número que
+`medir_concorrencia.py` trouxer.

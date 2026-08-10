@@ -13,6 +13,8 @@ env/
 config.txt
 placas.db
 placas.db-journal
+placas.db-wal
+placas.db-shm
 *.log
 
 # Modelos (baixados no entrypoint)

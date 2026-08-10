@@ -32,15 +32,18 @@ class RetentionWorker:
         self._dias = 0
 
     def iniciar(self, dias: int) -> None:
+        # O worker roda SEMPRE, mesmo com o prazo padrão desligado (`dias<=0`): uma
+        # empresa pode ter prazo próprio (`empresas.retencao_dias_override`, LGPD por
+        # cliente — ver banco.deteccoes_e_chamadas_antigas) que precisa continuar sendo
+        # respeitado independente da política padrão do servidor.
         if dias <= 0:
-            log.info("Retenção de dados desativada (retencao_dias=0) — "
-                     "deteccoes/chamadas/JPEGs crescem sem limite")
-            return
+            log.info("Retenção padrão desativada (retencao_dias=0) — deteccoes/chamadas "
+                     "sem prazo próprio crescem sem limite; prazos por cliente continuam valendo")
         self._dias = dias
         self._parar.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="alpr-retencao")
         self._thread.start()
-        log.info("Retenção de dados ativa: apaga deteccoes/chamadas com mais de %d dias (checa 1x/dia)", dias)
+        log.info("Retenção de dados ativa: padrão >%d dias (0 = desativado), checa 1x/dia", dias)
 
     def parar(self) -> None:
         self._parar.set()

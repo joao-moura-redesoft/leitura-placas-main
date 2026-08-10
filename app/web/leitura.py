@@ -11,11 +11,12 @@ import logging
 import re
 import time
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.core import banco
 from app.core import config
 from app.core import estado
+from app.seguranca import limitador
 from app.visao import leitura
 from app.visao import pipeline
 
@@ -47,12 +48,29 @@ def frame_ao_vivo(camera_id: int):
     log.debug("cam=%s: pipeline ativo, leitura usará o frame ao vivo", camera_id)
 
     primeira = [True]
+    ultimo_devolvido = [None]
 
     def _obter():
         # Na primeira chamada aguarda o pipeline aquecer. Sem isso a leitura desistiria
         # do pipeline e cairia numa conexão direta que não pode dar certo (câmera ocupada).
         limite = time.time() + (ESPERA_PRIMEIRO_FRAME_SEG if primeira[0] else 0)
         primeira[0] = False
+
+        # O pipeline agora publica frame novo na cadência de DETECÇÃO (deteccao_fps_max,
+        # tipicamente 5/s = 200ms — ver app/visao/pipeline.py:_loop), mais devagar que o
+        # antigo ritmo de camera_fps (15/s = 66ms). `ler_placa` chama este provider a
+        # cada ~150ms (app/visao/leitura.py): sem este teto, boa parte das chamadas
+        # pegaria o MESMO objeto de frame já visto na tentativa anterior — duas "fotos"
+        # idênticas do reject-retry loop concordam 100% entre si e disparam a parada
+        # antecipada por consenso sem NENHUMA concordância entre frames de verdade (ver
+        # comentário em `_eleger_placa`, app/visao/leitura.py). Por isso espera um
+        # objeto DIFERENTE do último devolvido, com teto curto — e se o teto estourar,
+        # devolve None (não o duplicado): `ler_placa` já trata None dormindo 0.1s e
+        # tentando de novo, SEM contar como tentativa nem como voto. Devolver o
+        # duplicado, ao contrário, anularia o próprio propósito desta correção.
+        pinst = pipeline._instancias.get(camera_id)
+        teto_frame_novo = time.time() + (pinst._intervalo_deteccao * 1.5 if pinst else 0.3)
+
         while True:
             idade = time.time() - estado.ultimo_frame_ts.get(camera_id, 0)
             if idade <= FRAME_MAX_IDADE_SEG:
@@ -61,20 +79,39 @@ def frame_ao_vivo(camera_id: int):
                 if f is None:
                     f = estado.obter_frame_camera(camera_id)
                 if f is not None:
-                    return f
+                    if f is not ultimo_devolvido[0]:
+                        ultimo_devolvido[0] = f
+                        return f
+                    if time.time() >= teto_frame_novo:
+                        return None   # ver comentário acima — nunca devolve duplicado
+                    # Frame fresco, mas ainda o mesmo objeto: continua esperando um
+                    # novo, limitado só por `teto_frame_novo` — NÃO cai no `limite`
+                    # abaixo, que existe pra outra coisa (pipeline sem frame nenhum).
+                    time.sleep(0.05)
+                    continue
             if time.time() >= limite:
                 log.warning("frame_ao_vivo cam=%s: desistiu (idade do ultimo frame=%.1fs, "
                             "limpo=%s, anotado=%s)", camera_id, idade,
                             estado.obter_frame_camera_limpo(camera_id) is not None,
                             estado.obter_frame_camera(camera_id) is not None)
                 return None
-            time.sleep(0.2)
+            time.sleep(0.05 if pinst else 0.2)
 
     return _obter
 
 
+# Limites do endpoint reativo — ele é PÚBLICO por design (rede interna do sidecar Java,
+# ver app/servidor.py), então isto não é controle de acesso, é só um freio contra
+# varredura/abuso (cnpj/automacao/bico errados de propósito, tentando descobrir cadastro
+# válido). Generoso o bastante para não incomodar tráfego real: um posto reabastece bem
+# menos que isso por minuto, mesmo com retries do roteador.
+_LIMITE_LEITURA_IP_MIN = 60
+_LIMITE_LEITURA_CNPJ_MIN = 30
+
+
 @router.get("/leitura")
 def leitura_reativa(
+    request: Request,
     entidade: str = Query(...),
     cnpj: str = Query(...),
     automacao: str = Query(...),
@@ -94,6 +131,14 @@ def leitura_reativa(
         except Exception as e:
             log.warning("Falha ao registrar chamada: %s", e)
 
+    ip = request.client.host if request.client else "?"
+    if not limitador.permitido("leitura_ip", ip, _LIMITE_LEITURA_IP_MIN, 60):
+        _registrar("erro_cadastro", "rate limit por IP excedido")
+        raise HTTPException(429, "Muitas requisições — tente novamente em instantes.")
+    if not limitador.permitido("leitura_cnpj", cnpj_norm, _LIMITE_LEITURA_CNPJ_MIN, 60):
+        _registrar("erro_cadastro", "rate limit por CNPJ excedido")
+        raise HTTPException(429, "Muitas requisições para este CNPJ — tente novamente em instantes.")
+
     reg, motivo = banco.resolver_bico(cnpj_norm, automacao, bico)
     if reg is None:
         # "_inativa"/"_inativo": o cadastro existe mas foi desativado — mensagem
@@ -111,6 +156,21 @@ def leitura_reativa(
             f"(cnpj={cnpj_norm} automacao={automacao} bico={bico})",
         )
     base.update(bico_id=reg["bico_id"], empresa_id=reg["empresa_id"])
+
+    # Chave própria do cliente (opt-in): só exige quando a empresa TEM uma api_key
+    # cadastrada (app/core/banco.py:empresas_gerar_api_key) — postos sem chave própria
+    # continuam públicos como sempre. 404 (não 401/403) para não revelar, a quem não
+    # tem a chave, que o cadastro existe e só falta autenticação.
+    chave_empresa = reg.get("empresa_api_key") or ""
+    if chave_empresa:
+        enviada = request.headers.get("X-API-Key", "") or request.query_params.get("api_key", "")
+        if enviada != chave_empresa:
+            _registrar("erro_cadastro", "api_key do posto ausente ou incorreta")
+            raise HTTPException(
+                404,
+                f"Cadastro não encontrado no nível 'empresa' "
+                f"(cnpj={cnpj_norm} automacao={automacao} bico={bico})",
+            )
 
     ent = banco.entidades_obter(reg["entidade_id"])
     if ent and ent["nome"].strip().lower() != entidade.strip().lower():

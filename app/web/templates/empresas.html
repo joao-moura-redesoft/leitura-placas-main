@@ -49,7 +49,41 @@
   </div>
 </div>
 
-<style>#modal-overlay.aberto { display: flex !important; }</style>
+<!-- Modal API/LGPD: chave própria (opt-in) do /api/leitura + prazo de retenção do posto -->
+<div id="modal-seg-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(2px);z-index:100;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:12px;padding:28px;width:460px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+    <h2 id="seg-titulo" style="margin-top:0">API / LGPD</h2>
+
+    <h3 style="margin-bottom:6px">Chave de API própria</h3>
+    <p style="color:#64748b;font-size:13px;margin:0 0 10px">
+      Vazia = <code style="background:#f1f5f9;padding:2px 5px;border-radius:4px">/api/leitura</code>
+      continua público para este posto (padrão). Preenchida = o roteador deste cliente
+      passa a precisar mandar <code style="background:#f1f5f9;padding:2px 5px;border-radius:4px">X-API-Key</code>
+      (ou <code style="background:#f1f5f9;padding:2px 5px;border-radius:4px">?api_key=</code>) em toda chamada.
+    </p>
+    <div id="seg-chave-atual" style="margin-bottom:10px"></div>
+    <div style="display:flex;gap:10px;margin-bottom:20px">
+      <button type="button" onclick="gerarApiKey()" style="background:#16a34a">Gerar / substituir chave</button>
+      <button type="button" onclick="revogarApiKey()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Revogar (voltar a público)</button>
+    </div>
+
+    <h3 style="margin-bottom:6px">Retenção de dados (LGPD)</h3>
+    <p style="color:#64748b;font-size:13px;margin:0 0 10px">
+      Vazio = usa o prazo padrão do sistema (config. Configuração → <code style="background:#f1f5f9;padding:2px 5px;border-radius:4px">retencao_dias</code>).
+      Preenchido = detecções e chamadas deste posto são apagadas depois desse número de dias, independente do padrão.
+    </p>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+      <input id="seg-retencao" type="number" min="0" step="1" placeholder="padrão do sistema" style="width:140px">
+      dias
+    </label>
+    <div style="display:flex;gap:10px">
+      <button type="button" onclick="salvarRetencao()" style="background:#16a34a">Salvar prazo</button>
+      <button type="button" onclick="fecharModalSeguranca()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<style>#modal-overlay.aberto, #modal-seg-overlay.aberto { display: flex !important; }</style>
 {% endblock %}
 
 {% block scripts %}
@@ -109,6 +143,7 @@ function renderTabela() {
         <a href="/cameras?empresa_id=${it.id}" style="display:inline-flex;align-items:center;padding:8px 12px;
            border-radius:7px;background:#0f172a;color:#fff;font-size:14px;font-weight:500;
            text-decoration:none;margin-right:4px">Câmeras</a>
+        <button onclick="abrirModalSeguranca(${it.id})" style="background:#0f172a;margin-right:4px">API/LGPD</button>
         <button onclick="editar(${it.id})" style="background:#16a34a;margin-right:4px">Editar</button>
         <button onclick="remover(${it.id})" style="background:#dc2626">Remover</button>
       </td>
@@ -155,6 +190,57 @@ async function remover(id) {
   const res = await fetch(`/api/empresas/${id}`, { method: 'DELETE' });
   if (res.ok) await carregar();
   else await avisarResposta(res);
+}
+
+let _segEmpresaId = null;
+
+function abrirModalSeguranca(id) {
+  const it = _itens.find(x => x.id === id);
+  if (!it) return;
+  _segEmpresaId = id;
+  document.getElementById('seg-titulo').textContent = `API / LGPD — ${it.nome}`;
+  renderChaveAtual(it.api_key || '');
+  document.getElementById('seg-retencao').value = it.retencao_dias_override ?? '';
+  document.getElementById('modal-seg-overlay').classList.add('aberto');
+}
+
+function fecharModalSeguranca() { document.getElementById('modal-seg-overlay').classList.remove('aberto'); }
+
+function renderChaveAtual(chave) {
+  const el = document.getElementById('seg-chave-atual');
+  el.innerHTML = chave
+    ? `<span class="badge badge-ok">Chave ativa</span> <code style="font-size:12px;word-break:break-all">${esc(chave)}</code>`
+    : '<span class="badge badge-antigo">Sem chave — endpoint público para este posto</span>';
+}
+
+async function gerarApiKey() {
+  const res = await fetch(`/api/empresas/${_segEmpresaId}/api-key`, { method: 'POST' });
+  if (!res.ok) return avisarResposta(res);
+  const d = await res.json();
+  renderChaveAtual(d.api_key);
+  const it = _itens.find(x => x.id === _segEmpresaId);
+  if (it) it.api_key = d.api_key;
+  avisar('Chave gerada — copie agora e repasse ao responsável pelo roteador deste posto. Ela não será mostrada de novo aqui.', 'ok');
+}
+
+async function revogarApiKey() {
+  const res = await fetch(`/api/empresas/${_segEmpresaId}/api-key`, { method: 'DELETE' });
+  if (!res.ok) return avisarResposta(res);
+  renderChaveAtual('');
+  const it = _itens.find(x => x.id === _segEmpresaId);
+  if (it) it.api_key = '';
+  avisar('Chave revogada — o endpoint voltou a ser público para este posto.', 'ok');
+}
+
+async function salvarRetencao() {
+  const raw = document.getElementById('seg-retencao').value;
+  const dias = raw === '' ? null : parseInt(raw);
+  const res = await fetch(`/api/empresas/${_segEmpresaId}/retencao`, {
+    method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ dias }) });
+  if (!res.ok) return avisarResposta(res);
+  const it = _itens.find(x => x.id === _segEmpresaId);
+  if (it) it.retencao_dias_override = dias;
+  avisar('Prazo de retenção salvo.', 'ok');
 }
 
 (async () => {

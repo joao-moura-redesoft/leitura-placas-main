@@ -1,18 +1,23 @@
 """CRUD administrativo do cadastro multi-tenant: entidades/empresas/automacoes/bicos.
 
-Painel único da equipe RedSoft (sem login por cliente) — cadastro 100% manual, sem
-replicação. Mesmo padrão de validação/erros já usado no CRUD de câmeras (app/web/api.py).
+Cadastro estrutural 100% manual da equipe RedSoft, sem replicação — criar/editar/apagar
+entidade/posto/automação/bico/ROI continua admin-only (`Depends(deps.exigir_admin)` em
+cada rota de escrita). O que MUDOU: usuários 'cliente' (app/web/usuarios.py), restritos a
+UM posto, agora também acessam este router em modo leitura — as rotas de listagem/detalhe
+filtram por `deps.empresa_do_usuario`/`deps.checar_acesso_empresa` para cada um só ver o
+próprio posto. Mesmo padrão de validação/erros já usado no CRUD de câmeras (app/web/api.py).
 """
 from __future__ import annotations
 import json
 import re
 import sqlite3
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core import banco
 from app.core import config
 from app.visao import leitura
+from app.web import deps
 from app.web import leitura as leitura_rotas
 
 router = APIRouter(prefix="/api")
@@ -50,12 +55,15 @@ def _integridade(e: sqlite3.IntegrityError, conflito: str) -> HTTPException:
 # montam a visão inteira de uma vez para a tela não precisar cruzar 5 listagens.
 
 @router.get("/postos")
-def postos_listar():
+def postos_listar(request: Request):
     entidades = {e["id"]: e for e in banco.entidades_listar()}
     automacoes = banco.automacoes_listar()
     bicos = banco.bicos_listar()
+    escopo = deps.empresa_do_usuario(request)
     saida = []
     for emp in banco.empresas_listar():
+        if escopo is not None and emp["id"] != escopo:
+            continue
         autos = [a for a in automacoes if a["empresa_id"] == emp["id"]]
         ids = {a["id"] for a in autos}
         meus_bicos = [b for b in bicos if b["automacao_id"] in ids]
@@ -76,7 +84,8 @@ def postos_listar():
 
 
 @router.get("/postos/{empresa_id}")
-def posto_detalhe(empresa_id: int):
+def posto_detalhe(empresa_id: int, request: Request):
+    deps.checar_acesso_empresa(request, empresa_id)
     emp = banco.empresas_obter(empresa_id)
     if not emp:
         raise HTTPException(404, "Posto não encontrado")
@@ -108,11 +117,19 @@ def posto_detalhe(empresa_id: int):
 # ─── Entidades ───────────────────────────────────────────────────────────────
 
 @router.get("/entidades")
-def entidades_listar():
-    return banco.entidades_listar()
+def entidades_listar(request: Request):
+    escopo = deps.empresa_do_usuario(request)
+    if escopo is None:
+        return banco.entidades_listar()
+    # Cliente só enxerga a rede (entidade) dona do próprio posto.
+    emp = banco.empresas_obter(escopo)
+    if not emp:
+        return []
+    ent = banco.entidades_obter(emp["entidade_id"])
+    return [ent] if ent else []
 
 
-@router.post("/entidades")
+@router.post("/entidades", dependencies=[Depends(deps.exigir_admin)])
 def entidades_inserir(payload: dict):
     nome = (payload.get("nome") or "").strip()
     if not nome:
@@ -120,7 +137,7 @@ def entidades_inserir(payload: dict):
     return {"id": banco.entidades_inserir({**payload, "nome": nome})}
 
 
-@router.put("/entidades/{id_}")
+@router.put("/entidades/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def entidades_atualizar(id_: int, payload: dict):
     nome = (payload.get("nome") or "").strip()
     if not nome:
@@ -130,7 +147,7 @@ def entidades_atualizar(id_: int, payload: dict):
     return {"atualizado": True}
 
 
-@router.delete("/entidades/{id_}")
+@router.delete("/entidades/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def entidades_remover(id_: int):
     if not banco.entidades_remover(id_):
         raise HTTPException(404, "Entidade não encontrada")
@@ -140,11 +157,62 @@ def entidades_remover(id_: int):
 # ─── Empresas (CNPJ = 1 posto físico) ───────────────────────────────────────
 
 @router.get("/empresas")
-def empresas_listar(entidade_id: int | None = None):
-    return banco.empresas_listar(entidade_id=entidade_id)
+def empresas_listar(request: Request, entidade_id: int | None = None):
+    escopo = deps.empresa_do_usuario(request)
+    if escopo is None:
+        return banco.empresas_listar(entidade_id=entidade_id)
+    emp = banco.empresas_obter(escopo)
+    if not emp or (entidade_id is not None and emp["entidade_id"] != entidade_id):
+        return []
+    return [emp]
 
 
-@router.post("/empresas")
+@router.get("/empresas/{id_}")
+def empresas_obter(id_: int, request: Request):
+    deps.checar_acesso_empresa(request, id_)
+    emp = banco.empresas_obter(id_)
+    if not emp:
+        raise HTTPException(404, "Empresa não encontrada")
+    return emp
+
+
+@router.post("/empresas/{id_}/api-key", dependencies=[Depends(deps.exigir_admin)])
+def empresas_gerar_api_key(id_: int):
+    """Gera (ou substitui) a api_key própria deste posto — opt-in: a partir daqui
+    `/api/leitura` passa a exigir essa chave nas chamadas com este CNPJ. Ver
+    app/web/leitura.py:leitura_reativa."""
+    chave = banco.empresas_gerar_api_key(id_)
+    if chave is None:
+        raise HTTPException(404, "Empresa não encontrada")
+    return {"api_key": chave}
+
+
+@router.delete("/empresas/{id_}/api-key", dependencies=[Depends(deps.exigir_admin)])
+def empresas_revogar_api_key(id_: int):
+    """Volta o posto ao padrão público (sem chave própria)."""
+    if not banco.empresas_revogar_api_key(id_):
+        raise HTTPException(404, "Empresa não encontrada")
+    return {"revogado": True}
+
+
+@router.put("/empresas/{id_}/retencao", dependencies=[Depends(deps.exigir_admin)])
+def empresas_definir_retencao(id_: int, payload: dict):
+    """Prazo de retenção próprio (LGPD por cliente) — `dias=null`/ausente volta a usar
+    o `retencao_dias` global. Ver app/operacao/retencao.py."""
+    dias = payload.get("dias")
+    if dias is not None:
+        try:
+            dias = int(dias)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "dias deve ser um número inteiro (ou null)")
+        if dias < 0:
+            raise HTTPException(400, "dias não pode ser negativo")
+    if not banco.empresas_definir_retencao(id_, dias):
+        raise HTTPException(404, "Empresa não encontrada")
+    return {"retencao_dias_override": dias}
+
+
+@router.post("/empresas", dependencies=[Depends(deps.exigir_admin)])
 def empresas_inserir(payload: dict):
     nome = (payload.get("nome") or "").strip()
     cnpj = _normalizar_cnpj(payload.get("cnpj", ""))
@@ -161,7 +229,7 @@ def empresas_inserir(payload: dict):
     return {"id": id_}
 
 
-@router.put("/empresas/{id_}")
+@router.put("/empresas/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def empresas_atualizar(id_: int, payload: dict):
     nome = (payload.get("nome") or "").strip()
     cnpj = _normalizar_cnpj(payload.get("cnpj", ""))
@@ -180,7 +248,7 @@ def empresas_atualizar(id_: int, payload: dict):
     return {"atualizado": True}
 
 
-@router.delete("/empresas/{id_}")
+@router.delete("/empresas/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def empresas_remover(id_: int):
     if not banco.empresas_remover(id_):
         raise HTTPException(404, "Empresa não encontrada")
@@ -190,11 +258,16 @@ def empresas_remover(id_: int):
 # ─── Automações (até 2 por posto) ───────────────────────────────────────────
 
 @router.get("/automacoes")
-def automacoes_listar(empresa_id: int | None = None):
+def automacoes_listar(request: Request, empresa_id: int | None = None):
+    escopo = deps.empresa_do_usuario(request)
+    if escopo is not None:
+        if empresa_id is not None and empresa_id != escopo:
+            return []
+        empresa_id = escopo
     return banco.automacoes_listar(empresa_id=empresa_id)
 
 
-@router.post("/automacoes")
+@router.post("/automacoes", dependencies=[Depends(deps.exigir_admin)])
 def automacoes_inserir(payload: dict):
     codigo = (payload.get("codigo") or "").strip()
     if not codigo:
@@ -208,7 +281,7 @@ def automacoes_inserir(payload: dict):
     return {"id": id_}
 
 
-@router.put("/automacoes/{id_}")
+@router.put("/automacoes/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def automacoes_atualizar(id_: int, payload: dict):
     codigo = (payload.get("codigo") or "").strip()
     if not codigo:
@@ -224,7 +297,7 @@ def automacoes_atualizar(id_: int, payload: dict):
     return {"atualizado": True}
 
 
-@router.delete("/automacoes/{id_}")
+@router.delete("/automacoes/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def automacoes_remover(id_: int):
     if not banco.automacoes_remover(id_):
         raise HTTPException(404, "Automação não encontrada")
@@ -233,16 +306,26 @@ def automacoes_remover(id_: int):
 
 # ─── Bicos ───────────────────────────────────────────────────────────────────
 
+def _empresa_do_bico(bico: dict) -> int | None:
+    automacao = banco.automacoes_obter(bico["automacao_id"])
+    return automacao["empresa_id"] if automacao else None
+
+
 @router.get("/bicos")
-def bicos_listar(automacao_id: int | None = None, camera_id: int | None = None):
-    return banco.bicos_listar(automacao_id=automacao_id, camera_id=camera_id)
+def bicos_listar(request: Request, automacao_id: int | None = None, camera_id: int | None = None):
+    bicos = banco.bicos_listar(automacao_id=automacao_id, camera_id=camera_id)
+    escopo = deps.empresa_do_usuario(request)
+    if escopo is None:
+        return bicos
+    return [b for b in bicos if _empresa_do_bico(b) == escopo]
 
 
 @router.get("/bicos/{id_}")
-def bicos_obter(id_: int):
+def bicos_obter(id_: int, request: Request):
     bico = banco.bicos_obter(id_)
     if not bico:
         raise HTTPException(404, "Bico não encontrado")
+    deps.checar_acesso_empresa(request, _empresa_do_bico(bico))
     return bico
 
 
@@ -273,7 +356,7 @@ def _validar_bico(payload: dict) -> None:
         )
 
 
-@router.post("/bicos")
+@router.post("/bicos", dependencies=[Depends(deps.exigir_admin)])
 def bicos_inserir(payload: dict):
     codigo = (payload.get("codigo") or "").strip()
     if not codigo:
@@ -286,7 +369,7 @@ def bicos_inserir(payload: dict):
     return {"id": id_}
 
 
-@router.put("/bicos/{id_}")
+@router.put("/bicos/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def bicos_atualizar(id_: int, payload: dict):
     codigo = (payload.get("codigo") or "").strip()
     if not codigo:
@@ -301,14 +384,14 @@ def bicos_atualizar(id_: int, payload: dict):
     return {"atualizado": True}
 
 
-@router.delete("/bicos/{id_}")
+@router.delete("/bicos/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def bicos_remover(id_: int):
     if not banco.bicos_remover(id_):
         raise HTTPException(404, "Bico não encontrado")
     return {"removido": True}
 
 
-@router.put("/bicos/{id_}/roi")
+@router.put("/bicos/{id_}/roi", dependencies=[Depends(deps.exigir_admin)])
 def bicos_salvar_roi(id_: int, payload: dict):
     """Salva a área de captura (ROI) do bico. Bicos que compartilham câmera mantêm ROIs
     independentes — a leitura reativa recorta pela área do bico chamado no GET.
@@ -325,7 +408,7 @@ def bicos_salvar_roi(id_: int, payload: dict):
     return {"salvo": True}
 
 
-@router.delete("/bicos/{id_}/roi")
+@router.delete("/bicos/{id_}/roi", dependencies=[Depends(deps.exigir_admin)])
 def bicos_limpar_roi(id_: int):
     """Remove a área de captura — leitura reativa desse bico volta a usar o frame completo."""
     if not banco.bicos_obter(id_):
@@ -335,9 +418,11 @@ def bicos_limpar_roi(id_: int):
 
 
 @router.post("/bicos/{id_}/ler-placa-teste")
-def bicos_ler_placa_teste(id_: int):
+def bicos_ler_placa_teste(id_: int, request: Request):
     """Testa a leitura de um bico direto (sem montar a URL completa de
-    entidade+cnpj+automacao+bico) — usado pelo editor de ROI pra validar a área recém-desenhada.
+    entidade+cnpj+automacao+bico) — usado pelo editor de ROI (admin) e pela tela do
+    posto (também liberado a 'cliente', escopado ao próprio posto — é diagnóstico
+    read-only, não mexe em cadastro).
 
     Passa pelo mesmo gate de `ativo` (entidade/empresa/automação/bico/câmera) que a
     leitura reativa de verdade — senão o botão de teste do painel responde mesmo para
@@ -349,6 +434,7 @@ def bicos_ler_placa_teste(id_: int):
             raise HTTPException(404, "Bico não encontrado")
         nivel = motivo.rsplit("_", 1)[0]
         raise HTTPException(409, f"Nível '{nivel}' está desativado no cadastro")
+    deps.checar_acesso_empresa(request, _empresa_do_bico(bico))
     cam = banco.cameras_obter(bico["camera_id"])
     if not cam:
         raise HTTPException(404, "Câmera do bico não encontrada")

@@ -90,6 +90,22 @@ def _migrar(c: sqlite3.Connection) -> None:
     if "local" not in cols:
         c.execute("ALTER TABLE cameras ADD COLUMN local TEXT NOT NULL DEFAULT ''")
 
+    # Chave de API própria por cliente (opt-in): vazia = /api/leitura continua público
+    # para esse posto (comportamento de sempre); preenchida = passa a exigir a chave
+    # nas chamadas daquele CNPJ. Não é obrigatório para ninguém só por existir a coluna.
+    cols_emp = {row[1] for row in c.execute("PRAGMA table_info(empresas)").fetchall()}
+    if "api_key" not in cols_emp:
+        c.execute("ALTER TABLE empresas ADD COLUMN api_key TEXT NOT NULL DEFAULT ''")
+    # Prazo de retenção próprio (LGPD por cliente): NULL = usa o `retencao_dias` global.
+    if "retencao_dias_override" not in cols_emp:
+        c.execute("ALTER TABLE empresas ADD COLUMN retencao_dias_override INTEGER")
+
+    # Usuário do painel restrito a UMA empresa ("cliente"): NULL = admin, vê tudo (papel
+    # continua sendo o que manda — isto só faz sentido quando papel='cliente').
+    cols_usr = {row[1] for row in c.execute("PRAGMA table_info(usuarios)").fetchall()}
+    if "empresa_id" not in cols_usr:
+        c.execute("ALTER TABLE usuarios ADD COLUMN empresa_id INTEGER REFERENCES empresas(id) ON DELETE SET NULL")
+
     cols_det = {row[1] for row in c.execute("PRAGMA table_info(deteccoes)").fetchall()}
     if "bico_id" not in cols_det:
         c.execute("ALTER TABLE deteccoes ADD COLUMN bico_id INTEGER")
@@ -370,24 +386,90 @@ def remover_deteccao(id_: int) -> bool:
         return cur.rowcount > 0
 
 
+def _corte(dias: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+
+
+# JOIN que resolve a empresa "dona" de uma detecção: pelo bico (leitura reativa/teste)
+# ou, faltando isso, pela câmera (detecção do modo contínuo, que não tem bico_id).
+_JOIN_EMPRESA_DETECCAO = """
+    LEFT JOIN bicos b       ON d.bico_id = b.id
+    LEFT JOIN automacoes au ON b.automacao_id = au.id
+    LEFT JOIN cameras cam   ON d.camera_db_id = cam.id
+"""
+_EMPRESA_DETECCAO = "COALESCE(au.empresa_id, cam.empresa_id)"
+
+
 def deteccoes_e_chamadas_antigas(dias: int) -> dict:
-    """Apaga `deteccoes`/`chamadas` com mais de `dias` dias e devolve os caminhos
-    relativos dos JPEGs (snapshot + frame) que ficaram órfãos.
+    """Apaga `deteccoes`/`chamadas` antigas e devolve os caminhos relativos dos JPEGs
+    (snapshot + frame) que ficaram órfãos.
+
+    `dias` é o prazo PADRÃO. Empresas com `retencao_dias_override` preenchido (LGPD por
+    cliente — ver `empresas_definir_retencao`) usam o prazo próprio em vez do padrão;
+    as demais (override NULL) caem no padrão, exatamente como antes deste mecanismo.
 
     Só mexe no banco — apagar os arquivos em disco é responsabilidade de quem chama
     (app/operacao/retencao.py), pra esta camada não fazer I/O de arquivo. Sem alguma
     rotina de retenção, `deteccoes`/`chamadas` e os JPEGs em app/web/static/snapshots/
     crescem para sempre num servidor multi-tenant de longa duração.
     """
-    corte = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    arquivos: list[str] = []
+    n_det = n_cham = 0
     with cursor() as c:
-        arquivos = [r[0] for r in c.execute(
-            "SELECT snapshot FROM deteccoes WHERE criado_em < ? AND snapshot IS NOT NULL "
-            "UNION SELECT frame FROM deteccoes WHERE criado_em < ? AND frame IS NOT NULL",
-            (corte, corte),
-        ).fetchall()]
-        n_det = c.execute("DELETE FROM deteccoes WHERE criado_em < ?", (corte,)).rowcount
-        n_cham = c.execute("DELETE FROM chamadas WHERE criado_em < ?", (corte,)).rowcount
+        overrides = {r["id"]: r["retencao_dias_override"] for r in c.execute(
+            "SELECT id, retencao_dias_override FROM empresas "
+            "WHERE retencao_dias_override IS NOT NULL"
+        ).fetchall()}
+
+        # 1) Empresas com prazo próprio — uma passada por empresa (lista tipicamente
+        # pequena: só quem pediu prazo diferente do padrão).
+        for emp_id, dias_emp in overrides.items():
+            corte_emp = _corte(dias_emp)
+            linhas = c.execute(
+                f"SELECT d.snapshot, d.frame FROM deteccoes d {_JOIN_EMPRESA_DETECCAO} "
+                f"WHERE d.criado_em < ? AND {_EMPRESA_DETECCAO} = ?",
+                (corte_emp, emp_id),
+            ).fetchall()
+            arquivos += [r["snapshot"] for r in linhas if r["snapshot"]]
+            arquivos += [r["frame"] for r in linhas if r["frame"]]
+            n_det += c.execute(
+                f"DELETE FROM deteccoes WHERE id IN ("
+                f"  SELECT d.id FROM deteccoes d {_JOIN_EMPRESA_DETECCAO} "
+                f"  WHERE d.criado_em < ? AND {_EMPRESA_DETECCAO} = ?)",
+                (corte_emp, emp_id),
+            ).rowcount
+            n_cham += c.execute(
+                "DELETE FROM chamadas WHERE criado_em < ? AND empresa_id = ?",
+                (corte_emp, emp_id),
+            ).rowcount
+
+        # 2) Todo o resto (sem override, inclusive detecções sem empresa resolvida —
+        # ex.: leituras antigas pré-multi-tenant) usa o prazo padrão. `dias <= 0` =
+        # padrão global desativado ("nunca apaga") — mas os overrides do passo 1 já
+        # rodaram, então um prazo específico por cliente continua valendo mesmo com o
+        # padrão global desligado.
+        if dias > 0:
+            corte_padrao = _corte(dias)
+            ids_override = tuple(overrides) or (-1,)
+            marcadores = ",".join("?" * len(ids_override))
+            linhas = c.execute(
+                f"SELECT d.snapshot, d.frame FROM deteccoes d {_JOIN_EMPRESA_DETECCAO} "
+                f"WHERE d.criado_em < ? AND COALESCE({_EMPRESA_DETECCAO}, -1) NOT IN ({marcadores})",
+                (corte_padrao, *ids_override),
+            ).fetchall()
+            arquivos += [r["snapshot"] for r in linhas if r["snapshot"]]
+            arquivos += [r["frame"] for r in linhas if r["frame"]]
+            n_det += c.execute(
+                f"DELETE FROM deteccoes WHERE id IN ("
+                f"  SELECT d.id FROM deteccoes d {_JOIN_EMPRESA_DETECCAO} "
+                f"  WHERE d.criado_em < ? AND COALESCE({_EMPRESA_DETECCAO}, -1) NOT IN ({marcadores}))",
+                (corte_padrao, *ids_override),
+            ).rowcount
+            n_cham += c.execute(
+                f"DELETE FROM chamadas WHERE criado_em < ? AND COALESCE(empresa_id, -1) NOT IN ({marcadores})",
+                (corte_padrao, *ids_override),
+            ).rowcount
+
     return {"arquivos": arquivos, "deteccoes_removidas": n_det, "chamadas_removidas": n_cham}
 
 
@@ -575,6 +657,11 @@ def _apagar_empresas(c: sqlite3.Connection, where_sql: str, params: tuple) -> No
     explicitamente, o RESTRICT continua protegendo a exclusão avulsa de câmera.
     """
     emp = f"SELECT id FROM empresas WHERE {where_sql}"
+    # Usuários 'cliente' deste posto ficam órfãos (empresa_id vira NULL por ON DELETE
+    # SET NULL) — desativa explicitamente em vez de deixá-los soltos: um usuário
+    # 'cliente' sem empresa_id não deve continuar logando (ver deps.py:empresa_do_usuario,
+    # que trata esse caso como "não vê nada", mas aqui evitamos até chegar nesse caso).
+    c.execute(f"UPDATE usuarios SET ativo=0 WHERE papel='cliente' AND empresa_id IN ({emp})", params)
     c.execute(f"DELETE FROM bicos WHERE automacao_id IN "
               f"(SELECT id FROM automacoes WHERE empresa_id IN ({emp}))", params)
     c.execute(f"DELETE FROM automacoes WHERE empresa_id IN ({emp})", params)
@@ -623,12 +710,41 @@ def empresas_inserir(dados: dict) -> int:
 
 
 def empresas_atualizar(id_: int, dados: dict) -> bool:
+    # `api_key` e `retencao_dias_override` são geridos por endpoints próprios
+    # (gerar/revogar chave, definir prazo) — este UPDATE nunca mexe neles, senão um
+    # PUT comum de nome/CNPJ apagaria a chave/prazo sem intenção.
     with cursor() as c:
         cur = c.execute(
             "UPDATE empresas SET entidade_id=?, cnpj=?, nome=?, ativo=? WHERE id=?",
             (int(dados["entidade_id"]), dados["cnpj"], dados["nome"],
              1 if dados.get("ativo", True) else 0, id_),
         )
+        return cur.rowcount > 0
+
+
+def empresas_gerar_api_key(id_: int) -> str | None:
+    """Gera (ou substitui) a api_key própria da empresa — opt-in: só quando ligada
+    aqui essa empresa passa a exigir `X-API-Key`/`?api_key=` em `/api/leitura`."""
+    import secrets
+    chave = secrets.token_urlsafe(32)
+    with cursor() as c:
+        cur = c.execute("UPDATE empresas SET api_key=? WHERE id=?", (chave, id_))
+        if cur.rowcount == 0:
+            return None
+    return chave
+
+
+def empresas_revogar_api_key(id_: int) -> bool:
+    """Volta a empresa para o padrão público (sem chave própria)."""
+    with cursor() as c:
+        cur = c.execute("UPDATE empresas SET api_key='' WHERE id=?", (id_,))
+        return cur.rowcount > 0
+
+
+def empresas_definir_retencao(id_: int, dias: int | None) -> bool:
+    """`dias=None` volta a empresa a usar o `retencao_dias` global."""
+    with cursor() as c:
+        cur = c.execute("UPDATE empresas SET retencao_dias_override=? WHERE id=?", (dias, id_))
         return cur.rowcount > 0
 
 
@@ -834,6 +950,9 @@ def resolver_bico(cnpj: str, automacao_codigo: str, bico_codigo: str) -> tuple[d
         "automacao_id": automacao["id"],
         "empresa_id": empresa["id"],
         "entidade_id": empresa["entidade_id"],
+        # Chave própria do cliente (opt-in) — vazia = /api/leitura continua público
+        # para este posto. Ver app/web/leitura.py:leitura_reativa.
+        "empresa_api_key": empresa["api_key"],
     }
     return reg, None
 
@@ -910,32 +1029,39 @@ def chamadas_listar(limit: int = 50, empresa_id: int | None = None,
         return [dict(r) for r in c.execute(sql, params).fetchall()]
 
 
-def chamadas_resumo(horas: int = 24) -> dict:
-    """Agregados da integração para o dashboard: volume, taxa de acerto, onde está falhando."""
+def chamadas_resumo(horas: int = 24, empresa_id: int | None = None) -> dict:
+    """Agregados da integração para o dashboard: volume, taxa de acerto, onde está falhando.
+
+    `empresa_id`: escopa tudo a um único posto — usado quando quem pede é um usuário
+    'cliente' (app/web/deps.py:empresa_do_usuario), que só pode ver o próprio posto.
+    """
     desde = f"-{int(horas)} hours"
+    filtro_emp = " AND empresa_id = ?" if empresa_id is not None else ""
+    params_emp: tuple = (empresa_id,) if empresa_id is not None else ()
     with cursor() as c:
         por_status = {r["status"]: r["n"] for r in c.execute(
-            "SELECT status, COUNT(*) n FROM chamadas WHERE criado_em >= datetime('now', ?) "
-            "GROUP BY status", (desde,))}
+            f"SELECT status, COUNT(*) n FROM chamadas WHERE criado_em >= datetime('now', ?){filtro_emp} "
+            "GROUP BY status", (desde, *params_emp))}
         total = sum(por_status.values())
         acordo = c.execute(
-            "SELECT AVG(acordo) a FROM chamadas WHERE status='ok' AND acordo IS NOT NULL "
-            "AND criado_em >= datetime('now', ?)", (desde,)).fetchone()["a"]
+            f"SELECT AVG(acordo) a FROM chamadas WHERE status='ok' AND acordo IS NOT NULL "
+            f"AND criado_em >= datetime('now', ?){filtro_emp}", (desde, *params_emp)).fetchone()["a"]
         duracao = c.execute(
-            "SELECT AVG(duracao_ms) d FROM chamadas WHERE duracao_ms IS NOT NULL "
-            "AND criado_em >= datetime('now', ?)", (desde,)).fetchone()["d"]
+            f"SELECT AVG(duracao_ms) d FROM chamadas WHERE duracao_ms IS NOT NULL "
+            f"AND criado_em >= datetime('now', ?){filtro_emp}", (desde, *params_emp)).fetchone()["d"]
+        filtro_emp_ch = " AND ch.empresa_id = ?" if empresa_id is not None else ""
         por_posto = [dict(r) for r in c.execute(
             "SELECT COALESCE(em.nome, ch.cnpj) AS posto, "
             "  SUM(CASE WHEN ch.status='ok' THEN 1 ELSE 0 END) AS ok, "
             "  COUNT(*) AS total "
             "FROM chamadas ch LEFT JOIN empresas em ON ch.empresa_id = em.id "
-            "WHERE ch.criado_em >= datetime('now', ?) "
-            "GROUP BY posto ORDER BY total DESC LIMIT 10", (desde,))]
+            f"WHERE ch.criado_em >= datetime('now', ?){filtro_emp_ch} "
+            "GROUP BY posto ORDER BY total DESC LIMIT 10", (desde, *params_emp))]
         # Onde o cadastro está divergindo do que o roteador envia
         motivos = [dict(r) for r in c.execute(
-            "SELECT motivo, COUNT(*) n FROM chamadas "
-            "WHERE status IN ('erro_cadastro','erro_camera') AND criado_em >= datetime('now', ?) "
-            "GROUP BY motivo ORDER BY n DESC LIMIT 8", (desde,))]
+            f"SELECT motivo, COUNT(*) n FROM chamadas "
+            f"WHERE status IN ('erro_cadastro','erro_camera') AND criado_em >= datetime('now', ?){filtro_emp} "
+            "GROUP BY motivo ORDER BY n DESC LIMIT 8", (desde, *params_emp))]
     ok = por_status.get("ok", 0)
     return {
         "horas": horas,
@@ -959,12 +1085,18 @@ def contar_usuarios() -> int:
         return c.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0]
 
 
-def criar_usuario(nome: str, email: str, senha_hash: str, papel: str = "admin", ativo: int = 1) -> int | None:
+def criar_usuario(nome: str, email: str, senha_hash: str, papel: str = "admin",
+                   ativo: int = 1, empresa_id: int | None = None) -> int | None:
+    """`papel='cliente'` exige `empresa_id` — é o que restringe esse usuário a só ver os
+    dados do próprio posto (ver app/web/deps.py:empresa_do_usuario). `papel='admin'`
+    ignora `empresa_id` (mantido por compatibilidade se vier preenchido por engano)."""
     try:
         with cursor() as c:
             cur = c.execute(
-                "INSERT INTO usuarios (nome, email, senha, papel, ativo, criado_em) VALUES (?,?,?,?,?,?)",
-                (nome, email, senha_hash, papel, ativo, _agora()),
+                "INSERT INTO usuarios (nome, email, senha, papel, ativo, empresa_id, criado_em) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (nome, email, senha_hash, papel, ativo,
+                 empresa_id if papel == "cliente" else None, _agora()),
             )
             return cur.lastrowid
     except Exception:
@@ -981,3 +1113,28 @@ def buscar_usuario_id(id_: int) -> dict | None:
     with cursor() as c:
         r = c.execute("SELECT * FROM usuarios WHERE id=?", (id_,)).fetchone()
         return dict(r) if r else None
+
+
+def usuarios_listar() -> list[dict]:
+    """Usuários + nome do posto (quando `papel='cliente'`), para a tela de gestão."""
+    with cursor() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT u.id, u.nome, u.email, u.papel, u.ativo, u.empresa_id, u.criado_em, "
+            "em.nome AS empresa_nome FROM usuarios u LEFT JOIN empresas em ON u.empresa_id = em.id "
+            "ORDER BY u.papel, u.nome"
+        ).fetchall()]
+
+
+def usuarios_atualizar(id_: int, *, papel: str, empresa_id: int | None, ativo: bool) -> bool:
+    with cursor() as c:
+        cur = c.execute(
+            "UPDATE usuarios SET papel=?, empresa_id=?, ativo=? WHERE id=?",
+            (papel, empresa_id if papel == "cliente" else None, 1 if ativo else 0, id_),
+        )
+        return cur.rowcount > 0
+
+
+def usuarios_definir_senha(id_: int, senha_hash: str) -> bool:
+    with cursor() as c:
+        cur = c.execute("UPDATE usuarios SET senha=? WHERE id=?", (senha_hash, id_))
+        return cur.rowcount > 0

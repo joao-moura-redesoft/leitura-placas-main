@@ -383,11 +383,13 @@ document.addEventListener('DOMContentLoaded', () => {
   <a href="/historico">Histórico</a>
   <a href="/listas">Listas</a>
 
+  {% if not usuario or usuario.papel == 'admin' %}
   <div class="nav-menu">
     <button type="button" class="nav-menu-trigger" aria-haspopup="true" aria-expanded="false">Sistema ▾</button>
     <div class="nav-menu-itens" role="menu">
       <a href="/cameras">Todas as câmeras</a>
       <a href="/configuracao">Configuração</a>
+      <a href="/usuarios">Usuários</a>
       <a href="/testes">Testes</a>
       <a href="/documentacao">Documentação</a>
       <div class="nav-sep"></div>
@@ -400,6 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <a href="/bicos">Bicos</a>
     </div>
   </div>
+  {% endif %}
 
   <a href="/logout" class="nav-logout">Sair</a>
 </nav>

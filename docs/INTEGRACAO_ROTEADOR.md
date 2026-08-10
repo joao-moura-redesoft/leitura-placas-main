@@ -122,10 +122,17 @@ resto do fluxo do roteador exigir (não deve travar a liberação da bomba, por 
 
 ## Autenticação
 
-Nenhuma hoje — o endpoint é público, pensado para rede interna do posto. Se um dia
-precisar de autenticação, o servidor já tem suporte a chave de API: basta enviar o
-cabeçalho `X-API-Key` (ou `?api_key=...` na própria URL) com o valor configurado no
-servidor.
+Nenhuma por padrão — o endpoint é público, pensado para rede interna do posto.
+
+Cada posto pode opcionalmente ganhar uma **chave própria** (gerada em `/empresas` →
+"API/LGPD", no painel do posto): quando isso é feito, as chamadas com o CNPJ daquele
+posto passam a exigir o cabeçalho `X-API-Key` (ou `?api_key=...` na própria URL) com o
+valor gerado — postos sem chave própria continuam públicos normalmente. Confirme com
+quem administra o servidor se o posto que você está integrando tem chave configurada
+antes de simular a chamada.
+
+Há também uma api_key GLOBAL do servidor inteiro (`config.txt`), separada desta — ela
+protege o painel administrativo, não `/api/leitura`.
 
 ## Testando sem esperar um abastecimento de verdade
 

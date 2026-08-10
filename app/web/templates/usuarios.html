@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}Usuários — ALPR{% endblock %}
+{% block conteudo %}
+<h1>Usuários</h1>
+
+<div class="card" style="margin-bottom:16px">
+  <button onclick="abrirModal()">+ Novo Usuário</button>
+  <p style="margin-top:10px;color:#64748b;font-size:13px">
+    <strong>admin</strong> vê e edita tudo. <strong>cliente</strong> só vê os dados do
+    posto escolhido (postos, câmeras, histórico, integração) — sem acesso a
+    configuração do sistema nem ao cadastro de outros clientes.
+  </p>
+</div>
+
+<div class="card">
+  <div class="tabela-rolavel">
+  <table>
+    <thead>
+      <tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Posto</th><th>Status</th><th>Ações</th></tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  </div>
+  <p id="sem-itens" style="display:none;color:#94a3b8">Nenhum usuário cadastrado.</p>
+</div>
+
+<!-- Modal criar/editar -->
+<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(2px);z-index:100;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:12px;padding:28px;width:440px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+    <h2 id="modal-titulo" style="margin-top:0">Novo Usuário</h2>
+    <form id="form" onsubmit="salvar(event)">
+      <input type="hidden" id="f-id" value="">
+      <label style="display:block;margin-bottom:12px">Nome
+        <input id="f-nome" type="text" required style="width:100%;box-sizing:border-box;margin-top:4px">
+      </label>
+      <label id="grupo-email" style="display:block;margin-bottom:12px">E-mail
+        <input id="f-email" type="email" required style="width:100%;box-sizing:border-box;margin-top:4px">
+      </label>
+      <label id="grupo-senha" style="display:block;margin-bottom:12px">Senha (mín. 8 caracteres)
+        <input id="f-senha" type="password" style="width:100%;box-sizing:border-box;margin-top:4px">
+      </label>
+      <label style="display:block;margin-bottom:12px">Papel
+        <select id="f-papel" style="width:100%;box-sizing:border-box;margin-top:4px" onchange="atualizarCampoEmpresa()">
+          <option value="cliente">cliente (restrito a um posto)</option>
+          <option value="admin">admin (vê tudo)</option>
+        </select>
+      </label>
+      <label id="grupo-empresa" style="display:block;margin-bottom:12px">Posto
+        <select id="f-empresa" style="width:100%;box-sizing:border-box;margin-top:4px"></select>
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <input id="f-ativo" type="checkbox" checked style="width:auto;padding:0">
+        Ativo
+      </label>
+      <div style="display:flex;gap:10px">
+        <button type="submit" style="background:#16a34a">Salvar</button>
+        <button type="button" onclick="fecharModal()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Cancelar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Modal redefinir senha -->
+<div id="modal-senha-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(2px);z-index:100;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:12px;padding:28px;width:380px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+    <h2 style="margin-top:0">Redefinir senha</h2>
+    <form onsubmit="salvarSenha(event)">
+      <input type="hidden" id="s-id" value="">
+      <label style="display:block;margin-bottom:16px">Nova senha (mín. 8 caracteres)
+        <input id="s-senha" type="password" required style="width:100%;box-sizing:border-box;margin-top:4px">
+      </label>
+      <div style="display:flex;gap:10px">
+        <button type="submit" style="background:#16a34a">Salvar</button>
+        <button type="button" onclick="fecharModalSenha()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Cancelar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<style>#modal-overlay.aberto, #modal-senha-overlay.aberto { display: flex !important; }</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let _itens = [];
+let _empresas = [];
+let _editandoId = null;
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function carregar() {
+  const [resU, resE] = await Promise.all([fetch('/api/usuarios'), fetch('/api/empresas')]);
+  _itens = await resU.json();
+  _empresas = await resE.json();
+  preencherSelectEmpresas();
+  renderTabela();
+}
+
+function preencherSelectEmpresas() {
+  const sel = document.getElementById('f-empresa');
+  sel.innerHTML = _empresas.map(e => `<option value="${e.id}">${esc(e.nome)} (${e.cnpj})</option>`).join('');
+}
+
+function renderTabela() {
+  const tbody = document.getElementById('tbody');
+  const sem = document.getElementById('sem-itens');
+  tbody.innerHTML = '';
+  if (!_itens.length) { sem.style.display = ''; return; }
+  sem.style.display = 'none';
+  _itens.forEach(it => {
+    const status = it.ativo
+      ? '<span class="badge badge-ok">Ativo</span>'
+      : '<span class="badge badge-err">Inativo</span>';
+    const papel = it.papel === 'admin'
+      ? '<span class="badge badge-mercosul">admin</span>'
+      : '<span class="badge badge-antigo">cliente</span>';
+    tbody.innerHTML += `<tr>
+      <td>${esc(it.nome)}</td>
+      <td>${esc(it.email)}</td>
+      <td>${papel}</td>
+      <td>${it.empresa_nome ? esc(it.empresa_nome) : '—'}</td>
+      <td>${status}</td>
+      <td>
+        <button onclick="editar(${it.id})" style="background:#16a34a;margin-right:4px">Editar</button>
+        <button onclick="abrirModalSenha(${it.id})" style="background:#0f172a">Senha</button>
+      </td>
+    </tr>`;
+  });
+}
+
+function atualizarCampoEmpresa() {
+  const ehCliente = document.getElementById('f-papel').value === 'cliente';
+  document.getElementById('grupo-empresa').style.display = ehCliente ? '' : 'none';
+}
+
+function abrirModal(it = null) {
+  _editandoId = it ? it.id : null;
+  document.getElementById('modal-titulo').textContent = it ? 'Editar Usuário' : 'Novo Usuário';
+  document.getElementById('f-id').value = it ? it.id : '';
+  document.getElementById('f-nome').value = it ? it.nome : '';
+  document.getElementById('f-email').value = it ? it.email : '';
+  document.getElementById('f-senha').value = '';
+  document.getElementById('f-papel').value = it ? it.papel : 'cliente';
+  document.getElementById('f-empresa').value = it ? (it.empresa_id || '') : '';
+  document.getElementById('f-ativo').checked = it ? !!it.ativo : true;
+  // E-mail e senha só fazem sentido na criação (edição não muda e-mail nem senha aqui —
+  // senha tem modal próprio, e-mail é chave de login e não vale o risco de duplicar).
+  document.getElementById('grupo-email').style.display = it ? 'none' : '';
+  document.getElementById('grupo-senha').style.display = it ? 'none' : '';
+  document.getElementById('f-email').required = !it;
+  atualizarCampoEmpresa();
+  document.getElementById('modal-overlay').classList.add('aberto');
+}
+
+function fecharModal() { document.getElementById('modal-overlay').classList.remove('aberto'); }
+
+function editar(id) {
+  const it = _itens.find(x => x.id === id);
+  if (it) abrirModal(it);
+}
+
+async function salvar(e) {
+  e.preventDefault();
+  const papel = document.getElementById('f-papel').value;
+  const empresaId = document.getElementById('f-empresa').value;
+  if (papel === 'cliente' && !empresaId) { avisar('Escolha o posto do usuário.', 'err'); return; }
+
+  if (_editandoId) {
+    const payload = { papel, empresa_id: papel === 'cliente' ? empresaId : null,
+                      ativo: document.getElementById('f-ativo').checked };
+    const res = await fetch(`/api/usuarios/${_editandoId}`, {
+      method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    if (res.ok) { fecharModal(); await carregar(); } else await avisarResposta(res);
+    return;
+  }
+
+  const payload = {
+    nome: document.getElementById('f-nome').value.trim(),
+    email: document.getElementById('f-email').value.trim(),
+    senha: document.getElementById('f-senha').value,
+    papel, empresa_id: papel === 'cliente' ? empresaId : null,
+  };
+  const res = await fetch('/api/usuarios', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  if (res.ok) { fecharModal(); await carregar(); } else await avisarResposta(res);
+}
+
+function abrirModalSenha(id) {
+  document.getElementById('s-id').value = id;
+  document.getElementById('s-senha').value = '';
+  document.getElementById('modal-senha-overlay').classList.add('aberto');
+}
+function fecharModalSenha() { document.getElementById('modal-senha-overlay').classList.remove('aberto'); }
+
+async function salvarSenha(e) {
+  e.preventDefault();
+  const id = document.getElementById('s-id').value;
+  const senha = document.getElementById('s-senha').value;
+  const res = await fetch(`/api/usuarios/${id}/senha`, {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ senha }) });
+  if (res.ok) { fecharModalSenha(); avisar('Senha redefinida.', 'ok'); } else await avisarResposta(res);
+}
+
+carregar();
+</script>
+{% endblock %}

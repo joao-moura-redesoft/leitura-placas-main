@@ -94,15 +94,13 @@ PADROES: dict[str, str] = {
     # Concordância mínima (0-1) entre as leituras para parar antecipadamente com confiança.
     # 0.80 = para assim que 80%+ do peso das leituras concordar com a placa eleita.
     "leitura_acordo_minimo": "0.80",
-    # Máximo de detecções YOLO+OCR por segundo. Reduzir alivia CPU sem afetar o stream ao vivo.
+    # Máximo de detecções YOLO+OCR por segundo — e também a frequência do ajuste de
+    # ambiente e da publicação de frame (stream/HLS/ler-placa), que andam junto com a
+    # detecção (ver comentário em app/visao/pipeline.py:_loop). Reduzir alivia CPU bastante.
     "deteccao_fps_max": "5",
     "tesseract_psm": "6",
     "frames_consenso": "3",
     "cooldown_seg": "120",
-    # Performance: roda YOLO+OCR somente a cada N frames capturados.
-    # 1 = todo frame (mais carga). 2-3 = recomendado para CPU.
-    # Stream continua exibindo todo frame, so a deteccao e' que pula.
-    "processar_a_cada_n_frames": "2",
     # sim = detecta placas continuamente no stream
     # nao = stream ativo mas detecção só pelo botão "Ler Placa"
     "deteccao_automatica": "sim",
@@ -144,7 +142,13 @@ PADROES: dict[str, str] = {
     "ajuste_wb": "sim",                # balanço de branco gray-world (remove dominante de cor)
     "ajuste_saturacao": "sim",         # compensa saturação conforme a cena
     "ajuste_denoise_noite": "sim",     # redução de ruído leve à noite/baixa luz
-    "ajuste_recalc_frames": "8",       # reclassifica a cena a cada N frames (custo/estabilidade)
+    # Reclassifica a cena a cada N ticks de DETECÇÃO (não mais a cada N frames de
+    # câmera — o ajuste de ambiente passou a rodar junto com a detecção, ver
+    # app/visao/pipeline.py:_loop). Antes, 8 a 15 fps = ~0,5s de atraso pra reagir a
+    # uma mudança de cena (entardecer, veículo entrando na sombra). Se o valor
+    # continuasse 8 agora que a cadência é a de `deteccao_fps_max` (tipicamente 5/s),
+    # o atraso triplicaria para ~1,6s; 3 mantém a mesma dinâmica de antes (~0,6s).
+    "ajuste_recalc_frames": "3",
     # mjpeg = stream independente por viewer (simples, sem deps)
     # hls   = encode único → N viewers sem custo adicional (requer ffmpeg no PATH)
     "streaming_modo": "mjpeg",

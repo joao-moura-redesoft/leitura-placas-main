@@ -6,6 +6,8 @@ import time
 
 import bcrypt
 
+from app.seguranca import limitador
+
 _SESSION_TTL = 60 * 60       # 1 hora
 _CLEANUP_INTERVAL = 300      # limpeza a cada 5 minutos
 
@@ -51,6 +53,18 @@ def remover_sessao(token: str) -> None:
         _sessions.pop(token, None)
 
 
+def remover_sessoes_usuario(user_id: int) -> int:
+    """Derruba TODAS as sessões ativas de um usuário — chamado ao redefinir a senha
+    dele ou desativá-lo (app/web/usuarios.py). Sem isso, uma sessão já aberta (ex.:
+    cookie roubado) continuava válida por até 1h mesmo depois do admin "cortar o
+    acesso" — a troca de senha/desativação só bloqueava um NOVO login."""
+    with _lock:
+        tokens = [t for t, (uid, _) in _sessions.items() if uid == user_id]
+        for t in tokens:
+            del _sessions[t]
+        return len(tokens)
+
+
 def limpar_sessoes_expiradas() -> int:
     agora = time.time()
     with _lock:
@@ -65,6 +79,10 @@ def _cleanup_loop() -> None:
         time.sleep(_CLEANUP_INTERVAL)
         try:
             limpar_sessoes_expiradas()
+        except Exception:
+            pass
+        try:
+            limitador.limpar_antigos()
         except Exception:
             pass
 

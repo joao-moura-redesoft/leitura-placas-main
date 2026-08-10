@@ -86,7 +86,6 @@ class Pipeline:
         self.votos_minimos = max(1, int(cfg.get("ocr_votos_minimos", "1")))
         self.frames_consenso = int(cfg["frames_consenso"])
         self.cooldown_seg = int(cfg["cooldown_seg"])
-        self.skip_n = max(1, int(cfg.get("processar_a_cada_n_frames", "2")))
         self._intervalo_deteccao = 1.0 / max(1, int(cfg.get("deteccao_fps_max", "5")))
         self.salvar_snapshot = cfg["salvar_snapshot"].lower() in ("sim", "true", "1")
         self.snapshot_q = int(cfg["snapshot_qualidade"])
@@ -174,6 +173,16 @@ class Pipeline:
         sem_frame_desde: float | None = None
         _intervalo_loop = 1.0 / max(1, int(self.cfg.get("camera_fps", "15")))
 
+        # Estado do tick de detecção/publicação (cadência de `deteccao_fps_max`,
+        # tipicamente mais lenta que a da câmera). `ultimo_bruto` é o frame CRU (antes
+        # do ajuste) já processado no tick anterior — comparado por IDENTIDADE, não
+        # conteúdo: `Camera.ler()` devolve sempre o MESMO objeto até a thread leitora
+        # entregar um frame novo (app/visao/camera.py), então "mesmo objeto" É "câmera
+        # não trouxe nada novo entre os dois ticks". `ultimo_saida` é o último frame
+        # publicado (com bboxes, se houve detecção).
+        ultimo_bruto = None
+        ultimo_saida = None
+
         while not self._parar.is_set():
             try:
                 t_loop = time.time()
@@ -203,20 +212,16 @@ class Pipeline:
                             time.sleep(30)
                     else:
                         time.sleep(0.1)
+                    # A câmera sumiu: nenhuma garantia sobre o próximo frame que vier
+                    # (pode ser de uma reconexão). Zera as marcas para não arriscar
+                    # casar por identidade com o frame de antes da queda.
+                    ultimo_bruto = ultimo_saida = None
                     continue
 
                 sem_frame_desde = None
 
-                # Ajuste adaptativo: corrige luz/contraste conforme o ambiente detectado.
-                # Retorna um novo array; detecção, bboxes e stream usam o frame corrigido.
-                if self.ajustador.ativo:
-                    frame = self.ajustador.processar(frame)
-
-                # Guarda o frame LIMPO (sem bboxes/labels desenhados) para a leitura
-                # manual (ler-placa) e snapshots. As caixas são desenhadas numa cópia,
-                # senão o OCR do botão "Ler Placa" acaba lendo o próprio overlay.
-                estado.registrar_frame_camera_limpo(self.camera_db_id, frame)
-
+                # FPS/contador de frames continuam na cadência de CAPTURA (o painel
+                # mostra ~camera_fps, não a taxa de detecção — comportamento inalterado).
                 frames_count += 1
                 estado.incrementar_frame()
                 agora = time.time()
@@ -225,17 +230,46 @@ class Pipeline:
                     frames_count = 0
                     ultimo_fps = agora
 
-                agora_det = time.time()
-                frame_saida = frame
-                if agora_det - self._ultima_deteccao >= self._intervalo_deteccao:
-                    frame_saida = frame.copy()   # desenha bboxes aqui, preservando o limpo
-                    self._processar_frame(frame_saida)
-                    self._ultima_deteccao = agora_det
-                estado.registrar_frame(frame_saida)
-                estado.registrar_frame_camera(self.camera_db_id, frame_saida)
+                # ── Ajuste + publicação + detecção, juntos, na cadência de DETECÇÃO ──
+                # Não dá pra publicar o frame ajustado numa cadência e detectar noutra:
+                # app/visao/leitura.py (ler_placa) NÃO reaplica o ajuste quando usa o
+                # frame publicado aqui — confia que já vem ajustado. Publicar um frame
+                # cru por engano faria o OCR do endpoint de produção (GET /api/leitura)
+                # degradar em silêncio, e o stream/HLS piscaria brilho/cor a cada frame
+                # não-ajustado. Por isso os três — ajuste, publicação e detecção — só
+                # acontecem juntos, no mesmo portão, e nada é publicado entre ticks.
+                if agora - self._ultima_deteccao >= self._intervalo_deteccao:
+                    self._ultima_deteccao = agora
 
-                # Trava a taxa do loop à frequência real da câmera.
-                # Sem isso o loop spin a CPU a 100% relendo o mesmo frame cacheado.
+                    if frame is ultimo_bruto and ultimo_saida is not None:
+                        # Câmera não entregou frame novo desde o último tick (comum
+                        # quando ela é mais lenta que `camera_fps`, ou reconectando).
+                        # Reprocessar (ajuste + YOLO + OCR) sobre o MESMO array daria
+                        # byte a byte o mesmo resultado — pula o trabalho pesado, mas
+                        # REPUBLICA, pra `ultimo_frame_ts` continuar andando exatamente
+                        # como antes: os checks de frescor (app/web/leitura.py,
+                        # supervisor) não podem enxergar diferença entre "câmera
+                        # parada" e "tick sem novidade".
+                        estado.registrar_frame(ultimo_saida)
+                        estado.registrar_frame_camera(self.camera_db_id, ultimo_saida)
+                    else:
+                        ultimo_bruto = frame
+                        if self.ajustador.ativo:
+                            frame = self.ajustador.processar(frame)
+
+                        # Frame LIMPO (sem bboxes/labels) para leitura manual e
+                        # snapshots. As caixas são desenhadas numa CÓPIA, senão o OCR
+                        # do botão "Ler Placa" acaba lendo o próprio overlay.
+                        estado.registrar_frame_camera_limpo(self.camera_db_id, frame)
+
+                        frame_saida = frame.copy()
+                        self._processar_frame(frame_saida)
+                        ultimo_saida = frame_saida
+                        estado.registrar_frame(frame_saida)
+                        estado.registrar_frame_camera(self.camera_db_id, frame_saida)
+
+                # Trava a taxa do loop à frequência real da câmera — a detecção de
+                # câmera morta e o contador de fps dependem de rodar nessa cadência.
                 decorrido = time.time() - t_loop
                 restante = _intervalo_loop - decorrido
                 if restante > 0.001:
@@ -529,6 +563,11 @@ def parar_camera(camera_db_id: int) -> None:
         with estado.lock:
             estado.frames_cameras.pop(camera_db_id, None)
             estado.frames_cameras_limpos.pop(camera_db_id, None)
+        # Sem isto o cache de JPEG do stream (app/streaming/stream.py) mantinha vivo
+        # o último frame desta câmera indefinidamente, e podia servir imagem velha a
+        # um viewer que reconectasse antes do primeiro frame novo pós-reinício.
+        from app.streaming import stream as stream_mod
+        stream_mod.descartar_cache(camera_db_id)
 
 
 def reiniciar_camera(camera_db_id: int, cfg: dict[str, str]) -> None:
@@ -543,6 +582,8 @@ def parar_todas() -> None:
     with estado.lock:
         estado.frames_cameras.clear()
         estado.frames_cameras_limpos.clear()
+    from app.streaming import stream as stream_mod
+    stream_mod.limpar_cache()
 
 
 def parar() -> None:

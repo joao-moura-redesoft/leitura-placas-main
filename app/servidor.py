@@ -14,7 +14,7 @@ if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -35,9 +35,11 @@ from app.visao import pipeline
 from app.web import api, paginas
 from app.web import auth as auth_rotas
 from app.web import cadastro as cadastro_rotas
+from app.web import deps as web_deps
 from app.web import leitura as leitura_rotas
 from app.web import stream as stream_rotas
 from app.web import testes as testes_rotas
+from app.web import usuarios as usuarios_rotas
 
 # Garante MIME types corretos para servir arquivos HLS via StaticFiles
 mimetypes.add_type("application/vnd.apple.mpegurl", ".m3u8")
@@ -72,10 +74,17 @@ class _AuthMiddleware(BaseHTTPMiddleware):
                 return JSONResponse({"detail": "Servidor não configurado. Acesse /criar-admin."}, status_code=503)
             return RedirectResponse("/criar-admin", status_code=303)
 
-        # Autenticação via cookie de sessão
+        # Autenticação via cookie de sessão. Guarda o usuário em `request.state.user`
+        # para as rotas diferenciarem admin de 'cliente' (app/web/deps.py) sem cada
+        # uma ter que ir buscar no banco de novo.
         token = request.cookies.get("sessao")
-        if token and auth_mod.obter_user_id(token) is not None:
-            return await call_next(request)
+        if token:
+            user_id = auth_mod.obter_user_id(token)
+            if user_id is not None:
+                user = banco.buscar_usuario_id(user_id)
+                if user is not None and user["ativo"]:
+                    request.state.user = user
+                    return await call_next(request)
 
         # Autenticação via api_key (para integrações externas sem browser)
         cfg = config.carregar()
@@ -188,17 +197,27 @@ app.include_router(auth_rotas.router)
 app.include_router(paginas.router)
 app.include_router(stream_rotas.router)
 app.include_router(api.router)
-app.include_router(testes_rotas.router)
+# Ferramenta interna de QA (dataset de acurácia OCR) — sem uso para um cliente,
+# admin-gate no router inteiro em vez de repetir a dependency rota a rota.
+app.include_router(testes_rotas.router, dependencies=[Depends(web_deps.exigir_admin)])
 app.include_router(leitura_rotas.router)
 app.include_router(cadastro_rotas.router)
+app.include_router(usuarios_rotas.router, dependencies=[Depends(web_deps.exigir_admin)])
 
 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket) -> None:
-    """Feed de detecções em tempo real. Requer sessão válida ou api_key."""
-    # Autenticação dentro do endpoint (middleware já deixou passar /ws)
+    """Feed de detecções em tempo real. Requer sessão de ADMIN ou api_key.
+
+    Não é escopado por empresa (o broadcaster empurra detecções de TODAS as câmeras
+    do processo, ver app/core/broadcaster.py) — é o mecanismo do modo contínuo/diagnóstico
+    visual, não do fluxo reativo multi-tenant. Por isso fica restrito a admin: um usuário
+    'cliente' conectado aqui veria detecções de outros clientes.
+    """
     token = websocket.cookies.get("sessao")
-    autenticado = bool(token and auth_mod.obter_user_id(token) is not None)
+    user_id = auth_mod.obter_user_id(token) if token else None
+    user = banco.buscar_usuario_id(user_id) if user_id is not None else None
+    autenticado = user is not None and user["ativo"] and user["papel"] == "admin"
 
     if not autenticado:
         cfg = config.carregar()

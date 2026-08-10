@@ -23,7 +23,9 @@ numa foto fresca da câmera, e devolve a placa. Contrato completo em
 - **Painel Integração**: chamadas do roteador (sucesso/falha), taxa de sucesso, acordo médio, e em qual nível do cadastro uma chamada foi recusada
 - **Histórico** com posto/bico de origem, recorte da placa e quadro inteiro de cada leitura
 - **Modo contínuo opcional** (pipeline por câmera, tracker IoU/ByteTrack, streaming MJPEG/HLS) — inerte por padrão; útil para diagnóstico visual, mas não é o modo de operação alvo
-- **Autenticação**: login com bcrypt para o painel; `GET /api/leitura` é público (rede interna) com mecanismo de `api_key` pronto para ligar se precisar
+- **Autenticação**: login com bcrypt para o painel, com dois papéis — `admin` (vê e edita tudo, gerido em `/usuarios`) e `cliente` (restrito a UM posto: vê postos/câmeras/histórico/integração só dele, sem acesso a configuração do sistema nem ao cadastro de outros clientes). `GET /api/leitura` continua público por padrão (rede interna); cada posto pode opcionalmente ganhar uma **api_key própria** (`/empresas` → "API/LGPD") — só aquele CNPJ passa a exigir a chave, os demais continuam públicos
+- **Retenção por cliente**: prazo de apagamento de detecções/chamadas (LGPD) é global por padrão, mas cada posto pode ter um prazo próprio (`/empresas` → "API/LGPD")
+- **Rate limiting** simples em memória no login (força bruta) e em `/api/leitura` (abuso/varredura de CNPJ)
 - **Lista branca/negra** com alertas via webhook
 
 ## Stack
@@ -149,7 +151,7 @@ Edite via UI em `/configuracao` ou diretamente em `config.txt`. Principais parâ
 | `tracker_ativo` | `sim` | Rastreamento IoU/ByteTrack no modo contínuo |
 | `streaming_modo` | `mjpeg` | `mjpeg` ou `hls` (HLS requer FFmpeg) — modo contínuo |
 | `rtsp_transporte` | `tcp` | `tcp` (estável) ou `udp` |
-| `api_key` | — | Se preenchida, exige `X-API-Key` nas rotas autenticadas (não em `/api/leitura`, hoje público) |
+| `api_key` | — | Se preenchida, exige `X-API-Key` nas rotas autenticadas do PAINEL inteiro (não em `/api/leitura`, hoje público). Chave GLOBAL do servidor — diferente da api_key OPCIONAL por posto (`/empresas` → "API/LGPD"), que só afeta `/api/leitura` daquele CNPJ específico |
 
 Lista completa de chaves em `app/core/config.py` (`PADROES`), editável via `/configuracao`.
 

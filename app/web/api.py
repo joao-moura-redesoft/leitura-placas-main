@@ -5,7 +5,7 @@ import sqlite3
 import threading
 import time
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from app.core import banco
@@ -15,6 +15,7 @@ from app.operacao import supervisor as sv
 from app.visao import camera as camera_mod
 from app.visao import leitura
 from app.visao import pipeline
+from app.web import deps
 
 log = logging.getLogger(__name__)
 
@@ -28,8 +29,17 @@ def _iniciar_camera_bg(camera_db_id: int, cam_cfg: dict) -> None:
         log.error("Falha ao iniciar câmera %d: %s", camera_db_id, e)
 
 
+def _empresa_efetiva(request: Request, empresa_id: int | None) -> int | None:
+    """Reconcilia o `empresa_id` pedido na query com o escopo do usuário logado: admin
+    usa o que veio na query (ou None = sem filtro); 'cliente' é sempre forçado ao
+    próprio posto, mesmo que peça outro — não confiamos no valor vindo do cliente."""
+    escopo = deps.empresa_do_usuario(request)
+    return escopo if escopo is not None else empresa_id
+
+
 @router.get("/deteccoes")
 def listar_deteccoes(
+    request: Request,
     placa: str | None = None,
     desde: str | None = None,
     ate: str | None = None,
@@ -39,6 +49,7 @@ def listar_deteccoes(
     bico_id: int | None = None,
     incluir_testes: bool = False,
 ):
+    empresa_id = _empresa_efetiva(request, empresa_id)
     return banco.listar_deteccoes(placa=placa, desde=desde, ate=ate, limit=limit,
                                   offset=offset, empresa_id=empresa_id, bico_id=bico_id,
                                   incluir_testes=incluir_testes)
@@ -46,29 +57,31 @@ def listar_deteccoes(
 
 @router.get("/chamadas")
 def chamadas_listar(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     empresa_id: int | None = None,
     status: str | None = None,
     apenas_erros: bool = False,
 ):
     """Chamadas do roteador ao endpoint reativo — inclusive as recusadas."""
+    empresa_id = _empresa_efetiva(request, empresa_id)
     return banco.chamadas_listar(limit=limit, empresa_id=empresa_id,
                                  status=status, apenas_erros=apenas_erros)
 
 
 @router.get("/chamadas/resumo")
-def chamadas_resumo(horas: int = Query(24, ge=1, le=720)):
-    return banco.chamadas_resumo(horas=horas)
+def chamadas_resumo(request: Request, horas: int = Query(24, ge=1, le=720)):
+    return banco.chamadas_resumo(horas=horas, empresa_id=deps.empresa_do_usuario(request))
 
 
-@router.delete("/deteccoes/{id_}")
+@router.delete("/deteccoes/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def remover_deteccao(id_: int):
     if not banco.remover_deteccao(id_):
         raise HTTPException(404, "Detecção não encontrada")
     return {"removido": True}
 
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[Depends(deps.exigir_admin)])
 def stats():
     cfg = config.carregar()
     return {
@@ -81,7 +94,7 @@ def stats():
     }
 
 
-@router.get("/logs")
+@router.get("/logs", dependencies=[Depends(deps.exigir_admin)])
 def logs(nivel: str | None = None, limit: int = Query(100, ge=1, le=200)):
     todos = estado.listar_logs()
     if nivel:
@@ -90,25 +103,28 @@ def logs(nivel: str | None = None, limit: int = Query(100, ge=1, le=200)):
     return todos[:limit]
 
 
-@router.delete("/logs")
+@router.delete("/logs", dependencies=[Depends(deps.exigir_admin)])
 def limpar_logs():
     estado.limpar_logs()
     return {"limpo": True}
 
 
-@router.get("/recentes")
+@router.get("/recentes", dependencies=[Depends(deps.exigir_admin)])
 def recentes():
+    """Feed cru do estado em memória (todas as câmeras do processo) — mesmo motivo de
+    `/ws` ficar admin-only: não é escopado por posto."""
     return estado.listar_recentes()
 
 
 @router.get("/placa/{placa}")
-def consultar_placa(placa: str):
+def consultar_placa(placa: str, request: Request):
     """Retorna um JSON consolidado para a placa informada:
     última detecção, status na lista branca/negra e resumo do histórico.
     """
     placa = placa.upper().strip()
 
-    deteccoes = banco.listar_deteccoes(placa=placa, limit=50)
+    deteccoes = banco.listar_deteccoes(placa=placa, limit=50,
+                                       empresa_id=deps.empresa_do_usuario(request))
     # filtra exato (listar_deteccoes usa LIKE %placa%)
     deteccoes = [d for d in deteccoes if d["placa"] == placa]
 
@@ -139,7 +155,7 @@ def listas_listar(tipo: str | None = None):
     return banco.listas_listar(tipo=tipo)
 
 
-@router.post("/listas")
+@router.post("/listas", dependencies=[Depends(deps.exigir_admin)])
 def listas_inserir(payload: dict):
     placa = (payload.get("placa") or "").upper().strip()
     tipo = payload.get("tipo")
@@ -153,19 +169,19 @@ def listas_inserir(payload: dict):
     return {"id": id_}
 
 
-@router.delete("/listas/{id_}")
+@router.delete("/listas/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def listas_remover(id_: int):
     if not banco.listas_remover(id_):
         raise HTTPException(404, "Não encontrado")
     return {"removido": True}
 
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(deps.exigir_admin)])
 def status():
     return estado.snapshot_status()
 
 
-@router.get("/health")
+@router.get("/health", dependencies=[Depends(deps.exigir_admin)])
 def health():
     """Status detalhado por câmera: liveness da thread, freshness do frame e histórico de restarts."""
     return sv.supervisor.health()
@@ -190,7 +206,7 @@ CHAVES_CONFIG = set(config.PADROES.keys())
 CHAVES_SENSIVEIS = {"intelbras_senha"}
 
 
-@router.get("/config")
+@router.get("/config", dependencies=[Depends(deps.exigir_admin)])
 def config_obter():
     cfg = config.carregar()
     saida = {}
@@ -202,7 +218,7 @@ def config_obter():
     return saida
 
 
-@router.post("/camera/teste")
+@router.post("/camera/teste", dependencies=[Depends(deps.exigir_admin)])
 def camera_teste(payload: dict):
     """Tenta abrir a câmera com os parâmetros recebidos e devolve um snapshot JPEG."""
     tipo = (payload.get("camera_tipo") or "usb").strip()
@@ -237,8 +253,8 @@ def camera_teste(payload: dict):
 
 
 @router.get("/cameras")
-def cameras_listar(empresa_id: int | None = None):
-    return banco.cameras_listar(empresa_id=empresa_id)
+def cameras_listar(request: Request, empresa_id: int | None = None):
+    return banco.cameras_listar(empresa_id=_empresa_efetiva(request, empresa_id))
 
 
 def _validar_camera(payload: dict) -> dict:
@@ -257,7 +273,7 @@ def _validar_camera(payload: dict) -> dict:
     return {**payload, "nome": nome, "local": (payload.get("local") or "").strip()}
 
 
-@router.post("/cameras")
+@router.post("/cameras", dependencies=[Depends(deps.exigir_admin)])
 def cameras_inserir(payload: dict):
     payload = _validar_camera(payload)
     try:
@@ -275,7 +291,7 @@ def cameras_inserir(payload: dict):
     return {"id": id_}
 
 
-@router.put("/cameras/{id_}")
+@router.put("/cameras/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def cameras_atualizar(id_: int, payload: dict):
     payload = _validar_camera(payload)
     try:
@@ -294,7 +310,7 @@ def cameras_atualizar(id_: int, payload: dict):
     return {"atualizado": True}
 
 
-@router.delete("/cameras/{id_}")
+@router.delete("/cameras/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def cameras_remover(id_: int):
     # bicos.camera_id é RESTRICT: a câmera não some enquanto algum bico depender dela.
     usos = banco.bicos_listar(camera_id=id_)
@@ -316,11 +332,12 @@ def cameras_remover(id_: int):
 
 
 @router.get("/cameras/{id_}/detalhe")
-def cameras_detalhe(id_: int):
+def cameras_detalhe(id_: int, request: Request):
     """Câmera + posto + bicos + estado da transmissão, para a página da câmera."""
     cam = banco.cameras_obter(id_)
     if not cam:
         raise HTTPException(404, "Câmera não encontrada")
+    deps.checar_acesso_empresa(request, cam.get("empresa_id"))
 
     emp = banco.empresas_obter(cam["empresa_id"]) if cam.get("empresa_id") else None
     ent = banco.entidades_obter(emp["entidade_id"]) if emp else None
@@ -354,7 +371,7 @@ def cameras_detalhe(id_: int):
 
 
 @router.get("/cameras/{id_}/snapshot")
-def cameras_snapshot(id_: int):
+def cameras_snapshot(id_: int, request: Request):
     """Frame atual da câmera como JPEG — usado pelo editor de área de captura.
 
     No modo reativo não há pipeline contínuo alimentando `estado`, então cai para uma
@@ -362,6 +379,10 @@ def cameras_snapshot(id_: int):
     fica inutilizável justamente na configuração que o servidor central usa.
     """
     import cv2
+
+    cam_check = banco.cameras_obter(id_)
+    if cam_check:
+        deps.checar_acesso_empresa(request, cam_check.get("empresa_id"))
 
     frame = estado.obter_frame_camera(id_)
     if frame is None:
@@ -396,12 +417,13 @@ def cameras_snapshot(id_: int):
 
 
 @router.post("/cameras/{id_}/teste")
-def cameras_teste(id_: int):
+def cameras_teste(id_: int, request: Request):
     import cv2
 
     cam = banco.cameras_obter(id_)
     if not cam:
         raise HTTPException(404, "Câmera não encontrada")
+    deps.checar_acesso_empresa(request, cam.get("empresa_id"))
 
     # Se há pipeline rodando para esta câmera, aguarda frame (evita segunda conexão RTSP)
     import time as _time
@@ -438,7 +460,7 @@ def cameras_teste(id_: int):
     return Response(content=jpg, media_type="image/jpeg")
 
 
-@router.get("/cameras/rede-local")
+@router.get("/cameras/rede-local", dependencies=[Depends(deps.exigir_admin)])
 def cameras_rede_local():
     """Retorna a sub-rede local do servidor para sugerir no scan."""
     import ipaddress
@@ -454,7 +476,7 @@ def cameras_rede_local():
         return {"ip_servidor": None, "rede_sugerida": "192.168.1.0/24"}
 
 
-@router.post("/cameras/scan")
+@router.post("/cameras/scan", dependencies=[Depends(deps.exigir_admin)])
 def cameras_scan(payload: dict):
     """Varre uma faixa de IPs em busca de hosts com porta RTSP aberta."""
     import ipaddress
@@ -499,7 +521,7 @@ def cameras_scan(payload: dict):
     }
 
 
-@router.get("/modelos")
+@router.get("/modelos", dependencies=[Depends(deps.exigir_admin)])
 def modelos_listar():
     """Lista arquivos .onnx disponíveis na pasta models/."""
     from pathlib import Path
@@ -509,7 +531,7 @@ def modelos_listar():
     return sorted(f.name for f in pasta.glob("*.onnx"))
 
 
-@router.get("/debug/ocr_crop")
+@router.get("/debug/ocr_crop", dependencies=[Depends(deps.exigir_admin)])
 def debug_ocr_crop():
     """Retorna o último crop enviado ao Tesseract como JPEG (para debug visual)."""
     import cv2
@@ -524,7 +546,7 @@ def debug_ocr_crop():
     return Response(content=jpg, media_type="image/jpeg")
 
 
-@router.post("/config")
+@router.post("/config", dependencies=[Depends(deps.exigir_admin)])
 def config_salvar(payload: dict):
     if not isinstance(payload, dict):
         raise HTTPException(400, "payload inválido")
@@ -557,7 +579,7 @@ def config_salvar(payload: dict):
     return {"salvo": True, "pipeline_reiniciado": reiniciado}
 
 
-@router.post("/setup/concluir")
+@router.post("/setup/concluir", dependencies=[Depends(deps.exigir_admin)])
 def setup_concluir(payload: dict):
     """Grava configurações do wizard e marca sistema como implantado."""
     atual = config.carregar()
