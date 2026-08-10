@@ -446,6 +446,26 @@
     </div>
   </div>
 
+  <div class="card">
+    <h2 style="margin-top:0;">Chave de integração</h2>
+    <p style="margin-top:0;color:#64748b;font-size:14px">
+      É com esta chave que o roteador do posto chama <code>GET /api/leitura</code> — envie
+      como header <code>X-API-Key</code> ou como parâmetro <code>?api_key=</code>. Ela é
+      gerada sozinha no primeiro boot. Trocar a chave aqui derruba a integração até o
+      roteador ser atualizado com o novo valor.
+    </p>
+    <div class="grid-form">
+      <label style="grid-column: 1 / -1;">Chave da API <span class="help" data-tip="Credencial das integrações sem navegador (o sidecar Java do posto). Vale como acesso de administrador — trate como senha.">?</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" name="api_key" readonly
+                 style="flex:1;font-family:ui-monospace,monospace;background:#f8fafc">
+          <button type="button" onclick="copiarApiKey(this)"
+                  style="white-space:nowrap">Copiar</button>
+        </div>
+      </label>
+    </div>
+  </div>
+
 </div><!-- /tab-sistema -->
 
 
@@ -714,6 +734,24 @@ function setValor(name, valor) {
   form.querySelectorAll(`[name="${name}"]`).forEach(el => { el.value = valor ?? ''; });
   if (name === 'ocr_engines_extra')    loadEnginesExtra(valor || '');
   if (name === 'detector_modelos_extra') loadModelosExtra(valor || '');
+}
+
+/* ─── Chave de integração ──────────────────────────────────────────────── */
+async function copiarApiKey(botao) {
+  const campo = form.querySelector('[name="api_key"]');
+  if (!campo.value) return avisar('Ainda não há chave — reinicie o servidor para gerá-la.', 'err');
+  try {
+    await navigator.clipboard.writeText(campo.value);
+  } catch {
+    // clipboard exige HTTPS/localhost; no acesso por IP na LAN cai aqui.
+    campo.removeAttribute('readonly');
+    campo.select();
+    document.execCommand('copy');
+    campo.setAttribute('readonly', '');
+  }
+  const antes = botao.textContent;
+  botao.textContent = 'Copiado';
+  setTimeout(() => { botao.textContent = antes; }, 1500);
 }
 
 /* ─── Carregar config ──────────────────────────────────────────────────── */

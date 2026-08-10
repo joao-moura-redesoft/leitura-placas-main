@@ -58,6 +58,22 @@ def obter_frame_camera_limpo(camera_id: int):
         return frames_cameras_limpos.get(camera_id)
 
 
+def esquecer_camera(camera_id: int) -> None:
+    """Descarta todo estado em memória de uma câmera removida.
+
+    Os dicts de frame são indexados por camera_db_id e nunca eram limpos: apagar uma
+    câmera deixava o último frame dela (alguns MB, dois por câmera) preso para sempre,
+    e o `ultimo_frame_ts` órfão faria um id reaproveitado parecer ter imagem fresca
+    antes de qualquer captura.
+    """
+    with lock:
+        frames_cameras.pop(camera_id, None)
+        frames_cameras_limpos.pop(camera_id, None)
+        ultimo_frame_ts.pop(camera_id, None)
+        emissoes_recentes.pop(camera_id, None)
+        ambiente.pop(camera_id, None)
+
+
 def adicionar_deteccao(deteccao: dict) -> None:
     with lock:
         ultimas_deteccoes.appendleft(deteccao)
