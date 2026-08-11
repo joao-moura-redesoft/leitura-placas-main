@@ -16,7 +16,7 @@
   <div class="tabela-rolavel">
   <table>
     <thead>
-      <tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Posto</th><th>Status</th><th>Ações</th></tr>
+      <tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Posto</th><th>Status</th><th>Último login</th><th>Ações</th></tr>
     </thead>
     <tbody id="tbody"></tbody>
   </table>
@@ -36,7 +36,11 @@
       <label id="grupo-email" style="display:block;margin-bottom:12px">E-mail
         <input id="f-email" type="email" required style="width:100%;box-sizing:border-box;margin-top:4px">
       </label>
-      <label id="grupo-senha" style="display:block;margin-bottom:12px">Senha (mín. 8 caracteres)
+      <label id="grupo-convidar" style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <input id="f-convidar" type="checkbox" style="width:auto;padding:0" onchange="atualizarCampoSenha()">
+        Convidar por e-mail (a pessoa define a própria senha)
+      </label>
+      <label id="grupo-senha" style="display:block;margin-bottom:12px">Senha (mín. 8 caracteres, letra + número)
         <input id="f-senha" type="password" style="width:100%;box-sizing:border-box;margin-top:4px">
       </label>
       <label style="display:block;margin-bottom:12px">Papel
@@ -123,6 +127,7 @@ function renderTabela() {
       <td>${papel}</td>
       <td>${it.empresa_nome ? esc(it.empresa_nome) : '—'}</td>
       <td>${status}</td>
+      <td style="color:#64748b;font-size:13px;white-space:nowrap">${it.ultimo_login ? new Date(it.ultimo_login).toLocaleString('pt-BR') : 'Nunca'}</td>
       <td>
         <button onclick="editar(${it.id})" style="background:#16a34a;margin-right:4px">Editar</button>
         <button onclick="abrirModalSenha(${it.id})" style="background:#0f172a">Senha</button>
@@ -136,6 +141,12 @@ function atualizarCampoEmpresa() {
   document.getElementById('grupo-empresa').style.display = ehCliente ? '' : 'none';
 }
 
+function atualizarCampoSenha() {
+  const convidar = document.getElementById('f-convidar').checked;
+  document.getElementById('grupo-senha').style.display = convidar ? 'none' : '';
+  document.getElementById('f-senha').required = !convidar;
+}
+
 function abrirModal(it = null) {
   _editandoId = it ? it.id : null;
   document.getElementById('modal-titulo').textContent = it ? 'Editar Usuário' : 'Novo Usuário';
@@ -143,15 +154,17 @@ function abrirModal(it = null) {
   document.getElementById('f-nome').value = it ? it.nome : '';
   document.getElementById('f-email').value = it ? it.email : '';
   document.getElementById('f-senha').value = '';
+  document.getElementById('f-convidar').checked = false;
   document.getElementById('f-papel').value = it ? it.papel : 'cliente';
   document.getElementById('f-empresa').value = it ? (it.empresa_id || '') : '';
   document.getElementById('f-ativo').checked = it ? !!it.ativo : true;
   // E-mail e senha só fazem sentido na criação (edição não muda e-mail nem senha aqui —
   // senha tem modal próprio, e-mail é chave de login e não vale o risco de duplicar).
   document.getElementById('grupo-email').style.display = it ? 'none' : '';
-  document.getElementById('grupo-senha').style.display = it ? 'none' : '';
+  document.getElementById('grupo-convidar').style.display = it ? 'none' : '';
   document.getElementById('f-email').required = !it;
   atualizarCampoEmpresa();
+  atualizarCampoSenha();
   document.getElementById('modal-overlay').classList.add('aberto');
 }
 
@@ -169,23 +182,37 @@ async function salvar(e) {
   if (papel === 'cliente' && !empresaId) { avisar('Escolha o posto do usuário.', 'err'); return; }
 
   if (_editandoId) {
-    const payload = { papel, empresa_id: papel === 'cliente' ? empresaId : null,
-                      ativo: document.getElementById('f-ativo').checked };
+    const antes = _itens.find(x => x.id === _editandoId);
+    const ativo = document.getElementById('f-ativo').checked;
+    // Confirmação a mais só pra ação com efeito imediato de acesso (desativar, ou
+    // tirar o papel admin de quem tinha) — o resto (nome, posto) não precisa.
+    const vaiDesativar = antes && antes.ativo && !ativo;
+    const vaiRebaixar = antes && antes.papel === 'admin' && papel !== 'admin';
+    if (vaiDesativar || vaiRebaixar) {
+      const acao = vaiDesativar ? 'desativar' : 'tirar o papel de admin de';
+      if (!confirm(`Confirma ${acao} "${antes.nome}"? As sessões abertas dessa conta serão encerradas.`)) return;
+    }
+    const payload = { papel, empresa_id: papel === 'cliente' ? empresaId : null, ativo };
     const res = await fetch(`/api/usuarios/${_editandoId}`, {
       method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     if (res.ok) { fecharModal(); await carregar(); } else await avisarResposta(res);
     return;
   }
 
+  const convidar = document.getElementById('f-convidar').checked;
   const payload = {
     nome: document.getElementById('f-nome').value.trim(),
     email: document.getElementById('f-email').value.trim(),
-    senha: document.getElementById('f-senha').value,
+    senha: convidar ? '' : document.getElementById('f-senha').value,
+    convidar,
     papel, empresa_id: papel === 'cliente' ? empresaId : null,
   };
   const res = await fetch('/api/usuarios', {
     method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-  if (res.ok) { fecharModal(); await carregar(); } else await avisarResposta(res);
+  if (res.ok) {
+    fecharModal(); await carregar();
+    if (convidar) avisar('Usuário criado — convite enviado por e-mail.', 'ok');
+  } else await avisarResposta(res);
 }
 
 function abrirModalSenha(id) {

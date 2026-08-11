@@ -130,27 +130,41 @@ def entidades_listar(request: Request):
 
 
 @router.post("/entidades", dependencies=[Depends(deps.exigir_admin)])
-def entidades_inserir(payload: dict):
+def entidades_inserir(payload: dict, request: Request):
     nome = (payload.get("nome") or "").strip()
     if not nome:
         raise HTTPException(400, "nome é obrigatório")
-    return {"id": banco.entidades_inserir({**payload, "nome": nome})}
+    id_ = banco.entidades_inserir({**payload, "nome": nome})
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="entidade_criada",
+                              alvo_tipo="entidade", alvo_id=id_, detalhe=f"nome={nome}")
+    return {"id": id_}
 
 
 @router.put("/entidades/{id_}", dependencies=[Depends(deps.exigir_admin)])
-def entidades_atualizar(id_: int, payload: dict):
+def entidades_atualizar(id_: int, payload: dict, request: Request):
     nome = (payload.get("nome") or "").strip()
     if not nome:
         raise HTTPException(400, "nome é obrigatório")
     if not banco.entidades_atualizar(id_, {**payload, "nome": nome}):
         raise HTTPException(404, "Entidade não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="entidade_atualizada",
+                              alvo_tipo="entidade", alvo_id=id_, detalhe=f"nome={nome}")
     return {"atualizado": True}
 
 
 @router.delete("/entidades/{id_}", dependencies=[Depends(deps.exigir_admin)])
-def entidades_remover(id_: int):
+def entidades_remover(id_: int, request: Request):
+    entidade = banco.entidades_obter(id_)
     if not banco.entidades_remover(id_):
         raise HTTPException(404, "Entidade não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(
+        usuario_id=quem_id, usuario_nome=quem_nome, acao="entidade_removida",
+        alvo_tipo="entidade", alvo_id=id_,
+        detalhe=f"nome={entidade['nome'] if entidade else '?'} (apaga postos/cameras/automacoes/bicos em cascata)",
+    )
     return {"removido": True}
 
 
@@ -177,26 +191,33 @@ def empresas_obter(id_: int, request: Request):
 
 
 @router.post("/empresas/{id_}/api-key", dependencies=[Depends(deps.exigir_admin)])
-def empresas_gerar_api_key(id_: int):
+def empresas_gerar_api_key(id_: int, request: Request):
     """Gera (ou substitui) a api_key própria deste posto — opt-in: a partir daqui
     `/api/leitura` passa a exigir essa chave nas chamadas com este CNPJ. Ver
     app/web/leitura.py:leitura_reativa."""
     chave = banco.empresas_gerar_api_key(id_)
     if chave is None:
         raise HTTPException(404, "Empresa não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    # A CHAVE em si nunca vai pra auditoria (é segredo) — só o fato de que foi gerada.
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="api_key_gerada",
+                              alvo_tipo="empresa", alvo_id=id_)
     return {"api_key": chave}
 
 
 @router.delete("/empresas/{id_}/api-key", dependencies=[Depends(deps.exigir_admin)])
-def empresas_revogar_api_key(id_: int):
+def empresas_revogar_api_key(id_: int, request: Request):
     """Volta o posto ao padrão público (sem chave própria)."""
     if not banco.empresas_revogar_api_key(id_):
         raise HTTPException(404, "Empresa não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="api_key_revogada",
+                              alvo_tipo="empresa", alvo_id=id_)
     return {"revogado": True}
 
 
 @router.put("/empresas/{id_}/retencao", dependencies=[Depends(deps.exigir_admin)])
-def empresas_definir_retencao(id_: int, payload: dict):
+def empresas_definir_retencao(id_: int, payload: dict, request: Request):
     """Prazo de retenção próprio (LGPD por cliente) — `dias=null`/ausente volta a usar
     o `retencao_dias` global. Ver app/operacao/retencao.py."""
     dias = payload.get("dias")
@@ -209,11 +230,14 @@ def empresas_definir_retencao(id_: int, payload: dict):
             raise HTTPException(400, "dias não pode ser negativo")
     if not banco.empresas_definir_retencao(id_, dias):
         raise HTTPException(404, "Empresa não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="retencao_definida",
+                              alvo_tipo="empresa", alvo_id=id_, detalhe=f"dias={dias}")
     return {"retencao_dias_override": dias}
 
 
 @router.post("/empresas", dependencies=[Depends(deps.exigir_admin)])
-def empresas_inserir(payload: dict):
+def empresas_inserir(payload: dict, request: Request):
     nome = (payload.get("nome") or "").strip()
     cnpj = _normalizar_cnpj(payload.get("cnpj", ""))
     if not nome or not cnpj:
@@ -226,11 +250,14 @@ def empresas_inserir(payload: dict):
         id_ = banco.empresas_inserir({**payload, "nome": nome, "cnpj": cnpj})
     except sqlite3.IntegrityError as e:
         raise _integridade(e, f"CNPJ {cnpj} já cadastrado")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="posto_criado",
+                              alvo_tipo="empresa", alvo_id=id_, detalhe=f"nome={nome} cnpj={cnpj}")
     return {"id": id_}
 
 
 @router.put("/empresas/{id_}", dependencies=[Depends(deps.exigir_admin)])
-def empresas_atualizar(id_: int, payload: dict):
+def empresas_atualizar(id_: int, payload: dict, request: Request):
     nome = (payload.get("nome") or "").strip()
     cnpj = _normalizar_cnpj(payload.get("cnpj", ""))
     if not nome or not cnpj:
@@ -245,13 +272,24 @@ def empresas_atualizar(id_: int, payload: dict):
         raise _integridade(e, f"CNPJ {cnpj} já cadastrado")
     if not ok:
         raise HTTPException(404, "Empresa não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="posto_atualizado",
+                              alvo_tipo="empresa", alvo_id=id_, detalhe=f"nome={nome} cnpj={cnpj}")
     return {"atualizado": True}
 
 
 @router.delete("/empresas/{id_}", dependencies=[Depends(deps.exigir_admin)])
-def empresas_remover(id_: int):
+def empresas_remover(id_: int, request: Request):
+    empresa = banco.empresas_obter(id_)
     if not banco.empresas_remover(id_):
         raise HTTPException(404, "Empresa não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(
+        usuario_id=quem_id, usuario_nome=quem_nome, acao="posto_removido",
+        alvo_tipo="empresa", alvo_id=id_,
+        detalhe=f"nome={empresa['nome'] if empresa else '?'} cnpj={empresa['cnpj'] if empresa else '?'} "
+                f"(apaga câmeras/automações/bicos em cascata)",
+    )
     return {"removido": True}
 
 

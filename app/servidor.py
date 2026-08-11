@@ -55,7 +55,7 @@ log = logging.getLogger(__name__)
 # /api/healthz: liveness do container (só {"status":"ok"}, sem dado de cliente). O
 # /api/health detalhado, com nome de câmera/posto, continua exigindo autenticação.
 _PUBLICAS = frozenset({"/login", "/criar-admin", "/favicon.ico", "/ws",
-                       "/api/leitura", "/api/healthz"})
+                       "/api/leitura", "/api/healthz", "/esqueci-senha"})
 
 
 class _AuthMiddleware(BaseHTTPMiddleware):
@@ -65,6 +65,10 @@ class _AuthMiddleware(BaseHTTPMiddleware):
         # Arquivos estáticos e streams sempre públicos
         if (path.startswith("/static/") or path.startswith("/testes/fotos/")
                 or path.startswith("/testes/resultados/")
+                # /redefinir-senha/{token}: quem chega aqui, por definição, não tem
+                # como estar logado (perdeu a senha) — o token no caminho É a prova
+                # de identidade desta rota, não a sessão.
+                or path.startswith("/redefinir-senha/")
                 or path in _PUBLICAS):
             return await call_next(request)
 

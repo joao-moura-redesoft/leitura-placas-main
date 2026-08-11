@@ -749,3 +749,57 @@ sem se ver. Não tem solução técnica — é hábito de equipe:
   mesmo problema em paralelo sem saber.
 - Depois de um merge não-trivial, rodar a suíte de testes (agora automático via CI,
   ver `.github/workflows/testes.yml`) antes de considerar o merge "resolvido".
+
+---
+
+## 22. Usuários e permissões — segunda leva (auditoria, autoatendimento)
+
+Depois do RBAC (admin/operador/cliente, §21), uma rodada de melhorias sobre a MESMA
+área — todas opcionais/aditivas, nada muda o comportamento de quem já usava o sistema
+sem configurar nada a mais:
+
+- **Log de auditoria** (`banco.auditoria_registrar`/`auditoria_listar`, tabela
+  `auditoria`, painel em `/auditoria`, admin-only): login/login_falha, criação/edição
+  de usuário, troca de senha (self, admin, ou por link), criação/edição/remoção de
+  posto e entidade, gerar/revogar api_key, definir retenção, salvar configuração
+  (só os NOMES das chaves alteradas, nunca o valor — várias são segredo). Deliberadamente
+  **não** cobre CRUD de automação/bico/câmera — escopo cortado para não inflar demais
+  esta rodada; extensível pelo mesmo padrão se algum dia fizer falta.
+- **Política de senha** (`app/seguranca/sessao.py:senha_fraca`): mínimo 8 caracteres
+  (já existia) + pelo menos 2 classes de caractere (letra/dígito/símbolo). Não exige
+  símbolo obrigatório de propósito — NIST 800-63B desaconselha regra de complexidade
+  rígida, que na prática empurra pra padrões previsíveis tipo "Senha123!". Aplicada em
+  todo ponto que define senha (bootstrap, criação/edição de usuário, reset por admin,
+  troca self-service, redefinição por link).
+- **Cookie `Secure` configurável** (`cookie_secure`, `app/web/auth.py`): desligado por
+  padrão (senão quebra o acesso local via `http://localhost`); ligar quando o servidor
+  estiver atrás de proxy reverso com TLS.
+- **"Esqueci minha senha"** (`/esqueci-senha` → `/redefinir-senha/{token}`) e
+  **convite por e-mail** na criação de usuário (`/usuarios` → "Convidar por e-mail"):
+  os dois reaproveitam o mesmo mecanismo de token de uso único (`reset_senha_tokens`,
+  2h de validade). Exigem SMTP configurado (`smtp_*` em Configuração → Sistema) — sem
+  isso, ambos mostram um aviso ("peça a um administrador") em vez de quebrar. Convite
+  gera uma senha placeholder aleatória que ninguém conhece (nem quem criou a conta);
+  a pessoa convidada define a senha de verdade pelo link.
+- **Sessões ativas** (`/minha-conta` → "Sessões ativas", `banco.sessoes_listar_do_usuario`):
+  qualquer usuário vê e revoga individualmente as próprias sessões — útil pra notar um
+  acesso esquecido aberto em outro aparelho. Escopado ao dono: o endpoint de revogação
+  confere que o token pertence a quem está pedindo antes de apagar.
+- **Confirmação na UI antes de desativar ou rebaixar** um admin (`usuarios.html`) —
+  só client-side (a trava de verdade já existe no backend desde §21); evita clique
+  acidental.
+- **Último login** na listagem de usuários (`usuarios.ultimo_login`) — mostra "Nunca"
+  pra conta criada e nunca usada.
+
+**Deliberadamente fora desta rodada** (mencionado a pedido, não implementado — sem
+necessidade concreta ainda, não porque seja difícil):
+- **Permissões granulares por módulo** (ex.: "pode editar câmera mas não postos") — os
+  três papéis atuais (admin/operador/cliente) cobrem os casos de uso reais até aqui;
+  criar um sistema de permissões bit-a-bit sem nenhum consumidor concreto é complexidade
+  especulativa (mais código, mais testes, mais superfície de ataque) por um benefício
+  hipotético. Se surgir um caso real ("operador X pode mexer em Y mas não Z"), vale
+  revisitar.
+- **Tokens de API pessoais** (um token por usuário/operador, para scripts, distinto da
+  `api_key` global) — mesma lógica: ninguém pediu ainda um script/integração rodando
+  como um usuário específico. A `api_key` global mais o `X-API-Key` já cobre o caso de
+  integração hoje existente (o roteador do posto).

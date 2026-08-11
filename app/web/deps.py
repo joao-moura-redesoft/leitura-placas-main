@@ -56,6 +56,14 @@ def empresa_do_usuario(request: Request) -> int | None:
     return user.get("empresa_id") if user.get("empresa_id") is not None else -1
 
 
+def quem_pede(request: Request) -> tuple[int | None, str]:
+    """(usuario_id, usuario_nome) de quem está fazendo a ação — pra auditoria
+    (app/core/banco.py:auditoria_registrar). (None, "api_key") quando a requisição
+    veio só pela api_key global (sem usuário associado)."""
+    user = usuario_atual(request)
+    return (user["id"], user["nome"]) if user is not None else (None, "api_key")
+
+
 def checar_acesso_empresa(request: Request, empresa_id: int | None) -> None:
     """Levanta 404 se o usuário logado é 'cliente' de OUTRA empresa (ou de nenhuma —
     `empresa_id=None` no recurso, ex.: câmera órfã, não pertence a ninguém).

@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Auditoria — ALPR{% endblock %}
+{% block conteudo %}
+<h1>Auditoria</h1>
+
+<div class="card" style="margin-bottom:16px">
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+    <label style="font-size:13px;color:#64748b">Ação
+      <select id="f-acao" onchange="recarregar()" style="display:block;margin-top:4px;min-width:220px">
+        <option value="">Todas</option>
+        <optgroup label="Login">
+          <option value="login">login</option>
+          <option value="login_falha">login_falha</option>
+        </optgroup>
+        <optgroup label="Usuários">
+          <option value="bootstrap_admin">bootstrap_admin</option>
+          <option value="usuario_criado">usuario_criado</option>
+          <option value="usuario_atualizado">usuario_atualizado</option>
+          <option value="senha_redefinida_por_admin">senha_redefinida_por_admin</option>
+          <option value="senha_trocada_self">senha_trocada_self</option>
+          <option value="esqueci_senha_solicitado">esqueci_senha_solicitado</option>
+          <option value="senha_redefinida_por_link">senha_redefinida_por_link</option>
+        </optgroup>
+        <optgroup label="Cadastro">
+          <option value="entidade_criada">entidade_criada</option>
+          <option value="entidade_atualizada">entidade_atualizada</option>
+          <option value="entidade_removida">entidade_removida</option>
+          <option value="posto_criado">posto_criado</option>
+          <option value="posto_atualizado">posto_atualizado</option>
+          <option value="posto_removido">posto_removido</option>
+        </optgroup>
+        <optgroup label="Segurança / Config">
+          <option value="api_key_gerada">api_key_gerada</option>
+          <option value="api_key_revogada">api_key_revogada</option>
+          <option value="retencao_definida">retencao_definida</option>
+          <option value="config_salva">config_salva</option>
+        </optgroup>
+      </select>
+    </label>
+    <button onclick="recarregar()">Atualizar</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="tabela-rolavel">
+  <table>
+    <thead>
+      <tr><th>Quando</th><th>Quem</th><th>Ação</th><th>Alvo</th><th>Detalhe</th></tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  </div>
+  <p id="sem-itens" style="display:none;color:#94a3b8;margin-top:8px">Nenhum evento registrado ainda.</p>
+  <div style="margin-top:12px;text-align:center">
+    <button id="btn-mais" onclick="carregarMais()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Carregar mais</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let _offset = 0;
+const LIMITE = 50;
+
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function linha(ev) {
+  const quem = ev.usuario_nome || (ev.usuario_id ? `#${ev.usuario_id}` : 'sistema/api_key');
+  const alvo = ev.alvo_tipo ? `${esc(ev.alvo_tipo)}${ev.alvo_id ? ' #' + esc(ev.alvo_id) : ''}` : '—';
+  return `<tr>
+    <td style="white-space:nowrap">${new Date(ev.criado_em).toLocaleString('pt-BR')}</td>
+    <td>${esc(quem)}</td>
+    <td><span class="badge badge-antigo">${esc(ev.acao)}</span></td>
+    <td>${alvo}</td>
+    <td style="color:#64748b;font-size:13px">${esc(ev.detalhe)}</td>
+  </tr>`;
+}
+
+async function buscar(offset) {
+  const acao = document.getElementById('f-acao').value;
+  const params = new URLSearchParams({ limit: LIMITE, offset });
+  if (acao) params.set('acao', acao);
+  const r = await fetch('/api/auditoria?' + params);
+  return r.ok ? r.json() : [];
+}
+
+async function recarregar() {
+  _offset = 0;
+  const eventos = await buscar(0);
+  document.getElementById('tbody').innerHTML = eventos.map(linha).join('');
+  document.getElementById('sem-itens').style.display = eventos.length ? 'none' : '';
+  document.getElementById('btn-mais').style.display = eventos.length < LIMITE ? 'none' : '';
+  _offset = eventos.length;
+}
+
+async function carregarMais() {
+  const eventos = await buscar(_offset);
+  document.getElementById('tbody').insertAdjacentHTML('beforeend', eventos.map(linha).join(''));
+  document.getElementById('btn-mais').style.display = eventos.length < LIMITE ? 'none' : '';
+  _offset += eventos.length;
+}
+
+recarregar();
+</script>
+{% endblock %}

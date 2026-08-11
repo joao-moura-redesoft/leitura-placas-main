@@ -99,6 +99,10 @@ def _migrar(c: sqlite3.Connection) -> None:
     cols_usr = {row[1] for row in c.execute("PRAGMA table_info(usuarios)").fetchall()}
     if "empresa_id" not in cols_usr:
         c.execute("ALTER TABLE usuarios ADD COLUMN empresa_id INTEGER REFERENCES empresas(id) ON DELETE SET NULL")
+    # Último login bem-sucedido — mostrado na lista de usuários pra achar conta
+    # esquecida/nunca usada (cliente que nunca entrou, admin dormente).
+    if "ultimo_login" not in cols_usr:
+        c.execute("ALTER TABLE usuarios ADD COLUMN ultimo_login TEXT")
 
 
 def inicializar() -> None:
@@ -239,5 +243,36 @@ def inicializar() -> None:
         CREATE INDEX IF NOT EXISTS idx_chamadas_criado ON chamadas(criado_em DESC);
         CREATE INDEX IF NOT EXISTS idx_chamadas_empresa ON chamadas(empresa_id);
         CREATE INDEX IF NOT EXISTS idx_chamadas_status ON chamadas(status);
+
+        -- Log de auditoria: quem fez o quê no painel administrativo. `usuario_id` fica
+        -- NULL pra tentativa de login falha (não há "quem" autenticado ainda) — o alvo
+        -- (e-mail tentado) vai em `detalhe`. `usuario_nome` é denormalizado de propósito:
+        -- o nome de quem agiu tem que sobreviver mesmo que a conta seja desativada depois.
+        CREATE TABLE IF NOT EXISTS auditoria (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            criado_em TEXT NOT NULL,
+            usuario_id INTEGER,
+            usuario_nome TEXT NOT NULL DEFAULT '',
+            acao TEXT NOT NULL,
+            alvo_tipo TEXT NOT NULL DEFAULT '',
+            alvo_id TEXT NOT NULL DEFAULT '',
+            detalhe TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_auditoria_criado ON auditoria(criado_em DESC);
+        CREATE INDEX IF NOT EXISTS idx_auditoria_usuario ON auditoria(usuario_id);
+        CREATE INDEX IF NOT EXISTS idx_auditoria_acao ON auditoria(acao);
+
+        -- Tokens de "esqueci minha senha" / convite por e-mail (mesmo mecanismo pros
+        -- dois casos — a diferença é só o texto do e-mail enviado). `usado`: token de
+        -- uso único, marcado depois de trocar a senha; um token usado ou expirado não
+        -- serve mais, mas a linha fica pra auditoria.
+        CREATE TABLE IF NOT EXISTS reset_senha_tokens (
+            token     TEXT    PRIMARY KEY,
+            user_id   INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+            criado_em TEXT    NOT NULL,
+            expira_em REAL    NOT NULL,
+            usado     INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_reset_tokens_user ON reset_senha_tokens(user_id);
         """)
         _migrar(c)

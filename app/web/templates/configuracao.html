@@ -466,6 +466,52 @@
     </div>
   </div>
 
+  <div class="card">
+    <h2 style="margin-top:0;">Segurança</h2>
+    <div class="grid-form">
+      <label>Cookie só em HTTPS <span class="help" data-tip="Marca o cookie de sessão como 'Secure' — só é enviado em conexões HTTPS. Ligue quando o servidor estiver atrás de um proxy reverso com TLS; deixe desligado para acesso local (http://localhost) ou o login para de funcionar.">?</span>
+        <select name="cookie_secure">
+          <option value="nao">Não — acesso local/sem TLS</option>
+          <option value="sim">Sim — servidor atrás de HTTPS</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">E-mail (SMTP)</h2>
+    <p style="margin-top:0;color:#64748b;font-size:14px">
+      Opcional — sem isto configurado, "esqueci minha senha" e "convidar por e-mail"
+      (em Usuários) ficam desligados e mostram um aviso em vez de quebrar.
+    </p>
+    <div class="grid-form">
+      <label>Servidor SMTP <span class="help" data-tip="Host do servidor de e-mail, ex.: smtp.gmail.com. Vazio = recurso de e-mail desligado.">?</span>
+        <input type="text" name="smtp_host" placeholder="smtp.suaempresa.com">
+      </label>
+      <label>Porta <span class="help" data-tip="Porta do SMTP. 587 (STARTTLS) é o padrão mais comum.">?</span>
+        <input type="number" name="smtp_porta" min="1" max="65535">
+      </label>
+      <label>Usuário SMTP <span class="help" data-tip="Usuário de autenticação no servidor de e-mail. Vazio = envia sem autenticação (raro, só servidores internos).">?</span>
+        <input type="text" name="smtp_usuario" autocomplete="off">
+      </label>
+      <label>Senha SMTP <span class="help" data-tip="Senha (ou senha de app) do usuário SMTP acima. Fica mascarada depois de salva.">?</span>
+        <input type="password" name="smtp_senha" autocomplete="new-password" placeholder="(sem alteração)">
+      </label>
+      <label>Remetente <span class="help" data-tip="Endereço que aparece como remetente dos e-mails. Vazio = usa o usuário SMTP.">?</span>
+        <input type="email" name="smtp_remetente" placeholder="alpr@suaempresa.com">
+      </label>
+      <label>TLS <span class="help" data-tip="Criptografia STARTTLS na conexão com o servidor de e-mail. Deixe 'Sim' salvo instrução em contrário do seu provedor de e-mail.">?</span>
+        <select name="smtp_tls">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label style="grid-column: 1 / -1;">URL pública do servidor <span class="help" data-tip="Usada para montar os links nos e-mails (ex.: https://alpr.suaempresa.com). Vazio = usa o endereço da própria requisição — funciona na maioria dos casos, mas atrás de proxy reverso o link pode sair com o host interno errado.">?</span>
+        <input type="text" name="url_base" placeholder="https://alpr.suaempresa.com">
+      </label>
+    </div>
+  </div>
+
 </div><!-- /tab-sistema -->
 
 

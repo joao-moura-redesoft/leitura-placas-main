@@ -11,6 +11,7 @@ continua funcionando — os submódulos são detalhe interno.
   _cadastro   câmeras e a árvore entidade → empresa → automação → bico
   _chamadas   log das chamadas do roteador
   _acesso     usuários e sessões
+  _auditoria  log de auditoria e tokens de reset/convite de senha
 """
 from __future__ import annotations
 
@@ -85,12 +86,22 @@ from ._acesso import (
     sessao_renovar,
     sessao_resolver,
     sessoes_limpar_expiradas,
+    sessoes_listar_do_usuario,
     sessoes_remover_do_usuario,
     usuarios_atualizar,
     usuarios_contar_admins_ativos,
     usuarios_definir_senha,
     usuarios_listar,
+    usuarios_marcar_login,
     usuarios_remover,
+)
+from ._auditoria import (
+    auditoria_listar,
+    auditoria_registrar,
+    reset_token_criar,
+    reset_token_marcar_usado,
+    reset_token_resolver,
+    reset_tokens_limpar_expirados,
 )
 
 __all__ = [n for n in dir() if not n.startswith("_")]

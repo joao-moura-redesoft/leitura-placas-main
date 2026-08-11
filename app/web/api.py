@@ -109,6 +109,20 @@ def limpar_logs():
     return {"limpo": True}
 
 
+@router.get("/auditoria", dependencies=[Depends(deps.exigir_admin)])
+def auditoria(
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    acao: str | None = None,
+    usuario_id: int | None = None,
+):
+    """Quem fez o quê no painel administrativo — login/logout, criação/edição/
+    desativação de usuário, troca de senha, cadastro estrutural (posto/entidade),
+    api_key/retenção por posto, configuração do sistema. Ver banco.auditoria_registrar
+    pelos pontos exatos que gravam aqui."""
+    return banco.auditoria_listar(limit=limit, offset=offset, acao=acao, usuario_id=usuario_id)
+
+
 @router.get("/recentes", dependencies=[Depends(deps.exigir_admin)])
 def recentes():
     """Feed cru do estado em memória (todas as câmeras do processo) — mesmo motivo de
@@ -205,7 +219,7 @@ def healthz():
 CHAVES_CONFIG = set(config.PADROES.keys())
 
 # Campos sensíveis — mascarados ao retornar (mas permitidos no POST).
-CHAVES_SENSIVEIS = {"intelbras_senha"}
+CHAVES_SENSIVEIS = {"intelbras_senha", "smtp_senha"}
 
 
 @router.get("/config", dependencies=[Depends(deps.exigir_admin)])
@@ -549,7 +563,7 @@ def debug_ocr_crop():
 
 
 @router.post("/config", dependencies=[Depends(deps.exigir_admin)])
-def config_salvar(payload: dict):
+def config_salvar(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(400, "payload inválido")
 
@@ -566,8 +580,15 @@ def config_salvar(payload: dict):
 
     # Filtra só as chaves conhecidas (descarta lixo herdado, ex.: _padroes).
     novo = {k: novo[k] for k in CHAVES_CONFIG if k in novo}
+    # Só os NOMES das chaves que mudaram vão pra auditoria — nunca o valor: várias
+    # (intelbras_senha, api_key, smtp_senha) são segredo, e mesmo as que não são não
+    # precisam virar histórico permanente só por terem passado por aqui.
+    mudadas = sorted(k for k in novo if atual.get(k) != novo.get(k))
     config.salvar(novo)
     log.info("Configuração salva via interface")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="config_salva",
+                              alvo_tipo="config", detalhe=", ".join(mudadas) or "sem mudanças")
 
     reiniciado = False
     try:

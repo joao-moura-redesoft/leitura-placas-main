@@ -3,10 +3,12 @@ administra, não preso a posto) × 'cliente' (preso a UM posto).
 
 Diferente da versão anterior, este router NÃO tem gate de admin no `include_router`
 (app/servidor.py) — cada rota decide sozinha. Existem rotas de verdade acessíveis a
-QUALQUER usuário logado (saber quem é, trocar a própria senha); o resto (listar,
-criar, editar outros usuários) continua atrás de `Depends(deps.exigir_admin)`.
+QUALQUER usuário logado (saber quem é, trocar a própria senha, gerir as próprias
+sessões); o resto (listar, criar, editar outros usuários) continua atrás de
+`Depends(deps.exigir_admin)`.
 """
 from __future__ import annotations
+import secrets
 import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -14,6 +16,8 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.core import banco
+from app.core import config
+from app.seguranca import email as email_mod
 from app.seguranca import sessao as auth_mod
 from app.web import deps
 
@@ -66,15 +70,46 @@ def trocar_a_propria_senha(payload: dict, request: Request):
     senha_nova = payload.get("senha_nova") or ""
     if not auth_mod.verificar_senha(senha_atual, usuario["senha"]):
         raise HTTPException(400, "Senha atual incorreta.")
-    if len(senha_nova) < 8:
-        raise HTTPException(400, "A nova senha deve ter pelo menos 8 caracteres.")
+    erro = auth_mod.senha_fraca(senha_nova)
+    if erro:
+        raise HTTPException(400, erro)
 
     banco.usuarios_definir_senha(usuario["id"], auth_mod.hash_senha(senha_nova))
+    banco.auditoria_registrar(usuario_id=usuario["id"], usuario_nome=usuario["nome"],
+                              acao="senha_trocada_self", alvo_tipo="usuario", alvo_id=usuario["id"])
     # Derruba as OUTRAS sessões (ex.: cookie vazado em outro navegador) — preserva a
     # que está fazendo a troca agora, senão a própria pessoa seria expulsa da tela.
     token_atual = request.cookies.get("sessao")
     auth_mod.remover_sessoes_usuario(usuario["id"], exceto_token=token_atual)
     return {"trocada": True}
+
+
+@router.get("/api/usuarios/eu/sessoes")
+def minhas_sessoes(request: Request):
+    """"Meus dispositivos" — todas as sessões ativas da própria conta, pra descobrir
+    (e revogar) um acesso esquecido aberto em outro lugar."""
+    usuario = deps.usuario_atual(request)
+    if usuario is None:
+        raise HTTPException(404, "Sem sessão de usuário (acesso via api_key)")
+    token_atual = request.cookies.get("sessao")
+    return [
+        {**s, "atual": s["token"] == token_atual}
+        for s in banco.sessoes_listar_do_usuario(usuario["id"])
+    ]
+
+
+@router.delete("/api/usuarios/eu/sessoes/{token}")
+def revogar_minha_sessao(token: str, request: Request):
+    usuario = deps.usuario_atual(request)
+    if usuario is None:
+        raise HTTPException(404, "Sem sessão de usuário (acesso via api_key)")
+    sessao = banco.sessao_resolver(token)
+    # `sessao["id"]` é o id do DONO da sessão (ver sessao_resolver) — só revoga a
+    # própria, mesmo que alguém tente adivinhar o token de outra conta.
+    if sessao is None or sessao["id"] != usuario["id"]:
+        raise HTTPException(404, "Sessão não encontrada")
+    banco.sessao_remover(token)
+    return {"revogada": True}
 
 
 # ── Admin-only ────────────────────────────────────────────────────────────────────
@@ -85,31 +120,65 @@ def listar():
 
 
 @router.post("/api/usuarios", dependencies=[Depends(deps.exigir_admin)])
-def criar(payload: dict):
+def criar(payload: dict, request: Request):
     nome = (payload.get("nome") or "").strip()
     email = (payload.get("email") or "").strip().lower()
-    senha = payload.get("senha") or ""
     papel = payload.get("papel") or "cliente"
     empresa_id = payload.get("empresa_id")
+    convidar = bool(payload.get("convidar"))
+    senha = payload.get("senha") or ""
 
     if not nome or not email:
         raise HTTPException(400, "nome e email são obrigatórios")
     if papel not in _PAPEIS_VALIDOS:
         raise HTTPException(400, f"papel deve ser um de {_PAPEIS_VALIDOS}")
-    if len(senha) < 8:
-        raise HTTPException(400, "senha deve ter pelo menos 8 caracteres")
     if papel == "cliente":
         if not empresa_id:
             raise HTTPException(400, "empresa_id é obrigatório para papel 'cliente'")
         if not banco.empresas_obter(int(empresa_id)):
             raise HTTPException(400, f"Empresa {empresa_id} não encontrada")
 
+    cfg = config.carregar()
+    if convidar:
+        # Convite por e-mail: ninguém define a senha agora — um placeholder
+        # aleatório e inutilizável entra no lugar (nem o admin que criou sabe qual é);
+        # a pessoa convidada define a senha de verdade pelo link (mesmo mecanismo do
+        # "esqueci minha senha").
+        if not email_mod.configurado(cfg):
+            raise HTTPException(400, "Convite por e-mail exige SMTP configurado em Configuração — "
+                                     "defina uma senha diretamente, ou configure o envio antes.")
+        senha_hash = auth_mod.hash_senha(secrets.token_urlsafe(24))
+    else:
+        erro = auth_mod.senha_fraca(senha)
+        if erro:
+            raise HTTPException(400, erro)
+        senha_hash = auth_mod.hash_senha(senha)
+
     uid = banco.criar_usuario(
-        nome, email, auth_mod.hash_senha(senha), papel=papel,
+        nome, email, senha_hash, papel=papel,
         empresa_id=int(empresa_id) if empresa_id else None,
     )
     if uid is None:
         raise HTTPException(409, f"E-mail {email} já cadastrado")
+
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(
+        usuario_id=quem_id, usuario_nome=quem_nome, acao="usuario_criado",
+        alvo_tipo="usuario", alvo_id=uid,
+        detalhe=f"email={email} papel={papel}" + (" (convite por e-mail)" if convidar else ""),
+    )
+
+    if convidar:
+        token = banco.reset_token_criar(uid)
+        link = f"{email_mod.url_base(request, cfg)}/redefinir-senha/{token}"
+        email_mod.enviar(
+            email, "Você foi convidado — Leitura de Placas",
+            f"Olá, {nome}.\n\n"
+            f"Uma conta foi criada para você no sistema de leitura de placas (papel: {papel}).\n\n"
+            f"Para definir sua senha e acessar, use o link abaixo — ele vale por 2 horas:\n{link}\n\n"
+            f"Se você não esperava este e-mail, pode ignorá-lo.",
+            cfg=cfg,
+        )
     return {"id": uid}
 
 
@@ -133,8 +202,10 @@ def atualizar(id_: int, payload: dict, request: Request):
             raise HTTPException(400, "empresa_id é obrigatório para papel 'cliente'")
         if not banco.empresas_obter(int(empresa_id)):
             raise HTTPException(400, f"Empresa {empresa_id} não encontrada")
-    if senha and len(senha) < 8:
-        raise HTTPException(400, "senha deve ter pelo menos 8 caracteres")
+    if senha:
+        erro = auth_mod.senha_fraca(senha)
+        if erro:
+            raise HTTPException(400, erro)
 
     # Autoproteção: ninguém mexe no PRÓPRIO status administrativo por aqui — mesmo que
     # sobrem outros admins. É uma trava a mais além de "não pode ser o último admin"
@@ -166,6 +237,23 @@ def atualizar(id_: int, payload: dict, request: Request):
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"E-mail {email} já cadastrado")
 
+    mudancas = []
+    if nome != atual["nome"]:
+        mudancas.append("nome")
+    if email != atual["email"]:
+        mudancas.append("email")
+    if papel != atual["papel"]:
+        mudancas.append(f"papel:{atual['papel']}->{papel}")
+    if bool(atual["ativo"]) != ativo:
+        mudancas.append(f"ativo:{bool(atual['ativo'])}->{ativo}")
+    if senha:
+        mudancas.append("senha")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(
+        usuario_id=quem_id, usuario_nome=quem_nome, acao="usuario_atualizado",
+        alvo_tipo="usuario", alvo_id=id_, detalhe=", ".join(mudancas) or "sem mudanças",
+    )
+
     # Sessões: qualquer coisa que mude o que essa conta PODE fazer (senha, papel,
     # desativação) precisa valer imediatamente em todo navegador aberto, não só em
     # logins novos. `exceto_token` preserva a sessão de quem está editando A SI MESMO
@@ -185,10 +273,16 @@ def redefinir_senha(id_: int, payload: dict, request: Request):
     autoridade administrativa, não self-service; ver `trocar_a_propria_senha` acima
     para o caso do próprio usuário)."""
     senha = payload.get("senha") or ""
-    if len(senha) < 8:
-        raise HTTPException(400, "senha deve ter pelo menos 8 caracteres")
+    erro = auth_mod.senha_fraca(senha)
+    if erro:
+        raise HTTPException(400, erro)
     if not banco.usuarios_definir_senha(id_, auth_mod.hash_senha(senha)):
         raise HTTPException(404, "Usuário não encontrado")
+
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome,
+                              acao="senha_redefinida_por_admin", alvo_tipo="usuario", alvo_id=id_)
+
     # Redefinir senha é tipicamente resposta a "acho que vazou" — de nada adianta
     # trocar a senha e deixar a sessão antiga (cookie já vazado) continuar valendo.
     # Exceção: a própria sessão de quem está redefinindo AGORA (admin resetando a si

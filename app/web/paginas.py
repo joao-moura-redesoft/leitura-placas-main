@@ -159,6 +159,13 @@ def testes(request: Request):
     return templates.TemplateResponse(request, "testes.html", _ctx(request))
 
 
+@router.get("/auditoria")
+def auditoria(request: Request):
+    if (r := _pagina_admin(request)) is not None:
+        return r
+    return templates.TemplateResponse(request, "auditoria.html", _ctx(request))
+
+
 @router.get("/documentacao")
 def documentacao(request: Request):
     return templates.TemplateResponse(request, "documentacao.html", _ctx(request))

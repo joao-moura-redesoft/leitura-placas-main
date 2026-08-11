@@ -122,6 +122,24 @@ PADROES: dict[str, str] = {
     "log_level": "info",
     "implantado": "nao",
     "api_key": "",   # chave opcional para acesso à API sem cookie de sessão
+    # sim = o cookie de sessão só é enviado em HTTPS (flag `Secure`). Desligado por
+    # padrão porque quebraria o acesso local padrão (http://localhost:14000, primeiro
+    # boot); ligue quando o servidor estiver atrás de um proxy reverso com TLS.
+    "cookie_secure": "nao",
+    # ── E-mail (opcional) — "esqueci minha senha" e convite de usuário novo ────
+    # Vazio (smtp_host="") = recurso desligado: sem servidor de e-mail configurado,
+    # essas duas telas caem no aviso "peça a um administrador" em vez de quebrar.
+    "smtp_host": "",
+    "smtp_porta": "587",
+    "smtp_usuario": "",
+    "smtp_senha": "",
+    "smtp_remetente": "",              # vazio = usa smtp_usuario
+    "smtp_tls": "sim",
+    # Base pra montar o link nos e-mails (ex.: "https://alpr.suaempresa.com"). Vazio =
+    # usa o host da própria requisição que disparou o e-mail — funciona pra a maioria
+    # dos casos, mas atrás de proxy reverso o host visto pelo servidor pode não ser o
+    # público; preencha se os links saírem errados.
+    "url_base": "",
     # ByteTrack: rastreamento de veículos entre frames para reduzir chamadas OCR
     # Requer: pip install boxmot  (fallback automático para modo clássico se não instalado)
     "tracker_ativo": "sim",

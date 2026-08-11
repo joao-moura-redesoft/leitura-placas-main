@@ -30,6 +30,27 @@ _CLEANUP_INTERVAL = 300      # limpeza a cada 5 minutos
 _BCRYPT_ROUNDS = 12
 
 
+def senha_fraca(senha: str) -> str | None:
+    """None = senha aceitável. Senão, a mensagem de erro pra mostrar.
+
+    Comprimento mínimo (8) já existia; a novidade é exigir pelo menos duas classes de
+    caractere (letra+dígito, ou +símbolo) — barra "12345678"/"aaaaaaaa" sem exigir
+    símbolo obrigatório (o que NIST 800-63B desaconselha: regra de complexidade rígida
+    empurra gente pra padrões previsíveis tipo "Senha123!"). Não checa contra lista de
+    senha vazada (exigiria API externa) — fica como possível melhoria futura.
+    """
+    if len(senha) < 8:
+        return "A senha deve ter pelo menos 8 caracteres."
+    classes = sum([
+        any(c.isalpha() for c in senha),
+        any(c.isdigit() for c in senha),
+        any(not c.isalnum() for c in senha),
+    ])
+    if classes < 2:
+        return "A senha deve combinar pelo menos duas coisas: letras, números ou símbolos."
+    return None
+
+
 def hash_senha(senha: str) -> str:
     return bcrypt.hashpw(senha.encode(), bcrypt.gensalt(_BCRYPT_ROUNDS)).decode()
 

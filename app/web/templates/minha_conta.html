@@ -25,6 +25,20 @@
     <button type="submit" style="background:#16a34a">Salvar nova senha</button>
   </form>
 </div>
+
+<div class="card" style="max-width:640px;margin-top:16px">
+  <h3 style="margin-top:0;margin-bottom:4px">Sessões ativas</h3>
+  <p style="margin:0 0 12px;color:#64748b;font-size:13px">
+    Todo lugar em que sua conta está logada agora. Se não reconhecer algum, revogue —
+    ele vai precisar entrar de novo com a senha.
+  </p>
+  <div class="tabela-rolavel">
+  <table>
+    <thead><tr><th>Criada em</th><th>Expira em</th><th></th><th>Ações</th></tr></thead>
+    <tbody id="tb-sessoes"></tbody>
+  </table>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -56,6 +70,28 @@ async function trocarSenha(e) {
   }
 }
 
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function carregarSessoes() {
+  const r = await fetch('/api/usuarios/eu/sessoes');
+  if (!r.ok) return;
+  const sessoes = await r.json();
+  const tb = document.getElementById('tb-sessoes');
+  tb.innerHTML = sessoes.map(s => `<tr>
+    <td>${new Date(s.criado_em).toLocaleString('pt-BR')}</td>
+    <td>${new Date(s.expira_em * 1000).toLocaleString('pt-BR')}</td>
+    <td>${s.atual ? '<span class="badge badge-ok">Esta sessão</span>' : ''}</td>
+    <td>${s.atual ? '—' : `<button onclick="revogarSessao('${esc(s.token)}')" style="background:#dc2626">Revogar</button>`}</td>
+  </tr>`).join('');
+}
+
+async function revogarSessao(token) {
+  const res = await fetch(`/api/usuarios/eu/sessoes/${token}`, { method: 'DELETE' });
+  if (res.ok) { avisar('Sessão revogada.', 'ok'); await carregarSessoes(); }
+  else await avisarResposta(res);
+}
+
 carregar();
+carregarSessoes();
 </script>
 {% endblock %}
