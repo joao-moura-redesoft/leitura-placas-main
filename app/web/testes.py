@@ -67,7 +67,12 @@ def listar_snapshots():
         for f in sorted(pasta.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
             if f.suffix.lower() not in (".jpg", ".jpeg", ".png"):
                 continue
-            if f.name.startswith("preview_"):
+            # `tipo` decide se a foto vai direto pro OCR (crop) ou passa antes pelo
+            # detector (frame). Errar aqui mede a coisa errada: um quadro inteiro
+            # entregue como recorte manda o OCR ler a cena toda.
+            nome_min = f.name.lower()
+            if (f.name.startswith("preview_") or nome_min.endswith("_frame.jpg")
+                    or "-amostra." in nome_min):
                 tipo = "frame"
             else:
                 tipo = "crop"

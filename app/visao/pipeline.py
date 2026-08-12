@@ -83,6 +83,10 @@ class Pipeline:
         else:
             self.ocr = OCR(engine=_engine, tesseract_psm=_psm,
                            deskew_ativo=_deskew_on, deskew_angulo_max=_deskew_max)
+        # Coleta para o dataset de testes — separada da gravação do histórico, que só
+        # registra leitura bem-sucedida e por isso nunca captura o que falha.
+        from app.visao.captura_dataset import CapturaDataset
+        self.captura_dataset = CapturaDataset(cfg, self.camera_db_id)
         self.votos_minimos = max(1, int(cfg.get("ocr_votos_minimos", "1")))
         self.frames_consenso = int(cfg["frames_consenso"])
         self.cooldown_seg = int(cfg["cooldown_seg"])
@@ -291,6 +295,13 @@ class Pipeline:
             bboxes = [(x + rx, y + ry, w, h, c) for x, y, w, h, c in bboxes_roi]
         else:
             bboxes = self.detector.detectar(frame)
+        # Amostra o quadro INTEIRO, tenha havido detecção ou não. É o único gatilho que
+        # pega moto cuja placa nem chega a ser detectada — e essa é a hipótese mais
+        # provável hoje, já que a varredura em janelas que resolveu moto está no caminho
+        # da leitura GET, não neste pipeline. Amostrar antes de processar é de propósito:
+        # o frame ainda não tem os retângulos desenhados por cima.
+        self.captura_dataset.amostrar(frame)
+
         f_h, f_w = frame.shape[:2]
         if self.tracker is not None and self.tracker.ativo():
             self._processar_com_tracker(frame, bboxes, f_h, f_w)
@@ -307,6 +318,10 @@ class Pipeline:
                 if crop.size > 0:
                     texto, conf_ocr = self.ocr.ler(crop)
                     resultado = validar(texto)
+                    if not resultado:
+                        # Mesmo caso do modo clássico: detectou e não leu. Sem isto, o
+                        # gatilho de negativo só existiria em um dos dois modos.
+                        self.captura_dataset.negativo(crop)
                     if resultado:
                         placa, padrao = resultado
                         aceitar = True
@@ -340,6 +355,9 @@ class Pipeline:
             if not resultado:
                 self._desenhar_bbox_rejeitado(frame, x, y, w, h, texto, conf_det)
                 log.debug("YOLO detectou (conf=%.2f) mas OCR/validador rejeitou: %r", conf_det, texto)
+                # Achou a placa e não conseguiu ler: é justamente o caso que o dataset
+                # não tem, porque o histórico só guarda o que deu certo.
+                self.captura_dataset.negativo(crop)
                 continue
             if self.votos_minimos > 1 and hasattr(self.ocr, "_ultimo_detalhe"):
                 det = self.ocr._ultimo_detalhe

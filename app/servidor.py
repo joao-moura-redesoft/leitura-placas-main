@@ -199,6 +199,12 @@ async def lifespan(_app: FastAPI):
     # Retenção de dados: apaga deteccoes/chamadas/JPEGs antigos (retencao_dias=0 desativa)
     ret_mod.retencao.iniciar(config.get_int(cfg, "retencao_dias"))
 
+    # Coleta de imagens para o dataset de testes (captura_dataset=nao desativa). Vive
+    # fora do Pipeline de propósito: com `deteccao_automatica=nao` — o caso comum, já que
+    # a leitura é reativa ao bico — o Pipeline só dorme, e nada seria coletado.
+    from app.visao import captura_dataset as cap_mod
+    cap_mod.iniciar_coletor(cfg)
+
     # DNS local embutido
     if config.get_bool(cfg, "dns_ativo"):
         dns_mod.dns_server.iniciar(

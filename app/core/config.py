@@ -131,6 +131,20 @@ PADROES: dict[str, str] = {
     # por isso tem interruptor próprio.
     "salvar_frame_deteccao": "sim",
     "snapshot_qualidade": "85",
+
+    # ── Coleta para o DATASET de testes (app/visao/captura_dataset.py) ──────────────
+    # `salvar_snapshot` acima só grava LEITURA BEM-SUCEDIDA, então a base cresce contendo
+    # apenas o que o sistema já acerta. Isto grava o que ele erra, que é o que falta para
+    # medir: o quadro inteiro de tempos em tempos (pega até a moto cuja placa nem chega a
+    # ser detectada) e o recorte que o detector achou e a leitura não resolveu.
+    # Desligado por padrão: custa disco e enche a fila de classificação de /testes.
+    "captura_dataset": "nao",
+    "captura_dataset_negativos": "sim",          # vale só quando captura_dataset=sim
+    "captura_dataset_intervalo_seg": "60",       # entre amostras do quadro inteiro
+    "captura_dataset_negativo_intervalo_seg": "20",
+    # Teto de imagens na pasta de snapshots. Ao bater, a coleta PARA (não apaga: apagar
+    # arriscaria remover snapshot que uma detecção do histórico referencia). 0 = sem teto.
+    "captura_dataset_max_arquivos": "5000",
     # Dias que `deteccoes`/`chamadas` (e os JPEGs de snapshot/frame) ficam guardados antes
     # de serem apagados automaticamente. 0 = nunca apaga (crescimento ilimitado — cuidado
     # num servidor multi-tenant de longa duração). Ajuste conforme a política de retenção
