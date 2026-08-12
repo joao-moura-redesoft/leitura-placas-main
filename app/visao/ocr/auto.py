@@ -104,6 +104,10 @@ class AutoOCR:
             formato_hint = "mercosul_moto" if e_moto else "mercosul"
         else:
             formato_hint = ""
+        # Guardado para a subclasse AutoOCRPaddle validar a leitura do PaddleOCR com o
+        # MESMO hint. Sem isso o Paddle era validado "cru" e perdia justamente as
+        # correções de posição que o hint faz (FBI0123 → FBI0I23).
+        self._ultimo_formato_hint = formato_hint
 
         tipo_placa = ("moto-mercosul" if e_moto else ("mercosul-carro" if e_mercosul_header else "antigo"))
         h, w = (crop.shape[:2] if crop is not None else (0, 0))
@@ -200,16 +204,27 @@ class AutoOCR:
 
 
 class AutoOCRPaddle(AutoOCR):
-    """AutoOCR + PaddleOCR como reforço para placas de LINHA ÚNICA borradas.
+    """AutoOCR + PaddleOCR como reforço.
 
     O PaddleOCR (PP-OCR, Apache-2.0) lê muito melhor placas antigas/borradas reais
-    (UFPR-ALPR: ~70% vs ~50% do AutoOCR), mas é fraco no limpo e NÃO faz moto (2 linhas).
-    Arbitragem, só para não-moto:
+    (UFPR-ALPR: ~70% vs ~50% do AutoOCR), mas é fraco no limpo.
+
+    Carro — arbitragem:
       - PaddleOCR e AutoOCR concordam        → mantém.
       - AutoOCR não validou                  → usa PaddleOCR (se validar).
       - Discordam                            → decide pela NITIDEZ do crop:
             nítido (lapvar ≥ limiar) → AutoOCR; borrado (< limiar) → PaddleOCR.
-    Moto (2 linhas) sempre fica com o AutoOCR (o PaddleOCR não lê layout empilhado).
+
+    Moto — o PaddleOCR TEM PRIORIDADE. Até 12/08/2026 esta classe descartava a leitura
+    do Paddle em moto, com a justificativa de que ele "não lê layout empilhado". Isso não
+    era verdade sobre o Paddle: ele lê as duas linhas e devolve uma caixa para cada — era
+    `OCR._ler_paddleocr` que ficava só com a maior e jogava metade da placa fora. Corrigido
+    aquele defeito, a ordem se inverte, medido nas 27 motos de `testes/dataset.json`:
+
+        PaddleOCR      22/27 (81,5%)
+        fast_plate_ocr  2/27 ( 7,4%)   ← engine que o AutoOCR usa como fallback em moto
+
+    Mantido o AutoOCR como segunda opinião: ele decide quando o Paddle não valida.
 
     Uso recomendado só na leitura GET (tolera a latência maior do PaddleOCR).
     """
@@ -240,28 +255,32 @@ class AutoOCRPaddle(AutoOCR):
         crop_nitido = nitidez >= self._limiar_nitidez
 
         if crop_nitido:
-            # Nítido: AutoOCR sozinho já é confiável (ver arbitragem abaixo, que sempre
-            # manteria o AutoOCR aqui) — roda só ele. Só aciona o Paddle se o AutoOCR não
-            # validar nada (raro num crop nítido) ou for moto (nesse caso, mantém AutoOCR).
+            # Nítido: AutoOCR sozinho já é confiável para CARRO (ver arbitragem abaixo, que
+            # sempre manteria o AutoOCR aqui) — roda só ele. Aciona o Paddle quando o
+            # AutoOCR não validou nada, ou quando é MOTO (aí o Paddle é o mais forte, ver
+            # os números no docstring da classe).
             d = super().ler_detalhado(crop)
-            if getattr(self, "_ultimo_e_moto", False) or d.get("placa") is not None:
+            e_moto = getattr(self, "_ultimo_e_moto", False)
+            if not e_moto and d.get("placa") is not None:
                 return d
             texto_p, conf_p = self._paddle.ler(crop)
-            vp = validar(texto_p)
-            if vp:
-                placa_p, padrao_p = vp
-                d = dict(d)
-                d["placa"], d["padrao"], d["confianca"] = placa_p, padrao_p, round(conf_p, 3)
-                d.setdefault("detalhes", []).append(
-                    {"engine": "paddleocr", "placa": placa_p, "padrao": padrao_p, "confianca": round(conf_p, 3)}
-                )
+            vp = validar(texto_p, getattr(self, "_ultimo_formato_hint", ""))
+            if not vp:
+                return d
+            placa_p, padrao_p = vp
+            if e_moto and d.get("placa") == placa_p:
+                return d                      # concordam: nada a trocar
+            d = dict(d)
+            d["placa"], d["padrao"], d["confianca"] = placa_p, padrao_p, round(conf_p, 3)
+            d.setdefault("detalhes", []).append(
+                {"engine": "paddleocr", "placa": placa_p, "padrao": padrao_p, "confianca": round(conf_p, 3)}
+            )
             return d
 
         # Borrado: os dois PODEM legitimamente contribuir, então rodam EM PARALELO (thread)
         # em vez de sequencial — sequencial custaria a SOMA dos dois (~6s); paralelo custa
         # o MAIOR dos dois (~3s), já que numpy/onnxruntime liberam o GIL durante a inferência.
-        # Roda o Paddle mesmo se acabar sendo moto (resultado descartado depois) — não
-        # adiciona latência (é concorrente), só usa 1 núcleo extra do servidor dedicado.
+        # Vale para carro e para moto — em moto o Paddle é inclusive o mais forte dos dois.
         resultado: dict = {}
 
         def _rodar_auto() -> None:
@@ -273,10 +292,7 @@ class AutoOCRPaddle(AutoOCR):
         t.join()
         d = resultado["d"]
 
-        if getattr(self, "_ultimo_e_moto", False):
-            return d  # moto: paddle não ajuda (rodou em paralelo, mas resultado é descartado)
-
-        vp = validar(texto_p)
+        vp = validar(texto_p, getattr(self, "_ultimo_formato_hint", ""))
         if not vp:
             return d
         placa_p, padrao_p = vp
@@ -285,10 +301,23 @@ class AutoOCRPaddle(AutoOCR):
         if placa_a == placa_p:
             return d  # concordam
 
-        # Já sabemos que o crop é borrado (nitidez < limiar) — Paddle tem prioridade
-        # quando discordam, ou quando o AutoOCR não validou nada.
-        log.info("AutoOCRPaddle: discordam auto=%r paddle=%r nitidez=%.0f → paddle",
-                 placa_a, placa_p, nitidez)
+        # Discordam. Crop borrado (nitidez < limiar) → Paddle; e em moto o Paddle também
+        # tem prioridade, por ser o mais forte nesse layout. Nos dois casos o Paddle leva.
+        #
+        # O desempate ignora QUANTOS engines sustentam cada lado, e há um caso real medido
+        # (testes/fotos/real_mercosul_carro_1.jpg) em que isso custa a leitura: easyocr e
+        # fast_plate_ocr leem LSN4I49 (mercosul), o Paddle sozinho lê LSN4149, e o Paddle
+        # vence só por o crop ser borrado (lapvar 93 contra limiar 3500). A validação não
+        # tem como barrar: LSN4149 é uma placa ANTIGA válida, e o hint 'mercosul' de carro
+        # é deliberadamente fraco (validador.py:90) para não corromper match antigo limpo.
+        #
+        # NÃO foi alterado: trocar o desempate para maioria de engines é plausível — o
+        # projeto já vota em MultiOCR — mas hoje só há 5 fotos reais no dataset, e mudar
+        # política de arbitragem com essa amostra é o erro que criou este bug. Medir
+        # quando o dataset real crescer.
+        votos_a = sum(1 for x in d.get("detalhes", []) if x.get("placa") == placa_a)
+        log.info("AutoOCRPaddle: discordam auto=%r (%d engine(s)) paddle=%r nitidez=%.0f moto=%s → paddle",
+                 placa_a, votos_a, placa_p, nitidez, getattr(self, "_ultimo_e_moto", False))
         d = dict(d)
         d["placa"], d["padrao"], d["confianca"] = placa_p, padrao_p, round(conf_p, 3)
         d.setdefault("detalhes", []).append(

@@ -125,6 +125,9 @@ class OCR:
         self._paddle = None
         self._doctr = None
         self._fast_plate = None
+        # Marca se a última passada de `_preprocessar_dl` chegou a apagar QR/"BR" — é o que
+        # deixa `ler()` saber que vale repetir sem essa limpeza quando o OCR volta vazio.
+        self._ultimo_limpou_mercosul = False
 
     def carregar(self) -> None:
         engine = self.engine
@@ -617,8 +620,12 @@ class OCR:
             cinza, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
         )
 
-    def _preprocessar_dl(self, crop) -> np.ndarray:
-        """Deep learning: remove artefatos → foca chars → escala mínima."""
+    def _preprocessar_dl(self, crop, limpar_mercosul: bool = True) -> np.ndarray:
+        """Deep learning: remove artefatos → foca chars → escala mínima.
+
+        `limpar_mercosul=False` pula só a etapa de apagar QR/"BR" — usado na segunda
+        tentativa de `ler()`, ver o comentário lá.
+        """
         if crop.size == 0:
             return crop
         if crop.ndim == 3:
@@ -628,7 +635,8 @@ class OCR:
             crop = self._deskew(crop)
             crop = self._corrigir_perspectiva(crop)
             crop, tinha_header, e_mercosul = self._remover_header(crop)
-            if tinha_header and e_mercosul:
+            self._ultimo_limpou_mercosul = bool(tinha_header and e_mercosul and limpar_mercosul)
+            if self._ultimo_limpou_mercosul:
                 crop = self._remover_ruidos_mercosul(crop)
             crop = self._focar_caracteres(crop)
         h = crop.shape[0]
@@ -662,15 +670,44 @@ class OCR:
             return self._ler_fast_plate_ocr(img_fp)
 
         # Outros engines DL: preprocessamento completo (remove header + artefatos)
+        self._ultimo_limpou_mercosul = False
         img = self._preprocessar_dl(crop)
         estado.registrar_crop_ocr(img)
 
+        resultado = None
         if engine == "easyocr" and self._easyocr_reader is not None:
-            return self._ler_easyocr(img)
-        if engine == "paddleocr" and self._paddle is not None:
-            return self._ler_paddleocr(img)
-        if engine == "doctr" and self._doctr is not None:
-            return self._ler_doctr(img)
+            resultado = self._ler_easyocr(img)
+        elif engine == "paddleocr" and self._paddle is not None:
+            resultado = self._ler_paddleocr(img)
+        elif engine == "doctr" and self._doctr is not None:
+            resultado = self._ler_doctr(img)
+
+        if resultado is not None:
+            # `_remover_ruidos_mercosul` PINTA POR CIMA dos cantos esquerdos (20%x28% em
+            # cima, 18%x30% embaixo) para apagar QR do CRLV-e e o marcador "BR". Quando o
+            # crop não é Mercosul de verdade, isso cobre o primeiro caractere de cada
+            # linha e o OCR não acha texto nenhum. Acontece de fato: numa placa ANTIGA de
+            # moto real do posto, `_remover_header` devolveu e_mercosul=True (falso
+            # positivo pela faixa metálica), a limpeza apagou o 'Y' e o '5' e o Paddle
+            # passou de 'NOI'+'5947' para nada.
+            #
+            # Em vez de tentar acertar a classificação do header (mexer nela arrisca as
+            # Mercosul de verdade, que dependem da limpeza), tenta de novo SEM a limpeza
+            # quando ela rodou e o resultado veio vazio. Custa uma passada extra só no
+            # caso que já tinha falhado.
+            if not resultado[0] and self._ultimo_limpou_mercosul:
+                img2 = self._preprocessar_dl(crop, limpar_mercosul=False)
+                estado.registrar_crop_ocr(img2)
+                if engine == "easyocr":
+                    retry = self._ler_easyocr(img2)
+                elif engine == "paddleocr":
+                    retry = self._ler_paddleocr(img2)
+                else:
+                    retry = self._ler_doctr(img2)
+                if retry[0]:
+                    log.debug("OCR recuperado sem a limpeza Mercosul: %r", retry[0])
+                    return retry
+            return resultado
 
         # Fallback se engine não inicializou corretamente
         img_t = self._preprocessar(crop)
@@ -729,15 +766,41 @@ class OCR:
         log.info("EasyOCR combinado: %r conf=%.2f", texto, conf_media)
         return texto, conf_media
 
+    # Caixa com área abaixo desta fração da maior é texto acessório (cidade/UF, "BRASIL",
+    # "DETRAN"), não uma linha da placa. As duas linhas de uma placa de moto têm áreas
+    # comparáveis (0.60-0.95 da maior, medido); os acessórios ficam bem abaixo (0.02-0.22).
+    FRACAO_LINHA = 0.35
+
     def _ler_paddleocr(self, img) -> tuple[str, float]:
-        """PaddleOCR 3.x: retorna o texto da MAIOR caixa (a placa é o maior texto do crop;
-        'BRASIL'/cidade/estado são menores). Isola a placa do texto ao redor."""
+        """PaddleOCR 3.x → texto da placa a partir das caixas detectadas.
+
+        Carro (1 linha): fica com a MAIOR caixa — a placa é o maior texto do crop e
+        'BRASIL'/cidade/estado são menores, então a maior isola a placa do resto.
+
+        Moto (2 linhas): a mesma regra era DESTRUTIVA. Numa placa de moto as duas linhas
+        (letras em cima, dígitos embaixo) são caixas separadas e de tamanho parecido, então
+        "a maior" jogava fora metade da placa — sempre. Medido nas 27 placas de moto de
+        `testes/dataset.json`: 0/27, e em TODAS o retorno era uma das duas linhas sozinha
+        ('YZA3456' saía '3456', 'NOP5Q67' saía 'NOP'). Não era resolução: são sintéticas e
+        limpas. Aqui as caixas comparáveis à maior são unidas em ORDEM DE LEITURA
+        (cima→baixo, esquerda→direita), que é a ordem dos caracteres na placa.
+
+        A separação carro/moto NÃO é feita pela proporção do crop, apesar de ser o
+        reflexo natural. Esta função recebe a imagem já pré-processada, e `_focar_caracteres`
+        corta o cabeçalho: uma placa de moto de 200x140 (proporção 1.43) chega aqui como
+        200x81 (proporção 2.47) e seria classificada como carro — foi exatamente o que
+        deixou 11 das 27 ainda quebradas na primeira versão desta correção. Quem decide é
+        a geometria das caixas: o filtro de área separa linha-de-placa de texto acessório,
+        e juntar em ordem de leitura é o comportamento certo nos dois casos (num carro cuja
+        placa o Paddle porventura parta em duas caixas, unir também é o certo).
+        """
         try:
             res = self._paddle.predict(img)
         except Exception as e:
             log.error("Erro PaddleOCR: %s", e)
             return "", 0.0
-        melhor_txt, melhor_conf, melhor_area = "", 0.0, -1.0
+
+        caixas: list[tuple[float, float, float, str, float]] = []   # (cy, cx, area, txt, conf)
         for it in res or []:
             try:
                 texts = it.get("rec_texts", []) or []
@@ -749,12 +812,29 @@ class OCR:
             except Exception:
                 continue
             for t, s, b in zip(texts, scores, boxes):
-                area = _area_caixa(b)
-                if area >= melhor_area:
-                    melhor_txt = re.sub(r"[^A-Z0-9]", "", str(t).upper())
-                    melhor_conf = float(s)
-                    melhor_area = area
-        return melhor_txt, melhor_conf
+                txt = re.sub(r"[^A-Z0-9]", "", str(t).upper())
+                if not txt:
+                    continue
+                cy, cx = _centro_caixa(b)
+                caixas.append((cy, cx, _area_caixa(b), txt, float(s)))
+
+        if not caixas:
+            return "", 0.0
+
+        maior = max(caixas, key=lambda c: c[2])
+        if len(caixas) == 1:
+            return maior[3], maior[4]
+
+        linhas = [c for c in caixas if c[2] >= maior[2] * self.FRACAO_LINHA]
+        linhas.sort(key=lambda c: (c[0], c[1]))
+        texto = "".join(c[3] for c in linhas)
+        # Confiança da linha PIOR, não a média: a placa só vale inteira, e uma linha
+        # incerta compromete o resultado todo. A média esconderia isso atrás de uma
+        # linha lida com 1.00.
+        conf = min(c[4] for c in linhas)
+        if len(linhas) > 1:
+            log.debug("PaddleOCR moto: %d linhas unidas → %r (conf=%.2f)", len(linhas), texto, conf)
+        return texto, conf
 
     def _ler_doctr(self, img) -> tuple[str, float]:
         try:
@@ -816,3 +896,18 @@ def _area_caixa(b) -> float:
         xs, ys = a[0::2], a[1::2]
         return float((xs.max() - xs.min()) * (ys.max() - ys.min()))
     return 0.0
+
+
+def _centro_caixa(b) -> tuple[float, float]:
+    """Centro (y, x) da caixa — ordem de leitura: de cima para baixo, da esquerda p/ direita."""
+    if b is None:
+        return (0.0, 0.0)
+    try:
+        a = np.asarray(b, dtype=float).reshape(-1)
+    except Exception:
+        return (0.0, 0.0)
+    if a.size == 4:
+        return ((a[1] + a[3]) / 2, (a[0] + a[2]) / 2)
+    if a.size >= 8 and a.size % 2 == 0:
+        return (float(a[1::2].mean()), float(a[0::2].mean()))
+    return (0.0, 0.0)
