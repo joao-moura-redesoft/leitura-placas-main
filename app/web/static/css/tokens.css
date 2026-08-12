@@ -1,0 +1,154 @@
+/* Design tokens + fontes — base compartilhada pelo layout autenticado (base.css)
+   e pelas telas de autenticação (auth.css).
+
+   Por que um arquivo separado: as duas folhas precisam exatamente da mesma
+   paleta e das mesmas @font-face. Duplicar significa que a próxima mudança de
+   cor sai pela metade em uma das duas — foi assim que .alert acabou definido
+   duas vezes com valores levemente diferentes.
+
+   As fontes são SERVIDAS LOCALMENTE de propósito. O mesmo motivo documentado
+   em base.html para o hls.min.js vale aqui: isto roda num appliance dentro de
+   um posto de gasolina, sem garantia de internet. Um <link> para o Google
+   Fonts significaria texto renderizado em fonte de sistema toda vez que o link
+   do posto cair, além de reintroduzir a dependência de terceiro que já foi
+   removida uma vez. Só os subsets latin e latin-ext foram baixados (a UI é
+   pt-BR; cyrillic/greek/vietnamese seriam 3 arquivos mortos). */
+
+/* ── Inter: interface ─────────────────────────────────────────────────────── */
+/* Arquivo variável 400–800: um download cobre regular, medium, semibold e bold. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('/static/fonts/inter-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+                 U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+                 U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('/static/fonts/inter-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+                 U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+                 U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ── JetBrains Mono: placas, logs, CNPJ, IDs ──────────────────────────────── */
+/* Escolhida pelo desenho dos glifos ambíguos, não por estética: zero com traço
+   interno, I com serifas, l com cauda. Numa tela em que o operador CONFERE uma
+   placa lida pelo OCR, 0/O e 1/I/l precisam ser distinguíveis à primeira vista —
+   Consolas (a fonte anterior) resolve o zero mas deixa I e l quase idênticos. */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/static/fonts/jetbrains-mono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+                 U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+                 U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/static/fonts/jetbrains-mono-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+                 U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+                 U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+:root {
+  /* ── Tipografia ── */
+  --fonte: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --fonte-mono: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+
+  /* ── Marca ──
+     O verde continua sendo a cor da marca. O que muda é o fundo da página:
+     era #f0fdf4 (verde claro), que tingia a tela inteira e fazia o verde dos
+     botões perder destaque por competir com o fundo. Agora o fundo é neutro e
+     o verde só aparece onde significa alguma coisa. */
+  --marca:        #16a34a;
+  --marca-forte:  #15803d;
+  --marca-escura: #14532d;
+  --marca-fraca:  #f0fdf4;
+  --marca-borda:  #bbf7d0;
+  --marca-texto:  #15803d;
+
+  /* ── Superfícies ── */
+  --bg:         #f4f7f6;
+  --superficie: #ffffff;
+  --superficie-2: #f8fafc;
+  --superficie-3: #f1f5f9;
+
+  /* ── Bordas ── */
+  --borda:       #e6ebf0;
+  --borda-forte: #d5dde5;
+
+  /* ── Texto ── */
+  --texto:   #0f172a;
+  --texto-2: #475569;
+  --texto-3: #94a3b8;
+
+  /* ── Semânticas ── */
+  --ok:        #15803d;  --ok-bg:    #dcfce7;  --ok-borda:    #bbf7d0;
+  --atencao:   #a16207;  --atencao-bg: #fef9c3; --atencao-borda: #fde68a;
+  --alerta:    #c2410c;  --alerta-bg: #ffedd5; --alerta-borda: #fed7aa;
+  --erro:      #b91c1c;  --erro-bg:  #fee2e2;  --erro-borda:  #fecaca;
+  --info:      #1d4ed8;  --info-bg:  #dbeafe;  --info-borda:  #bfdbfe;
+
+  /* ── Painéis escuros ──
+     Usados nas áreas de câmera, log e ROI. O resto da UI é claro de propósito:
+     o operador usa tablet em campo, sob luz do dia, onde tela escura vira
+     espelho. Escuro fica só onde ajuda — atrás de vídeo e de log de terminal,
+     que é justamente onde ele também parece um sistema de monitoramento. */
+  --painel:        #0d1520;
+  --painel-2:      #16202e;
+  --painel-3:      #1e2a3a;
+  --painel-borda:  rgba(255,255,255,.10);
+  --painel-texto:  #e2e8f0;
+  --painel-texto-2:#8fa3b8;
+  --painel-texto-3:#64748b;
+
+  /* ── Elevação ──
+     Sombras em duas camadas (contato curto + difusão longa). Uma sombra só,
+     como a `0 1px 3px` anterior, achata tudo no mesmo plano. */
+  --sombra-1: 0 1px 2px rgba(15,23,42,.04), 0 1px 3px rgba(15,23,42,.05);
+  --sombra-2: 0 2px 4px rgba(15,23,42,.04), 0 8px 16px -6px rgba(15,23,42,.10);
+  --sombra-3: 0 4px 8px rgba(15,23,42,.05), 0 16px 40px -10px rgba(15,23,42,.18);
+  --sombra-marca: 0 4px 14px rgba(22,163,74,.30);
+
+  /* ── Raio ── */
+  --r-1: 6px;
+  --r-2: 8px;
+  --r-3: 12px;
+  --r-4: 16px;
+  --r-pill: 9999px;
+
+  /* ── Espaçamento ── */
+  --e-1: 4px;  --e-2: 8px;  --e-3: 12px; --e-4: 16px;
+  --e-5: 20px; --e-6: 24px; --e-8: 32px; --e-10: 40px;
+
+  /* ── Movimento ──
+     Curvas rápidas e curtas. Interface de operação: a animação existe para
+     confirmar que o clique registrou, não para ser assistida. */
+  --t-rapida: 120ms cubic-bezier(.4, 0, .2, 1);
+  --t-media:  200ms cubic-bezier(.4, 0, .2, 1);
+  --t-saida:  260ms cubic-bezier(.16, 1, .3, 1);
+}
+
+/* Respeita quem desativou animação no sistema operacional. Sem isto, as
+   entradas de modal e toast viram um problema real de acessibilidade. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

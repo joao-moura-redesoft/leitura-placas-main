@@ -325,10 +325,6 @@ function irParaEtapa(n) {
 let _setupId = 0;
 let _camsSalvas = 0;
 
-function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
 function atualizarContadorSetup() {
   const n = document.getElementById('setup-tbody').querySelectorAll('tr').length;
   document.getElementById('setup-count').textContent = n;

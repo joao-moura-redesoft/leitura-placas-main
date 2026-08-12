@@ -81,7 +81,6 @@ let _automacoes = [];
 let _cameras = [];
 let _editandoId = null;
 
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function nomeAutomacao(id) {
   const a = _automacoes.find(x => x.id === id);
@@ -183,7 +182,7 @@ function abrirModal(it = null) {
   document.getElementById('modal-overlay').classList.add('aberto');
 }
 
-function fecharModal() { document.getElementById('modal-overlay').classList.remove('aberto'); }
+function fecharModal() { fecharOverlay('modal-overlay'); }
 
 function editar(id) {
   const it = _itens.find(x => x.id === id);

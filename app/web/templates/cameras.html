@@ -352,9 +352,7 @@ function abrirModal(cam = null) {
   document.getElementById('modal-overlay').classList.add('aberto');
 }
 
-function fecharModal() {
-  document.getElementById('modal-overlay').classList.remove('aberto');
-}
+function fecharModal() { fecharOverlay('modal-overlay'); }
 
 function editarCamera(id) {
   const cam = _cameras.find(c => c.id === id);
@@ -470,10 +468,6 @@ async function testarCamera() {
   }
 }
 
-function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
 // ── Scan RTSP ────────────────────────────────────────────────────────────────
 
 async function toggleScan() {
@@ -584,9 +578,7 @@ function abrirModalLote() {
   atualizarContadorLote();
 }
 
-function fecharModalLote() {
-  document.getElementById('modal-lote').classList.remove('aberto');
-}
+function fecharModalLote() { fecharOverlay('modal-lote'); }
 
 function atualizarContadorLote() {
   const n = document.getElementById('lote-tbody').querySelectorAll('tr').length;

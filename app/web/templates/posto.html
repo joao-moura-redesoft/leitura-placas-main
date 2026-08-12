@@ -130,21 +130,12 @@
 const EMPRESA_ID = {{ empresa_id }};
 let _d = null, _modal = null;
 
-function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function msg(ok, txt) {
   const el = document.getElementById('msg');
   el.className = 'alert ' + (ok ? 'alert-ok' : 'alert-err');
   el.innerHTML = txt;
   setTimeout(() => { el.innerHTML = ''; el.className = ''; }, 6000);
 }
-async function api(metodo, url, body) {
-  const r = await fetch(url, { method: metodo, headers: { 'Content-Type': 'application/json' },
-                               body: body ? JSON.stringify(body) : undefined });
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.detail || `erro ${r.status}`);
-  return d;
-}
-
 async function carregar() {
   const r = await fetch(`/api/postos/${EMPRESA_ID}`);
   if (!r.ok) { document.getElementById('titulo').textContent = 'Posto não encontrado'; return; }
@@ -175,13 +166,22 @@ function renderAoVivo() {
           ${esc(c.local || c.nome)}
           <span style="font-weight:400;color:#94a3b8">${esc(c.local ? c.nome : '')}</span>
         </div>
+        <!-- Camada de estado: cobre a imagem enquanto não há quadro e nunca deixa o
+             espaço vazio — mostra o que está acontecendo, ou o erro com botão de nova
+             tentativa. Quem a esconde é o evento load da imagem. -->
         <div style="position:relative;background:#0f172a;min-height:150px">
-          <img id="img-cam-${c.id}" alt="" style="width:100%;display:block"
-               ${c.ao_vivo ? `src="/stream/${c.id}.mjpg"` : ''}>
-          <div id="carregando-${c.id}" style="position:absolute;inset:0;display:flex;align-items:center;
-               justify-content:center;color:#94a3b8;font-size:13px;${c.ao_vivo ? 'display:none' : ''}">capturando…</div>
-          ${c.ao_vivo ? `<span style="position:absolute;top:8px;left:8px;background:#dc2626;color:#fff;
-             font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px">● AO VIVO</span>` : ''}
+          <img id="img-cam-${c.id}" alt="" style="width:100%;display:block">
+          <div id="estado-cam-${c.id}" style="position:absolute;inset:0;display:flex;flex-direction:column;
+               gap:9px;align-items:center;justify-content:center;color:#94a3b8;font-size:13px;
+               text-align:center;padding:14px">
+            <span id="estado-txt-${c.id}">carregando…</span>
+            <button id="estado-btn-${c.id}" onclick="recarregarCamera(${c.id})"
+                    style="display:none;background:#1e293b;border:1px solid #334155;color:#e2e8f0;
+                           font-size:12px;padding:5px 12px">Tentar de novo</button>
+          </div>
+          <span id="selo-cam-${c.id}" style="display:none;position:absolute;top:8px;left:8px;
+                background:#dc2626;color:#fff;font-size:11px;font-weight:600;padding:2px 8px;
+                border-radius:20px">● AO VIVO</span>
         </div>
         <div style="padding:10px 12px;display:flex;gap:8px;flex-wrap:wrap">
           ${botoes}
@@ -195,23 +195,70 @@ function renderAoVivo() {
   atualizarAoVivo();
 }
 
+const _vigias = {};   // camera_id -> cancelador do watchdog de MJPEG em curso
+
+function estadoCamera(id, texto, comBotao) {
+  const box = document.getElementById(`estado-cam-${id}`);
+  if (!box) return;
+  box.style.display = 'flex';
+  document.getElementById(`estado-txt-${id}`).textContent = texto;
+  document.getElementById(`estado-btn-${id}`).style.display = comBotao ? 'inline-block' : 'none';
+}
+
+// Carrega a imagem de UMA câmera, com fallback em cadeia:
+// ao vivo → (não veio quadro) → captura sob demanda → (falhou) → erro na tela.
+// Nunca termina sem imagem nem sem mensagem.
+async function carregarImagemCamera(c) {
+  const img = document.getElementById(`img-cam-${c.id}`);
+  if (!img) return;
+  if (_vigias[c.id]) { _vigias[c.id](); delete _vigias[c.id]; }
+
+  const selo = document.getElementById(`selo-cam-${c.id}`);
+  const mostrar = () => {
+    const box = document.getElementById(`estado-cam-${c.id}`);
+    if (box) box.style.display = 'none';
+  };
+  img.onload = mostrar;
+
+  const modo = c.stream_modo || (c.ao_vivo ? 'ao_vivo' : 'sob_demanda');
+  if (modo === 'ao_vivo' || modo === 'aquecendo') {
+    const aquecendo = modo === 'aquecendo';
+    if (selo) selo.style.display = aquecendo ? 'none' : 'block';
+    estadoCamera(c.id, aquecendo ? 'conectando à câmera…' : 'abrindo transmissão ao vivo…', false);
+    definirImagem(img, `/stream/${c.id}.mjpg?t=${Date.now()}`);
+    _vigias[c.id] = vigiarMjpeg(img, async motivo => {
+      delete _vigias[c.id];
+      if (selo) selo.style.display = 'none';
+      await capturarCamera(c.id, motivo);
+    }, aquecendo ? 30000 : MJPEG_TIMEOUT_MS);
+    return;
+  }
+  if (selo) selo.style.display = 'none';
+  await capturarCamera(c.id);
+}
+
+async function capturarCamera(id, aviso) {
+  const img = document.getElementById(`img-cam-${id}`);
+  if (!img) return;
+  estadoCamera(id, (aviso ? aviso + ' ' : '') + 'capturando imagem…', false);
+  try {
+    definirImagem(img, await capturarSnapshot(id));   // o `onload` esconde a camada
+  } catch (ex) {
+    estadoCamera(id, (aviso ? aviso + ' ' : '') + ex.message, true);
+  }
+}
+
+function recarregarCamera(id) {
+  const c = _d.cameras.find(x => x.id === id);
+  if (c) carregarImagemCamera(c);
+}
+
 async function atualizarAoVivo() {
   const btn = document.getElementById('btn-aovivo');
   if (btn) { btn.disabled = true; btn.textContent = 'Capturando…'; }
-  // Câmeras em modo contínuo já exibem MJPEG — não precisa capturar nada para elas.
-  for (const c of _d.cameras.filter(x => !x.ao_vivo)) {
-    const img = document.getElementById(`img-cam-${c.id}`);
-    const load = document.getElementById(`carregando-${c.id}`);
-    if (!img) continue;
-    try {
-      const r = await fetch(`/api/cameras/${c.id}/snapshot?t=${Date.now()}`);
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'sem imagem');
-      img.src = URL.createObjectURL(await r.blob());
-      if (load) load.style.display = 'none';
-    } catch (ex) {
-      if (load) { load.style.display = 'flex'; load.textContent = ex.message; }
-    }
-  }
+  // Sequencial de propósito: as câmeras de um posto costumam estar atrás do mesmo
+  // link/DVR, e abrir várias conexões RTSP ao mesmo tempo faz todas ficarem lentas.
+  for (const c of _d.cameras) await carregarImagemCamera(c);
   if (btn) { btn.disabled = false; btn.textContent = '↻ Atualizar imagens'; }
 }
 
@@ -236,7 +283,10 @@ async function lerBico(bicoId, codigo) {
       <span style="color:#94a3b8">· ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%</span>`;
     if (d.frame_url) {
       const img = document.getElementById(`img-cam-${bico.camera_id}`);
-      if (img) img.src = d.frame_url + '?t=' + Date.now();
+      // Desarma o watchdog do MJPEG antes de trocar o src: senão ele ainda podia
+      // disparar depois e substituir o quadro da leitura por uma nova captura.
+      if (_vigias[bico.camera_id]) { _vigias[bico.camera_id](); delete _vigias[bico.camera_id]; }
+      if (img) definirImagem(img, d.frame_url + '?t=' + Date.now());
     }
   } catch (ex) {
     res.innerHTML = `<span style="color:#b91c1c">Erro: ${esc(ex.message)}</span>`;
@@ -338,7 +388,7 @@ function abrirModal(titulo, campos, onSalvar) {
   setTimeout(() => document.querySelector('#modal-campos input, #modal-campos select')?.focus(), 50);
 }
 function fecharModal() {
-  document.getElementById('overlay').classList.remove('aberto');
+  fecharOverlay('overlay');
   _modal = null;
 }
 async function salvarModal(e) {

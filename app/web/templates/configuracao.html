@@ -229,6 +229,38 @@
   </div>
 
   <div class="card">
+    <h2 style="margin-top:0;">Varredura em Janelas (recupera placa de moto)</h2>
+    <p style="margin-top:0;color:#64748b;font-size:.85rem">
+      Quando a leitura não acha <strong>nenhuma</strong> placa no recorte do bico, revarre
+      esse recorte em janelas sobrepostas menores. É o que recupera placa de <strong>moto
+      parada na bomba</strong>: o detector redimensiona tudo o que recebe para 608 px, então
+      numa área grande a placa de moto (~38 px) chega pequena demais — e ampliar a área não
+      resolve, o modelo reduz de volta. O que funciona é variar o enquadramento.
+      Custa passadas extras <em>só</em> nas leituras que iriam falhar de todo jeito.
+    </p>
+    <div class="grid-form">
+      <label>Ativa na leitura (Ler Placa / GET) <span class="help" data-tip="Recomendado: Sim. Só entra quando a passada normal não achou nada, então não afeta a latência das leituras de carro.">?</span>
+        <select name="tiles_fallback_get">
+          <option value="sim">Sim — recupera placa pequena</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Lado da janela (px) <span class="help" data-tip="Tamanho alvo de cada janela, em pixels do recorte analisado. Medido em cena real: janelas de ~250-320px pegam moto+placa juntas e detectam; o recorte inteiro não. Recomendado: 300.">?</span>
+        <input type="number" step="10" min="64" max="1280" name="tiles_lado_alvo">
+      </label>
+      <label>Sobreposição <span class="help" data-tip="Sobreposição entre janelas vizinhas. FAIXA ÚTIL ESTREITA: 0.25 a 0.35. Acima disso cada janela cresce até virar o recorte inteiro, que é justamente o enquadramento que falha (medido: 0.40 e 0.50 não acham nada). Recomendado: 0.30 — não mexa sem medir.">?</span>
+        <input type="number" step="0.05" min="0" max="0.9" name="tiles_sobreposicao">
+      </label>
+      <label>Máx. janelas por foto <span class="help" data-tip="Teto de janelas varridas por tentativa — freio de latência (~200ms por janela em CPU). Se o recorte pedir mais janelas que o teto, as janelas ficam maiores em vez de deixar parte do recorte sem varrer. Recomendado: 6.">?</span>
+        <input type="number" step="1" min="1" max="24" name="tiles_max_janelas">
+      </label>
+      <label>Confiança mínima (janelas) <span class="help" data-tip="Limiar só das janelas, mais permissivo que o geral de propósito: aqui já se sabe que o caminho normal falhou, e a placa de moto sai raspando o limiar (0.19 a 0.37 medido). Um recorte ruim ainda tem que passar pelo OCR, pela validação de formato e pelo consenso entre fotos. Recomendado: 0.15.">?</span>
+        <input type="number" step="0.01" min="0" max="1" name="tiles_conf">
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
     <h2 style="margin-top:0;">Modo de Detecção</h2>
     <div class="grid-form">
       <label>Detecção automática <span class="help" data-tip="Sim = detecta placas continuamente no stream em tempo real. Não = detecção só ocorre ao clicar 'Ler Placa'.">?</span>

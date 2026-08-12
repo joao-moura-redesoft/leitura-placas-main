@@ -48,8 +48,8 @@
     </div>
   </div>
 
-  <div class="auth-row" style="justify-content:flex-end">
-    <a href="/esqueci-senha" style="color:#16a34a;text-decoration:none;font-weight:500">Esqueci minha senha</a>
+  <div class="auth-row so-direita">
+    <a href="/esqueci-senha" class="auth-link">Esqueci minha senha</a>
   </div>
 
   {% if erro %}
@@ -70,6 +70,23 @@
 </form>
 
 <script>
+// O POST de login demora de propósito (o hash da senha é lento por design).
+// Sem retorno visual o usuário clica de novo e o segundo POST chega a contar
+// como tentativa extra no bloqueio por tentativas.
+//
+// Não usa btn.disabled: desabilitar o próprio botão de submit dentro do evento
+// 'submit' é o caminho clássico para o formulário não ser enviado em alguns
+// browsers. A classe .carregando já aplica pointer-events:none, e a flag cobre
+// o reenvio por Enter.
+(function () {
+  let enviando = false;
+  document.querySelector('form').addEventListener('submit', e => {
+    if (enviando) { e.preventDefault(); return; }
+    enviando = true;
+    e.target.querySelector('.btn-primary')?.classList.add('carregando');
+  });
+})();
+
 function toggleSenha(id, btn) {
   const inp = document.getElementById(id);
   const show = inp.type === 'password';

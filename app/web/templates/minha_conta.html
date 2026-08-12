@@ -70,7 +70,6 @@ async function trocarSenha(e) {
   }
 }
 
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 async function carregarSessoes() {
   const r = await fetch('/api/usuarios/eu/sessoes');

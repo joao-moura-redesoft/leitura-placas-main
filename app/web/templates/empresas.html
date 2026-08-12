@@ -95,7 +95,6 @@ let _itens = [];
 let _entidades = [];
 let _editandoId = null;
 
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function nomeEntidade(id) {
   const e = _entidades.find(x => x.id === id);
@@ -162,7 +161,7 @@ function abrirModal(it = null) {
   document.getElementById('modal-overlay').classList.add('aberto');
 }
 
-function fecharModal() { document.getElementById('modal-overlay').classList.remove('aberto'); }
+function fecharModal() { fecharOverlay('modal-overlay'); }
 
 function editar(id) {
   const it = _itens.find(x => x.id === id);
@@ -204,7 +203,7 @@ function abrirModalSeguranca(id) {
   document.getElementById('modal-seg-overlay').classList.add('aberto');
 }
 
-function fecharModalSeguranca() { document.getElementById('modal-seg-overlay').classList.remove('aberto'); }
+function fecharModalSeguranca() { fecharOverlay('modal-seg-overlay'); }
 
 function renderChaveAtual(chave) {
   const el = document.getElementById('seg-chave-atual');

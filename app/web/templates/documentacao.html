@@ -191,7 +191,7 @@
     <div class="endpoint"><span class="method post">POST</span><div><span class="path">/api/cameras/scan</span><div class="note">Varre uma faixa de IP procurando porta RTSP aberta.</div></div></div>
 
     <h3 style="margin-top:16px">Histórico, listas e sistema</h3>
-    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/deteccoes?placa&desde&ate&empresa_id&bico_id&incluir_testes&limit&offset</span><div class="note">Histórico de detecções, com posto/bico de origem. Leituras de teste ficam fora por padrão.</div></div></div>
+    <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/deteccoes?placa&desde&ate&empresa_id&bico_id&origem&limit&offset</span><div class="note">Histórico de detecções, com posto/bico de origem. <code>origem</code>: <code>producao</code> (padrão, exclui os testes manuais da interface), <code>teste</code> (só eles) ou <code>todas</code>. O antigo <code>incluir_testes=true</code> equivale a <code>origem=todas</code> e continua aceito.</div></div></div>
     <div class="endpoint"><span class="method delete">DELETE</span><div><span class="path">/api/deteccoes/{id}</span><div class="note">Remove uma detecção do histórico.</div></div></div>
     <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/placa/{placa}</span><div class="note">Resumo consolidado para uma placa: última detecção, lista branca/negra, histórico recente.</div></div></div>
     <div class="endpoint"><span class="method get">GET</span><div><span class="path">/api/listas?tipo=branca</span><div class="note">Lista placas cadastradas em listas branca/negra. + <span class="path">POST</span>, <span class="path">DELETE /{id}</span>.</div></div></div>
@@ -309,7 +309,7 @@ const apiExemplos = [
     rota: '/api/leitura',
     parametros: { entidade: 'OPCAO', cnpj: '12345678000111', automacao: '1', bico: '1' },
     body: null,
-    resposta: { entidade: 'OPCAO', cnpj: '12345678000111', automacao: '1', bico: '1', camera_id: 3, bico_id: 2, placa: 'PGK2D93', padrao: 'mercosul', confianca: 0.91, acordo: 0.85, votos_snapshot: 5, total_snapshots: 6, tentativas: 6, parada_motivo: 'acordo', snapshot: '/static/snapshots/20260721T185912_PGK2D93.jpg', frame_url: '/static/snapshots/preview_bico_2.jpg' }
+    resposta: { entidade: 'OPCAO', cnpj: '12345678000111', automacao: '1', bico: '1', camera_id: 3, bico_id: 2, placa: 'PGK2D93', padrao: 'mercosul', confianca: 0.91, acordo: 0.85, confirmada: true, votos_snapshot: 5, total_snapshots: 6, tentativas: 6, parada_motivo: 'acordo', snapshot: '/static/snapshots/20260721T185912_PGK2D93.jpg', frame_url: '/static/snapshots/preview_bico_2.jpg' }
   },
   {
     metodo: 'GET',
@@ -330,7 +330,7 @@ const apiExemplos = [
     rota: '/api/chamadas/resumo',
     parametros: { horas: 24 },
     body: null,
-    resposta: { horas: 24, total: 12, ok: 9, sem_placa: 1, erro_cadastro: 1, erro_camera: 1, taxa_sucesso: 0.75, acordo_medio: 0.82, duracao_media_ms: 24500, por_posto: [{ posto: 'ALTIPLANO', ok: 9, total: 11 }], motivos: [{ motivo: 'cadastro não encontrado: automacao', n: 1 }] }
+    resposta: { horas: 24, total: 12, ok: 8, nao_confirmada: 1, sem_placa: 1, erro_cadastro: 1, erro_camera: 1, taxa_sucesso: 0.67, acordo_medio: 0.82, duracao_media_ms: 24500, por_posto: [{ posto: 'ALTIPLANO', ok: 8, total: 11 }], motivos: [{ motivo: 'cadastro não encontrado: automacao', n: 1 }] }
   },
   {
     metodo: 'GET',

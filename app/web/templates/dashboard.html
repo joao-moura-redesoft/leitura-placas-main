@@ -1,123 +1,135 @@
 {% extends "base.html" %}
 {% block title %}Dashboard — ALPR{% endblock %}
 {% block conteudo %}
-<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
-  <h1 style="margin:0">Integração</h1>
-  <select id="janela" onchange="carregarResumo()" style="margin-left:auto">
-    <option value="24">Últimas 24h</option>
-    <option value="1">Última hora</option>
-    <option value="168">Últimos 7 dias</option>
-    <option value="720">Últimos 30 dias</option>
-  </select>
+<div class="pagina-topo">
+  <h1>Integração</h1>
+  <div class="acoes">
+    <select id="janela" onchange="carregarResumo()" aria-label="Janela de tempo">
+      <option value="24">Últimas 24h</option>
+      <option value="1">Última hora</option>
+      <option value="168">Últimos 7 dias</option>
+      <option value="720">Últimos 30 dias</option>
+    </select>
+  </div>
 </div>
 
 <!-- Indicadores da leitura reativa -->
-<div class="grid-status" style="margin-bottom:16px">
-  <div class="status-cell"><div class="label">Chamadas do roteador</div><div class="value" id="kp-total">—</div></div>
-  <div class="status-cell"><div class="label">Placas lidas</div><div class="value" id="kp-ok" style="color:#15803d">—</div></div>
+<div class="grid-status mb-4">
+  <div class="status-cell destaque"><div class="label">Chamadas do roteador</div><div class="value" id="kp-total">—</div></div>
+  <div class="status-cell"><div class="label">Placas lidas</div><div class="value v-ok" id="kp-ok">—</div></div>
+  <!-- Leituras que devolveram placa sem atingir o acordo mínimo: não entram na taxa de
+       sucesso e precisam de conferência antes de virar cobrança. -->
+  <div class="status-cell"><div class="label">A conferir</div><div class="value v-alerta" id="kp-conferir">—</div></div>
   <div class="status-cell"><div class="label">Taxa de sucesso</div><div class="value" id="kp-taxa">—</div></div>
   <div class="status-cell"><div class="label">Acordo médio</div><div class="value" id="kp-acordo">—</div></div>
   <div class="status-cell"><div class="label">Tempo médio</div><div class="value" id="kp-tempo">—</div></div>
-  <div class="status-cell"><div class="label">Falhas</div><div class="value" id="kp-falhas" style="color:#b91c1c">—</div></div>
+  <div class="status-cell"><div class="label">Falhas</div><div class="value v-erro" id="kp-falhas">—</div></div>
 </div>
 
-<div id="alerta-cadastro" style="display:none" class="alert alert-err"></div>
+<div id="alerta-cadastro" class="alert alert-err oculto"></div>
 
 <!-- Primeira execução: em vez de seis "—" sem explicação, diz o que falta acontecer. -->
-<div id="sem-dados" style="display:none" class="card" style="text-align:center">
-  <h2 style="margin:0 0 8px">Nenhuma chamada recebida ainda</h2>
-  <p style="color:#64748b;font-size:14px;margin:0 0 14px">
+<div id="sem-dados" class="card vazio oculto">
+  <h2>Nenhuma chamada recebida ainda</h2>
+  <p>
     Esta tela se preenche quando o roteador do posto chamar o endpoint de leitura.
     Configure-o para fazer um GET nesta URL ao terminar o abastecimento:
   </p>
-  <code id="url-exemplo" style="display:inline-block;background:#f1f5f9;padding:10px 14px;
-        border-radius:7px;font-size:13px;word-break:break-all"></code>
-  <p style="color:#94a3b8;font-size:13px;margin:14px 0 0">
+  <code id="url-exemplo" class="cod cod-bloco"></code>
+  <p class="t-13 t-mudo mt-4">
     Para testar sem o roteador, abra um posto e use <strong>"Testar como o roteador"</strong>.
   </p>
 </div>
 
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="grid-principal">
+<div class="grid-2" id="grid-principal">
   <div class="card">
-    <h2 style="margin-top:0;margin-bottom:14px">Por posto</h2>
+    <div class="card-topo"><h2>Por posto</h2></div>
     <table>
       <thead><tr><th>Posto</th><th>Lidas</th><th>Chamadas</th><th>Sucesso</th></tr></thead>
       <tbody id="tb-postos"></tbody>
     </table>
-    <p id="sem-postos" style="display:none;color:#94a3b8;margin:12px 0 0">
+    <p id="sem-postos" class="t-mudo mt-3 oculto">
       Nenhuma chamada ainda. O roteador do posto precisa chamar
-      <code style="background:#f1f5f9;padding:2px 5px;border-radius:4px">GET /api/leitura</code>.
+      <code>GET /api/leitura</code>.
     </p>
   </div>
 
   <div class="card">
-    <h2 style="margin-top:0;margin-bottom:14px">Por que está falhando</h2>
+    <div class="card-topo"><h2>Por que está falhando</h2></div>
     <div id="motivos"></div>
-    <p id="sem-motivos" style="display:none;color:#15803d;margin:12px 0 0">Nenhuma falha na janela. ✓</p>
+    <p id="sem-motivos" class="t-ok mt-3 oculto">Nenhuma falha na janela. ✓</p>
   </div>
 </div>
 
 <div class="card">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
-    <h2 style="margin:0">Chamadas recentes</h2>
-    <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-      <input type="checkbox" id="so-erros" onchange="carregarChamadas()" style="width:auto;padding:0">
+  <div class="card-topo">
+    <h2>Chamadas recentes</h2>
+    <label class="flex-centro g-2 t-13">
+      <input type="checkbox" id="so-erros" onchange="carregarChamadas()">
       Só as recusadas
     </label>
   </div>
-  <table>
-    <thead>
-      <tr><th>Quando</th><th>Posto</th><th>Automação / Bico</th><th>Resultado</th><th>Detalhe</th><th>Tempo</th></tr>
-    </thead>
-    <tbody id="tb-chamadas"></tbody>
-  </table>
-  <p id="sem-chamadas" style="display:none;color:#94a3b8;margin:12px 0 0">Nenhuma chamada registrada.</p>
+  <div class="tabela-rolavel">
+    <table>
+      <thead>
+        <tr><th>Quando</th><th>Posto</th><th>Automação / Bico</th><th>Resultado</th><th>Detalhe</th><th>Tempo</th></tr>
+      </thead>
+      <tbody id="tb-chamadas"></tbody>
+    </table>
+  </div>
+  <p id="sem-chamadas" class="t-mudo mt-3 oculto">Nenhuma chamada registrada.</p>
 </div>
 
 {% if not usuario or usuario.papel == 'admin' %}
 <!-- Logs do processo inteiro (todas as câmeras/clientes) — não dá para escopar por
      posto, então esta seção fica fora do que um usuário 'cliente' vê. -->
 <div class="card">
-  <div style="display:flex;justify-content:space-between;align-items:center">
-    <h2 style="margin:0">Logs do Servidor</h2>
-    <div style="display:flex;gap:8px">
-      <select id="filtro-nivel" onchange="carregarLogs()">
+  <div class="card-topo">
+    <h2>Logs do Servidor</h2>
+    <div class="flex g-2">
+      <select id="filtro-nivel" onchange="carregarLogs()" aria-label="Nível de log">
         <option value="">Todos</option>
         <option value="INFO">INFO</option>
         <option value="WARNING">WARNING</option>
         <option value="ERROR">ERROR</option>
         <option value="DEBUG">DEBUG</option>
       </select>
-      <button onclick="carregarLogs()">Atualizar</button>
-      <button onclick="limparLogs()" style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca">Limpar</button>
+      <button class="btn-secundario" onclick="carregarLogs()">Atualizar</button>
+      <button class="btn-perigo" onclick="limparLogs()">Limpar</button>
     </div>
   </div>
-  <div class="log-pane" id="logs">carregando…</div>
+  <div class="log-pane" id="logs"><span class="log-line log-DEBUG">carregando…</span></div>
 </div>
 {% endif %}
-
-<style>
-  /* Mantenha o espaço depois da chave: chave seguida de cerquilha inicia um
-     comentário no Jinja e quebra o template inteiro. */
-  @media (max-width: 900px) { #grid-principal { grid-template-columns: 1fr !important; } }
-</style>
 {% endblock %}
 
 {% block scripts %}
 <script>
-function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+// Mostra/esconde por classe em vez de style.display — o valor "restaurado" antes
+// era string vazia, o que só funciona porque o display natural do elemento é o
+// certo. Com .oculto o estado fica explícito e não depende disso.
+function mostrar(id, sim) {
+  document.getElementById(id)?.classList.toggle('oculto', !sim);
+}
+
+// Cada status vira uma classe de badge do design system, não um par de cores
+// escrito à mão aqui. Antes este mapa carregava hex literais que precisavam ser
+// atualizados junto com a paleta — e não eram.
 const ROTULO = {
-  ok:            ['Placa lida',      '#dcfce7', '#15803d'],
-  sem_placa:     ['Sem placa',       '#fef9c3', '#a16207'],
-  erro_cadastro: ['Cadastro',        '#fee2e2', '#b91c1c'],
-  erro_camera:   ['Câmera',          '#fee2e2', '#b91c1c'],
+  ok:            ['Placa lida', 'badge-ok'],
+  nao_confirmada:['A conferir',  'badge-alerta'],
+  sem_placa:     ['Sem placa',   'badge-warn'],
+  erro_cadastro: ['Cadastro',    'badge-err'],
+  erro_camera:   ['Câmera',      'badge-err'],
 };
 
 function selo(status) {
-  const [txt, bg, cor] = ROTULO[status] || [status, '#f1f5f9', '#475569'];
-  return `<span class="badge" style="background:${bg};color:${cor}">${esc(txt)}</span>`;
+  const [txt, cls] = ROTULO[status] || [status, 'badge-neutro'];
+  return `<span class="badge ${cls} com-ponto">${esc(txt)}</span>`;
 }
+
+let primeiraCarga = true;
 
 async function carregarResumo() {
   const horas = document.getElementById('janela').value;
@@ -126,6 +138,7 @@ async function carregarResumo() {
 
   document.getElementById('kp-total').textContent  = r.total;
   document.getElementById('kp-ok').textContent     = r.ok;
+  document.getElementById('kp-conferir').textContent = r.nao_confirmada ?? 0;
   document.getElementById('kp-taxa').textContent   = r.taxa_sucesso === null ? '—' : Math.round(r.taxa_sucesso * 100) + '%';
   document.getElementById('kp-acordo').textContent = r.acordo_medio === null ? '—' : Math.round(r.acordo_medio * 100) + '%';
   document.getElementById('kp-tempo').textContent  = r.duracao_media_ms === null ? '—' : (r.duracao_media_ms / 1000).toFixed(1) + 's';
@@ -133,8 +146,8 @@ async function carregarResumo() {
 
   // Estado vazio só na primeira execução (nada registrado em nenhuma janela)
   const vazio = r.total === 0;
-  document.getElementById('sem-dados').style.display = vazio ? '' : 'none';
-  document.getElementById('grid-principal').style.display = vazio ? 'none' : '';
+  mostrar('sem-dados', vazio);
+  mostrar('grid-principal', !vazio);
   if (vazio) {
     document.getElementById('url-exemplo').textContent =
       `${location.origin}/api/leitura?entidade=NOME&cnpj=00000000000000&automacao=1&bico=1`;
@@ -142,54 +155,57 @@ async function carregarResumo() {
 
   // Erro de cadastro é acionável e específico: o roteador está mandando algo que não existe.
   const al = document.getElementById('alerta-cadastro');
+  mostrar('alerta-cadastro', r.erro_cadastro > 0);
   if (r.erro_cadastro > 0) {
-    al.style.display = '';
     al.innerHTML = `<strong>${r.erro_cadastro} chamada(s) recusada(s) por cadastro divergente.</strong>
       O roteador está enviando entidade/CNPJ/automação/bico que não existem aqui.
       Veja o detalhe em "Por que está falhando" e confira o cadastro em
-      <a href="/postos" style="color:#b91c1c;font-weight:600">Postos</a>.`;
-  } else { al.style.display = 'none'; }
+      <a href="/postos">Postos</a>.`;
+  }
 
   const tb = document.getElementById('tb-postos');
-  document.getElementById('sem-postos').style.display = r.por_posto.length ? 'none' : '';
+  mostrar('sem-postos', !r.por_posto.length);
   tb.innerHTML = r.por_posto.map(p => {
     const taxa = p.total ? Math.round(p.ok / p.total * 100) : 0;
-    const cor = taxa >= 80 ? '#15803d' : taxa >= 50 ? '#a16207' : '#b91c1c';
+    const cls = taxa >= 80 ? 't-ok' : taxa >= 50 ? 't-alerta' : 't-erro';
     return `<tr>
       <td>${esc(p.posto)}</td><td>${p.ok}</td><td>${p.total}</td>
-      <td><strong style="color:${cor}">${taxa}%</strong></td>
+      <td><strong class="${cls}">${taxa}%</strong></td>
     </tr>`;
   }).join('');
 
   const mot = document.getElementById('motivos');
-  document.getElementById('sem-motivos').style.display = r.motivos.length ? 'none' : '';
+  mostrar('sem-motivos', !r.motivos.length);
   const maxN = Math.max(1, ...r.motivos.map(m => m.n));
   mot.innerHTML = r.motivos.map(m => `
-    <div style="margin-bottom:10px">
-      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">
+    <div class="mb-3">
+      <div class="flex-entre t-13 mb-2">
         <span>${esc(m.motivo)}</span><strong>${m.n}</strong>
       </div>
-      <div style="background:#f1f5f9;border-radius:3px;height:6px;overflow:hidden">
-        <div style="height:100%;width:${(m.n / maxN) * 100}%;background:#dc2626"></div>
-      </div>
+      <div class="barra"><div style="width:${(m.n / maxN) * 100}%"></div></div>
     </div>`).join('');
 }
 
 async function carregarChamadas() {
   const soErros = document.getElementById('so-erros').checked;
+  const corpo = document.getElementById('tb-chamadas');
+  // Esqueleto só na primeira carga. Nos refreshes automáticos de 15s a tabela
+  // já tem conteúdo — trocá-lo por esqueleto faria a tela piscar sozinha.
+  if (primeiraCarga) corpo.innerHTML = esqueletoLinhas(6);
+
   const r = await fetch('/api/chamadas?limit=50' + (soErros ? '&apenas_erros=true' : ''))
     .then(r => r.json()).catch(() => []);
-  document.getElementById('sem-chamadas').style.display = r.length ? 'none' : '';
-  document.getElementById('tb-chamadas').innerHTML = r.map(ch => `
+  mostrar('sem-chamadas', !r.length);
+  corpo.innerHTML = r.map(ch => `
     <tr>
-      <td style="white-space:nowrap">${new Date(ch.criado_em).toLocaleString('pt-BR')}</td>
+      <td class="nao-quebra">${new Date(ch.criado_em).toLocaleString('pt-BR')}</td>
       <td>${ch.empresa_nome
-            ? `<a href="/posto/${ch.empresa_id}" style="color:#16a34a;text-decoration:none">${esc(ch.empresa_nome)}</a>`
-            : `<span style="color:#b91c1c" title="CNPJ não cadastrado">${esc(ch.cnpj)}</span>`}</td>
-      <td style="font-family:monospace;font-size:13px">${esc(ch.automacao)} / ${esc(ch.bico)}</td>
-      <td>${selo(ch.status)}${ch.placa ? ` <strong style="font-family:monospace">${esc(ch.placa)}</strong>` : ''}</td>
-      <td style="color:#64748b;font-size:13px">${esc(ch.motivo || '')}</td>
-      <td style="white-space:nowrap;color:#64748b">${ch.duracao_ms != null ? (ch.duracao_ms / 1000).toFixed(1) + 's' : '—'}</td>
+            ? `<a href="/posto/${ch.empresa_id}" class="link">${esc(ch.empresa_nome)}</a>`
+            : `<span class="t-erro mono" title="CNPJ não cadastrado">${esc(ch.cnpj)}</span>`}</td>
+      <td class="mono">${esc(ch.automacao)} / ${esc(ch.bico)}</td>
+      <td><div class="flex-centro g-2">${selo(ch.status)}${ch.placa ? `<span class="placa">${esc(ch.placa)}</span>` : ''}</div></td>
+      <td class="t-suave t-13">${esc(ch.motivo || '')}</td>
+      <td class="nao-quebra t-suave">${ch.duracao_ms != null ? (ch.duracao_ms / 1000).toFixed(1) + 's' : '—'}</td>
     </tr>`).join('');
 }
 
@@ -201,7 +217,7 @@ async function carregarLogs() {
     .then(r => r.json()).catch(() => []);
   document.getElementById('logs').innerHTML = logs.map(l =>
     `<div class="log-line log-${esc(l.level)}">[${new Date(l.ts * 1000).toLocaleTimeString('pt-BR')}] ${esc(l.msg)}</div>`
-  ).join('') || '<span style="color:#94a3b8">sem logs</span>';
+  ).join('') || '<span class="log-line log-DEBUG">sem logs</span>';
 }
 
 async function limparLogs() {
@@ -209,7 +225,7 @@ async function limparLogs() {
   carregarLogs();
 }
 
-function atualizarTudo() { carregarResumo(); carregarChamadas(); carregarLogs(); }
+function atualizarTudo() { carregarResumo(); carregarChamadas(); carregarLogs(); primeiraCarga = false; }
 atualizarTudo();
 setInterval(atualizarTudo, 15000);
 </script>

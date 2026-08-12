@@ -62,7 +62,6 @@
 let _offset = 0;
 const LIMITE = 50;
 
-function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function linha(ev) {
   const quem = ev.usuario_nome || (ev.usuario_id ? `#${ev.usuario_id}` : 'sistema/api_key');
