@@ -15,6 +15,24 @@ _RESULTADOS = Path("testes/resultados")
 _SNAPSHOTS = Path("app/web/static/snapshots")
 _FOTOS_TESTE = Path("testes/fotos")
 
+# Capturas que um humano olhou e recusou (ilegível, duplicada, sem placa). Sem esta
+# lista elas voltariam para a fila de classificação a cada carga da tela, e a fila
+# nunca chegaria ao fim — hoje são centenas de snapshots contra poucas dezenas úteis.
+_DESCARTADOS = Path("testes/descartados.json")
+
+
+def _ler_descartados() -> set[str]:
+    if not _DESCARTADOS.exists():
+        return set()
+    return set(json.loads(_DESCARTADOS.read_text(encoding="utf-8")).get("arquivos", []))
+
+
+def _salvar_descartados(arquivos: set[str]) -> None:
+    _DESCARTADOS.parent.mkdir(parents=True, exist_ok=True)
+    _DESCARTADOS.write_text(
+        json.dumps({"arquivos": sorted(arquivos)}, indent=2, ensure_ascii=False),
+        encoding="utf-8")
+
 
 def _ler_dataset() -> dict:
     if not _DATASET.exists():
@@ -86,6 +104,59 @@ async def upload_foto(file: UploadFile = File(...)):
     }
 
 
+@router.get("/candidatos")
+def listar_candidatos():
+    """Fila de classificação: o que o ALPR capturou e ninguém rotulou nem recusou ainda.
+
+    A placa que vem no nome do arquivo é O QUE O OCR LEU, não a verdade. Ela é devolvida
+    como `placa_sugerida` (e nunca como `placa_correta`) porque aceitá-la em massa faria
+    o dataset medir o OCR contra ele mesmo: a acurácia iria a ~100% sem significar nada.
+    Quem classifica precisa conferir contra a imagem.
+    """
+    no_dataset = {f["arquivo"] for f in _ler_dataset()["fotos"]}
+    descartados = _ler_descartados()
+    fila = [
+        s for s in listar_snapshots()
+        if s["arquivo"] not in no_dataset and s["arquivo"] not in descartados
+        # `preview_bico_N.jpg` é sobrescrito a cada leitura daquele bico. Rotular um
+        # deles cria entrada de dataset cujo CONTEÚDO muda sozinho — foi assim que
+        # `preview_4.jpg` virou uma linha apontando para arquivo inexistente.
+        and not Path(s["arquivo"]).name.startswith("preview_")
+    ]
+    for s in fila:
+        s["placa_sugerida"] = s.pop("placa_detectada", "")
+    return {
+        "candidatos": fila,
+        "total": len(fila),
+        "no_dataset": len(no_dataset),
+        "descartados": len(descartados),
+    }
+
+
+@router.post("/descartar")
+def descartar_candidato(payload: dict):
+    """Tira uma captura da fila sem colocá-la no dataset."""
+    arquivo = (payload.get("arquivo") or "").strip()
+    if not arquivo:
+        raise HTTPException(400, "arquivo obrigatório")
+    d = _ler_descartados()
+    d.add(arquivo)
+    _salvar_descartados(d)
+    return {"ok": True, "descartados": len(d)}
+
+
+@router.delete("/descartar")
+def restaurar_candidato(payload: dict):
+    """Desfaz um descarte — devolve a captura para a fila."""
+    arquivo = (payload.get("arquivo") or "").strip()
+    d = _ler_descartados()
+    if arquivo not in d:
+        raise HTTPException(404, "Arquivo não está na lista de descartados")
+    d.discard(arquivo)
+    _salvar_descartados(d)
+    return {"ok": True, "descartados": len(d)}
+
+
 @router.get("/dataset")
 def obter_dataset():
     return _ler_dataset()
@@ -103,6 +174,16 @@ def adicionar_foto(payload: dict):
     # Origem (bico/posto) fica gravada para dar para saber de onde veio cada foto e,
     # depois, medir acurácia por posto — o dataset agora mistura vários clientes.
     origem = {k: payload[k] for k in ("bico_id", "origem") if payload.get(k)}
+
+    # `layout` é campo próprio, e não texto em `obs`. Moto e carro são problemas
+    # diferentes de OCR (a placa de moto é empilhada em duas linhas e chega com bem
+    # menos pixels), mas `formato` só distingue mercosul/antigo — então o relatório
+    # não conseguia mostrar a taxa de moto, que é justamente a que está em questão.
+    layout = (payload.get("layout") or "").strip().lower()
+    if layout and layout not in ("carro", "moto"):
+        raise HTTPException(400, "layout deve ser 'carro' ou 'moto'")
+    if layout:
+        origem["layout"] = layout
 
     existente = next((f for f in ds["fotos"] if f["arquivo"] == arquivo), None)
     if existente:

@@ -4,6 +4,81 @@
 {% block conteudo %}
 <h1>Testes de Precisão</h1>
 
+{# Fila de classificação. Fica no topo porque é o gargalo real: o ALPR captura muito
+   mais do que alguém rotula, então o dataset fica pequeno enquanto centenas de fotos
+   reais esperam. Uma de cada vez, imagem grande — rotular em grade leva a aceitar a
+   sugestão do OCR sem olhar, que é exatamente o que corrompe a medição. #}
+<div class="card" id="card-classificar" style="display:none;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+    <h2 style="margin:0;">Classificar capturas</h2>
+    <div style="font-size:13px;color:#64748b;"><span id="clf-contador"></span></div>
+  </div>
+  <p style="color:#94a3b8;margin-top:0;font-size:13px;">
+    A placa abaixo é <strong>o que o OCR leu</strong>, não a resposta certa —
+    confira contra a imagem antes de adicionar. Aceitar sem olhar faz o teste medir o
+    OCR contra ele mesmo.
+  </p>
+
+  <div id="clf-vazio" style="display:none;color:#64748b;padding:24px;text-align:center;">
+    Nada na fila — tudo que o ALPR capturou já foi rotulado ou recusado.
+  </div>
+
+  <div id="clf-corpo" style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,1fr);gap:20px;align-items:start;">
+    <div>
+      <a id="clf-link" href="#" target="_blank" title="Abrir em tamanho real">
+        <img id="clf-img" alt="captura" style="width:100%;max-height:420px;object-fit:contain;
+             background:#0f172a;border-radius:8px;display:block;"></a>
+      <div id="clf-nome" style="font-size:11px;color:#94a3b8;margin-top:6px;word-break:break-all;"></div>
+    </div>
+
+    <div>
+      <label style="font-size:13px;color:#64748b;display:block;margin-bottom:4px;font-weight:500;">Placa correta *</label>
+      <input id="clf-placa" maxlength="8" placeholder="ABC1D23"
+             style="width:100%;box-sizing:border-box;text-transform:uppercase;font-family:monospace;
+                    font-size:22px;letter-spacing:3px;margin-bottom:4px;">
+      <div id="clf-sugestao" style="font-size:12px;color:#94a3b8;margin-bottom:14px;"></div>
+
+      <label style="font-size:13px;color:#64748b;display:block;margin-bottom:4px;font-weight:500;">Layout</label>
+      <div style="display:flex;gap:8px;margin-bottom:14px;">
+        <label style="flex:1;display:flex;align-items:center;gap:6px;padding:8px;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;">
+          <input type="radio" name="clf-layout" value="carro" checked> Carro
+        </label>
+        <label style="flex:1;display:flex;align-items:center;gap:6px;padding:8px;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;">
+          <input type="radio" name="clf-layout" value="moto"> Moto
+        </label>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
+        <div>
+          <label style="font-size:13px;color:#64748b;display:block;margin-bottom:4px;font-weight:500;">Formato</label>
+          <select id="clf-formato" style="width:100%;">
+            <option value="">Auto</option>
+            <option value="mercosul">Mercosul</option>
+            <option value="antigo">Antigo</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:13px;color:#64748b;display:block;margin-bottom:4px;font-weight:500;">Tipo</label>
+          <select id="clf-tipo" style="width:100%;">
+            <option value="crop">crop (recorte)</option>
+            <option value="frame">frame (cena)</option>
+          </select>
+        </div>
+      </div>
+
+      <button onclick="clfAdicionar()" style="width:100%;background:#16a34a;margin-bottom:8px;">Adicionar ao dataset</button>
+      <div style="display:flex;gap:8px;">
+        <button onclick="clfDescartar()" style="flex:1;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Descartar</button>
+        <button onclick="clfPular()" style="flex:1;background:#fff;color:#374151;border:1px solid #e2e8f0;">Pular</button>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:10px;">
+        <strong>Descartar</strong> tira da fila para sempre (ilegível, duplicada).
+        <strong>Pular</strong> só adia.
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ===== SEÇÃO: SNAPSHOTS ===== -->
 <div class="card">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
@@ -592,10 +667,106 @@ async function verResultado(nome) {
   document.getElementById('testes-resultado').scrollIntoView({behavior:'smooth'});
 }
 
+// ===== FILA DE CLASSIFICAÇÃO =====
+// `_clfFila` é a fila do servidor; `_clfPulados` são os adiados nesta sessão, que
+// voltam ao fim em vez de sumirem — pular não é descartar.
+let _clfFila = [], _clfPos = 0, _clfPulados = new Set();
+
+async function carregarFila() {
+  const r = await fetch('/api/testes/candidatos').then(r => r.json()).catch(() => null);
+  if (!r) return;
+  _clfFila = r.candidatos || [];
+  _clfPos = 0;
+  _clfPulados.clear();
+  document.getElementById('card-classificar').style.display = '';
+  document.getElementById('clf-contador').textContent =
+    `${r.total} na fila · ${r.no_dataset} no dataset · ${r.descartados} descartadas`;
+  mostrarCandidato();
+}
+
+function candidatoAtual() {
+  return _clfPos < _clfFila.length ? _clfFila[_clfPos] : null;
+}
+
+function mostrarCandidato() {
+  const c = candidatoAtual();
+  const corpo = document.getElementById('clf-corpo');
+  const vazio = document.getElementById('clf-vazio');
+  if (!c) {
+    corpo.style.display = 'none';
+    vazio.style.display = 'block';
+    // Pular reenfileira, então chegar ao fim significa que tudo foi resolvido.
+    vazio.textContent = 'Fila vazia — tudo que o ALPR capturou já foi rotulado ou recusado.';
+    return;
+  }
+  corpo.style.display = 'grid';
+  vazio.style.display = 'none';
+  document.getElementById('clf-img').src = c.url;
+  document.getElementById('clf-link').href = c.url;
+  document.getElementById('clf-nome').textContent = c.nome;
+  document.getElementById('clf-placa').value = c.placa_sugerida || '';
+  document.getElementById('clf-sugestao').textContent = c.placa_sugerida
+    ? `Leitura do OCR: ${c.placa_sugerida} — confira antes de aceitar`
+    : 'O OCR não deixou placa no nome do arquivo — digite a que você lê na imagem';
+  document.getElementById('clf-tipo').value = c.tipo || 'crop';
+  document.getElementById('clf-formato').value = '';
+  document.querySelector('input[name="clf-layout"][value="carro"]').checked = true;
+  document.getElementById('clf-placa').focus();
+}
+
+function clfAvancar() {
+  _clfPos++;
+  mostrarCandidato();
+}
+
+async function clfAdicionar() {
+  const c = candidatoAtual();
+  if (!c) return;
+  const placa = document.getElementById('clf-placa').value.trim().toUpperCase();
+  if (placa.length !== 7) { alert('A placa precisa ter 7 caracteres.'); return; }
+  const corpo = {
+    arquivo: c.arquivo,
+    placa_correta: placa,
+    formato: document.getElementById('clf-formato').value,
+    tipo: document.getElementById('clf-tipo').value,
+    layout: document.querySelector('input[name="clf-layout"]:checked').value,
+    // Marca quando o humano concordou com o OCR: se a acurácia subir só nessas, é
+    // sinal de que a conferência virou carimbo.
+    obs: placa === (c.placa_sugerida || '') ? 'classificado: confere com OCR' : 'classificado: corrigido',
+  };
+  const r = await fetch('/api/testes/dataset', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(corpo),
+  });
+  if (!r.ok) { alert('Falha ao adicionar: ' + (await r.text())); return; }
+  clfAvancar();
+  await Promise.all([carregarDataset(), carregarSnapshots()]);
+}
+
+async function clfDescartar() {
+  const c = candidatoAtual();
+  if (!c) return;
+  const r = await fetch('/api/testes/descartar', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ arquivo: c.arquivo }),
+  });
+  if (!r.ok) { alert('Falha ao descartar: ' + (await r.text())); return; }
+  clfAvancar();
+}
+
+function clfPular() {
+  const c = candidatoAtual();
+  if (!c) return;
+  _clfPulados.add(c.arquivo);
+  _clfFila.push(c);          // volta ao fim da fila
+  clfAvancar();
+}
+
 // ===== INIT =====
 (async () => {
   document.getElementById('sel-bico').addEventListener('change', avisarRoi);
-  await Promise.all([carregarBicos(), carregarSnapshots(), carregarDataset(), carregarResultados()]);
+  await Promise.all([carregarBicos(), carregarSnapshots(), carregarDataset(),
+                     carregarResultados(), carregarFila()]);
 })();
 </script>
 {% endblock %}

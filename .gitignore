@@ -48,3 +48,11 @@ config.txt.*
 testes/resultados/
 testes/log*.txt
 scratch/
+
+# Rótulos das cenas reais (avalia_cenas_reais.py): referenciam frames de câmera
+# com pessoas e placas de clientes — ficam só na máquina, como os snapshots.
+testes/cenas_reais.json
+
+# Fila de classificação: quais capturas um operador recusou. É estado local, casado
+# com os snapshots desta máquina (que também não são versionados).
+testes/descartados.json
