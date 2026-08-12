@@ -82,6 +82,22 @@ class AutoOCR:
             _, tinha_header, e_mercosul_header = self._fast._remover_header(crop)
 
         # Moto: aspect ≤ 2 (200×140 vs 400×130) — 2 linhas de texto, easyocr é superior
+        #
+        # MEDIDO em 12/08/2026 nas 28 fotos reais de `testes/dataset.json`: o limiar 2,0
+        # cai NO MEIO da faixa dos carros, não entre as classes.
+        #
+        #     moto  (n=2)   aspect 1,14 e 1,17
+        #     carro (n=26)  aspect 1,45 .. 3,47   ← sete abaixo de 2,0
+        #
+        # Três carros (aspect 1,45/1,63/1,64) são classificados como moto, e o efeito não
+        # se limita ao hint logo abaixo: `e_moto` troca o engine PRINCIPAL de
+        # fast_plate_ocr para easyocr (linha ~91) e, no AutoOCRPaddle, dá prioridade ao
+        # PaddleOCR. Os três erraram a leitura.
+        #
+        # NÃO ajustado de propósito. Nestes dados algo perto de 1,3 separaria as classes,
+        # mas são DUAS motos — calibrar limiar com essa amostra é o mesmo erro que este
+        # arquivo já documenta na arbitragem do AutoOCRPaddle. Refazer a medição quando o
+        # dataset tiver ~10 motos reais; a fila de classificação em /testes é o caminho.
         aspect = (crop.shape[1] / max(crop.shape[0], 1)) if crop is not None else 3.0
         e_moto = tinha_header and aspect <= 2.0
         self._ultimo_e_moto = e_moto
@@ -100,6 +116,14 @@ class AutoOCR:
         # ("mercosul", só cor) que NUNCA corrompe um match antigo direto e limpo — evita
         # que um falso-positivo do detector de header (ex: cartão de teste colorido)
         # corrompa uma leitura antigo correta (ex: CDV2112 → CDV2I12).
+        #
+        # MEDIDO em 12/08/2026 (28 fotos reais): a defesa acima FUNCIONA, mas o detector
+        # de header acerta pouco nos dois sentidos — 4 das 10 antigas recebem hint de
+        # Mercosul, e 15 das 18 Mercosul não recebem hint nenhum. Ou seja, este caminho
+        # quase nunca dispara em produção. Nas 3 fotos em que o hint saiu errado,
+        # `validar(lido, '')` e `validar(lido, 'mercosul_moto')` deram resultado IDÊNTICO:
+        # o hint errado não corrompeu leitura nenhuma. A suspeita registrada até aqui — de
+        # que o falso positivo do header corromperia placa antiga — não se confirmou.
         if tinha_header and e_mercosul_header:
             formato_hint = "mercosul_moto" if e_moto else "mercosul"
         else:
