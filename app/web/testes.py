@@ -55,6 +55,12 @@ def _placa_do_nome(nome: str) -> str:
 def listar_snapshots():
     arquivos = []
 
+    # `url` é como o NAVEGADOR busca a imagem; `arquivo` é o caminho no DISCO, relativo à
+    # raiz do repositório, porque é o que vai para o dataset e o harness abre com
+    # `_ROOT / arquivo`. Para os snapshots os dois diferem: a pasta é servida em
+    # /static/snapshots mas mora em app/web/static/snapshots. Enquanto `arquivo` levava o
+    # prefixo de URL, toda foto de snapshot adicionada ao dataset virava "arquivo não
+    # encontrado" na medição — e isso entrava na conta como erro de OCR.
     def _add_dir(pasta: Path, url_prefix: str, arquivo_prefix: str):
         if not pasta.exists():
             return
@@ -76,8 +82,8 @@ def listar_snapshots():
                 "origem": "alpr" if pasta == _SNAPSHOTS else "upload",
             })
 
-    _add_dir(_SNAPSHOTS, "static/snapshots", "static/snapshots")
-    _add_dir(_FOTOS_TESTE, "testes/fotos", "testes/fotos")
+    _add_dir(_SNAPSHOTS, "static/snapshots", str(_SNAPSHOTS).replace("\\", "/"))
+    _add_dir(_FOTOS_TESTE, "testes/fotos", str(_FOTOS_TESTE).replace("\\", "/"))
     arquivos.sort(key=lambda x: x["data"], reverse=True)
     return arquivos
 

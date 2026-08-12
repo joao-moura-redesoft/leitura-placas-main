@@ -234,11 +234,23 @@ def _rodar_engine(engine_name: str, fotos: list[dict], caminho: str) -> dict:
     falhas = [r for r in resultados if r["status"] == "falhou"]
     nf     = [r for r in resultados if r["status"] == "erro"]
 
-    print(f"\n  ACURACIA: {ok}/{total}  ({ok/total*100:.1f}%)")
+    # Foto que não abriu NÃO é erro de OCR — é dado quebrado, e contá-la na acurácia
+    # esconde o problema em vez de mostrá-lo. Em 12/08/2026 um prefixo de URL gravado
+    # como caminho de disco deixou 22 de 28 ilegíveis e o relatório disse "17,9%", como
+    # se o OCR tivesse desabado. A acurácia passa a ser sobre o que deu para ler, e o
+    # que não abriu vira aviso em destaque.
+    legiveis = total - len(nf)
+    pct = ok / legiveis * 100 if legiveis else 0
+    print(f"\n  ACURACIA: {ok}/{legiveis}  ({pct:.1f}%)")
     if falhas:
         print(f"  Sem detecção YOLO: {len(falhas)}")
     if nf:
-        print(f"  Arquivo não encontrado: {len(nf)}")
+        print(f"\n  {'!'*58}")
+        print(f"  ATENCAO: {len(nf)} de {total} fotos NAO ABRIRAM — fora da acuracia acima.")
+        print(f"  Dataset quebrado, nao OCR ruim. Primeiras:")
+        for r in nf[:5]:
+            print(f"    {r.get('arquivo')}")
+        print(f"  {'!'*58}")
 
     confusoes: dict[tuple, int] = defaultdict(int)
     for r in erros:
@@ -257,8 +269,12 @@ def _rodar_engine(engine_name: str, fotos: list[dict], caminho: str) -> dict:
         for (e, l), n in sorted(confusoes.items(), key=lambda x: -x[1]):
             print(f"    {e} -> {l}  ({n}x)")
 
+    # Os recortes por formato e por layout também ignoram o que não abriu — senão uma
+    # linha "moto 0/1" pode ser arquivo faltando, e lê-se como falha de reconhecimento.
+    lidas = [r for r in resultados if r["status"] != "erro"]
+
     formatos: dict = defaultdict(lambda: {"ok": 0, "total": 0})
-    for r in resultados:
+    for r in lidas:
         fmt = r.get("formato", "?")
         formatos[fmt]["total"] += 1
         if r["status"] == "ok":
@@ -272,7 +288,7 @@ def _rodar_engine(engine_name: str, fotos: list[dict], caminho: str) -> dict:
     # moto é empilhada em duas linhas e chega com bem menos pixels. Fotos rotuladas antes
     # do campo `layout` existir aparecem como "?" — é ruído honesto, não zero.
     layouts: dict = defaultdict(lambda: {"ok": 0, "total": 0})
-    for r in resultados:
+    for r in lidas:
         layouts[r.get("layout") or "?"]["total"] += 1
         if r["status"] == "ok":
             layouts[r.get("layout") or "?"]["ok"] += 1
@@ -282,8 +298,9 @@ def _rodar_engine(engine_name: str, fotos: list[dict], caminho: str) -> dict:
         print(f"    {lay:<12}  {st['ok']}/{st['total']}  ({pct:.1f}%)")
 
     return {
-        "acuracia": round(ok / total, 4) if total else 0,
+        "acuracia": round(ok / legiveis, 4) if legiveis else 0,
         "ok": ok, "erros": len(erros), "falhas_deteccao": len(falhas), "total": total,
+        "legiveis": legiveis, "nao_abriram": len(nf),
         "por_formato": {fmt: {"ok": s["ok"], "total": s["total"]} for fmt, s in formatos.items()},
         "por_layout": {lay: {"ok": s["ok"], "total": s["total"]} for lay, s in layouts.items()},
         "confusoes": {f"{e}>{l}": n for (e, l), n in confusoes.items()},
@@ -374,8 +391,10 @@ def rodar(engines: list[str], salvar: bool = False, caminho: str = "leitura",
         if stats.get("erro"):
             print(f"  {eng:<20}  não mediu ({stats['erro']})")
             continue
-        ok, total = stats.get("ok", 0), stats.get("total", 0)
-        print(f"  {eng:<20}  {ok}/{total}  ({stats.get('acuracia', 0)*100:.1f}%)")
+        ok = stats.get("ok", 0)
+        base = stats.get("legiveis", stats.get("total", 0))   # sobre o que deu para ler
+        aviso = f"  [{stats['nao_abriram']} nao abriram]" if stats.get("nao_abriram") else ""
+        print(f"  {eng:<20}  {ok}/{base}  ({stats.get('acuracia', 0)*100:.1f}%){aviso}")
 
     if salvar:
         out_dir = Path(__file__).parent / "resultados"

@@ -673,12 +673,26 @@ async function verResultado(nome) {
 let _clfFila = [], _clfPos = 0, _clfPulados = new Set();
 
 async function carregarFila() {
-  const r = await fetch('/api/testes/candidatos').then(r => r.json()).catch(() => null);
-  if (!r) return;
+  // O card nasce escondido, então uma falha aqui o fazia sumir da página inteira sem
+  // erro nenhum — e quem abrisse /testes concluiria que a fila não existe. Falhar
+  // visível: mostra o card com a mensagem em vez de engolir.
+  const card = document.getElementById('card-classificar');
+  card.style.display = '';
+  let r = null;
+  try {
+    const resp = await fetch('/api/testes/candidatos');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    r = await resp.json();
+  } catch (e) {
+    document.getElementById('clf-corpo').style.display = 'none';
+    const vazio = document.getElementById('clf-vazio');
+    vazio.style.display = 'block';
+    vazio.textContent = `Não foi possível carregar a fila (${e.message}). Recarregue a página.`;
+    return;
+  }
   _clfFila = r.candidatos || [];
   _clfPos = 0;
   _clfPulados.clear();
-  document.getElementById('card-classificar').style.display = '';
   document.getElementById('clf-contador').textContent =
     `${r.total} na fila · ${r.no_dataset} no dataset · ${r.descartados} descartadas`;
   mostrarCandidato();

@@ -2,20 +2,13 @@
   "version": 1,
   "fotos": [
     {
-      "id": "8f334d6a",
-      "arquivo": "static/snapshots/preview_4.jpg",
-      "placa_correta": "FBI5551",
-      "formato": "antigo",
-      "tipo": "frame",
-      "obs": "placa moto antigo — faixa metálica UF-CIDADE"
-    },
-    {
       "id": "88432f92",
       "arquivo": "testes/fotos/real_mercosul_carro_1.jpg",
       "placa_correta": "LSN4I49",
       "formato": "mercosul",
       "tipo": "real",
-      "obs": "placa mercosul carro particular RJ (foto real 2018) — CC BY 4.0"
+      "obs": "placa mercosul carro particular RJ (foto real 2018) — CC BY 4.0",
+      "layout": "carro"
     },
     {
       "id": "e7e59142",
@@ -23,7 +16,8 @@
       "placa_correta": "AOB1C02",
       "formato": "mercosul",
       "tipo": "real",
-      "obs": "placa mercosul carro exemplo didático AOB1CD2 (normalizado AOB1C02, SP) — CC BY-SA 4.0"
+      "obs": "placa mercosul carro exemplo didático AOB1CD2 (normalizado AOB1C02, SP) — CC BY-SA 4.0",
+      "layout": "carro"
     },
     {
       "id": "405c416d",
@@ -31,7 +25,8 @@
       "placa_correta": "AAA0001",
       "formato": "antigo",
       "tipo": "real",
-      "obs": "1ª placa cinza do Brasil (AAA-0001) — Wikimedia Commons"
+      "obs": "1ª placa cinza do Brasil (AAA-0001) — Wikimedia Commons",
+      "layout": "carro"
     },
     {
       "id": "2fff2725",
@@ -39,7 +34,8 @@
       "placa_correta": "HQW5678",
       "formato": "antigo",
       "tipo": "real",
-      "obs": "placa antigo carro Brasil 1990 MS-Campo Grande HQW-5678 — Wikimedia Commons"
+      "obs": "placa antigo carro Brasil 1990 MS-Campo Grande HQW-5678 — Wikimedia Commons",
+      "layout": "carro"
     },
     {
       "id": "52931367",
@@ -47,7 +43,214 @@
       "placa_correta": "NOP4567",
       "formato": "antigo",
       "tipo": "real",
-      "obs": "placa antigo moto Brasil 2011 AM-São Sebastião do Uatumã NOP-4567 — CC BY-SA 3.0"
+      "obs": "placa antigo moto Brasil 2011 AM-São Sebastião do Uatumã NOP-4567 — CC BY-SA 3.0",
+      "layout": "moto"
+    },
+    {
+      "id": "cc1df11f",
+      "arquivo": "app/web/static/snapshots/20260812T184333_TOW5133_frame.jpg",
+      "placa_correta": "TOW5J83",
+      "formato": "mercosul",
+      "tipo": "frame",
+      "obs": "classificado: corrigido",
+      "layout": "carro"
+    },
+    {
+      "id": "c6d0a046",
+      "arquivo": "app/web/static/snapshots/20260812T175831_QFX5A73.jpg",
+      "placa_correta": "OFX5A73",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: corrigido",
+      "layout": "carro"
+    },
+    {
+      "id": "e462176a",
+      "arquivo": "app/web/static/snapshots/20260812T175132_HZY6797.jpg",
+      "placa_correta": "HZY6797",
+      "formato": "antigo",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "9bcecae9",
+      "arquivo": "app/web/static/snapshots/20260812T162658_QFI7F47.jpg",
+      "placa_correta": "OFI7F47",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: corrigido",
+      "layout": "carro"
+    },
+    {
+      "id": "30926186",
+      "arquivo": "testes/fotos/20260720T123704_db224b.jpg",
+      "placa_correta": "GAE0244",
+      "formato": "antigo",
+      "tipo": "crop",
+      "obs": "classificado: corrigido",
+      "layout": "carro"
+    },
+    {
+      "id": "cc299423",
+      "arquivo": "app/web/static/snapshots/20260807T141130_KAP2Z71.jpg",
+      "placa_correta": "MPY2371",
+      "formato": "antigo",
+      "tipo": "crop",
+      "obs": "classificado: corrigido",
+      "layout": "moto"
+    },
+    {
+      "id": "9286e6de",
+      "arquivo": "app/web/static/snapshots/20260730T205357_PCY7C92.jpg",
+      "placa_correta": "PCY7C92",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "e5b866b4",
+      "arquivo": "app/web/static/snapshots/20260730T182541_TPD5F40.jpg",
+      "placa_correta": "TPD5F40",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "62953508",
+      "arquivo": "app/web/static/snapshots/20260730T172611_IZX7T32.jpg",
+      "placa_correta": "NZX7832",
+      "formato": "antigo",
+      "tipo": "crop",
+      "obs": "classificado: corrigido",
+      "layout": "carro"
+    },
+    {
+      "id": "7f29610e",
+      "arquivo": "app/web/static/snapshots/20260812T191711_LOS8O28.jpg",
+      "placa_correta": "QSB0284",
+      "formato": "antigo",
+      "tipo": "crop",
+      "obs": "classificado: corrigido",
+      "layout": "carro"
+    },
+    {
+      "id": "de874de9",
+      "arquivo": "app/web/static/snapshots/20260730T170901_TZC3E93.jpg",
+      "placa_correta": "TZC3E93",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "8498058f",
+      "arquivo": "app/web/static/snapshots/20260730T164134_RLS0B54.jpg",
+      "placa_correta": "RLS0B54",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "c7893ab9",
+      "arquivo": "app/web/static/snapshots/20260730T163113_PFT2I97.jpg",
+      "placa_correta": "PFT2I97",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "47321328",
+      "arquivo": "app/web/static/snapshots/20260730T160330_QYC2H65.jpg",
+      "placa_correta": "QYC2H65",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "2c105dc3",
+      "arquivo": "app/web/static/snapshots/20260730T160254_TPH0G44.jpg",
+      "placa_correta": "TPH0G44",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "2e207910",
+      "arquivo": "app/web/static/snapshots/20260730T144056_SKW2A96.jpg",
+      "placa_correta": "SKW2A96",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "9beacee0",
+      "arquivo": "app/web/static/snapshots/20260730T143540_SKX3G67.jpg",
+      "placa_correta": "SKX3G67",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "4412907f",
+      "arquivo": "app/web/static/snapshots/20260730T143257_SKV4C35.jpg",
+      "placa_correta": "SKV4C35",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "b64b5a9e",
+      "arquivo": "app/web/static/snapshots/20260730T140850_GGA6J71.jpg",
+      "placa_correta": "OGA6974",
+      "formato": "antigo",
+      "tipo": "crop",
+      "obs": "classificado: corrigido",
+      "layout": "carro"
+    },
+    {
+      "id": "9aa69bf9",
+      "arquivo": "app/web/static/snapshots/20260730T135803_CEE8488.jpg",
+      "placa_correta": "QFE0848",
+      "formato": "antigo",
+      "tipo": "crop",
+      "obs": "classificado: corrigido",
+      "layout": "carro"
+    },
+    {
+      "id": "0d2e9310",
+      "arquivo": "app/web/static/snapshots/20260730T134509_DST4337.jpg",
+      "placa_correta": "UST4A37",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: corrigido",
+      "layout": "carro"
+    },
+    {
+      "id": "a40010af",
+      "arquivo": "app/web/static/snapshots/20260730T134420_USI4J37.jpg",
+      "placa_correta": "UST4A37",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "",
+      "layout": "carro"
+    },
+    {
+      "id": "65fdf3c1",
+      "arquivo": "app/web/static/snapshots/20260722T221351_SKU6G50.jpg",
+      "placa_correta": "SKU6G50",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": ""
     }
   ]
 }

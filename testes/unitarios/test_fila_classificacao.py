@@ -13,6 +13,7 @@ Por isso os testes abaixo fixam, além do vai-e-vem da fila, que o campo se cham
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -44,10 +45,26 @@ def _arquivos(resposta):
     return {c["arquivo"] for c in resposta["candidatos"]}
 
 
+def test_arquivo_e_caminho_de_disco_nao_de_url(area):
+    """`arquivo` vai para o dataset e o harness o abre com `_ROOT / arquivo`.
+
+    Enquanto ele levava o prefixo de URL (`static/snapshots/`) em vez do caminho real
+    (`app/web/static/snapshots/`), toda foto de snapshot classificada virava "arquivo não
+    encontrado" na medição — e entrava na acurácia como se fosse erro de OCR: 22 de 28
+    ilegíveis reportadas como 17,9%.
+    """
+    for c in t.listar_candidatos()["candidatos"]:
+        assert Path(c["arquivo"]).exists(), f"{c['arquivo']} não abre a partir da raiz"
+        assert not c["arquivo"].startswith("/")        # caminho, não URL
+        assert c["url"].startswith("/")                # e a URL continua sendo URL
+
+
 def test_preview_nunca_entra_na_fila(area):
     """`preview_bico_N.jpg` muda de conteúdo sozinho — rotulá-lo cria alvo móvel."""
     r = t.listar_candidatos()
-    assert not any("preview_" in a for a in _arquivos(r))
+    # Compara o NOME do arquivo, não o caminho: o diretório temporário do pytest se chama
+    # "test_preview_nunca_entra_na_fi0" e casaria com uma busca por substring.
+    assert not any(Path(a).name.startswith("preview_") for a in _arquivos(r))
     assert r["total"] == 3
 
 
