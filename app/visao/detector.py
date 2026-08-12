@@ -9,6 +9,7 @@ Quando o modelo não está disponível, faz fallback para detecção por contorn
 """
 from __future__ import annotations
 import logging
+import math
 import threading
 from pathlib import Path
 
@@ -445,6 +446,118 @@ class DetectorDoisEstagios:
         return mantidas
 
 
+class BuscaEmTiles:
+    """Reexamina o frame em JANELAS SOBREPOSTAS quando a passada única não achou nada.
+
+    O detector de placa faz letterbox de tudo o que recebe para o lado do input do seu
+    modelo (608 no s-608). Numa ROI grande, a placa de uma moto parada na bomba (~38px
+    num frame 1280x720) chega ao modelo pequena demais e não é detectada.
+
+    Medido em cena real (moto no bico 5, placa de 38x35px numa ROI de 397x610):
+
+      * passada única na ROI ......................... nada, mesmo com conf 0.05
+      * ROI ampliada 2x/3x antes de detectar ......... nada (inútil por construção:
+        o modelo redimensiona de volta para 608, a placa volta ao mesmo tamanho)
+      * recorte fechado só na placa (38..153px) ...... nada — não é só escala, o modelo
+        precisa do CONTEXTO do veículo em volta
+      * janelas de ~250x300px pegando moto+placa ..... conf 0.4 a 0.8
+
+    Ou seja: o que recupera essa placa é VARIAR O ENQUADRAMENTO, não a resolução. E é
+    exatamente o que o loop de leitura (leitura.py) nunca fazia: ele repete no TEMPO,
+    mas com a ROI do bico fixa o enquadramento é sempre o mesmo — para uma moto parada,
+    as 12 tentativas eram 12 recortes idênticos, logo 12 falhas idênticas.
+
+    `sobreposicao` tem uma faixa útil ESTREITA, e o motivo é geométrico, não empírico:
+    quanto maior a sobreposição, maior cada janela — em 0.5 a janela já é quase a ROI
+    inteira, que é exatamente o enquadramento que falhou. Na mesma cena, 0.25-0.35
+    acham a placa e 0.20/0.40/0.50 não acham nada. Mexer nisso sem medir provavelmente
+    piora; o valor padrão está no centro da faixa que funciona.
+
+    Custo: zero na maioria das leituras (só entra quando a passada normal deu nada) e
+    ~`max_janelas` passadas extras do detector de placa quando entra (~200ms cada em
+    CPU). Por isso é ligado no GET, que tolera a latência, e não no stream ao vivo.
+
+    Interface idêntica a `Detector` (.carregar(), .detectar(), .sess).
+    """
+
+    def __init__(self, detector, detector_tiles=None, lado_alvo: int = 300,
+                 sobreposicao: float = 0.30, max_janelas: int = 6):
+        self.detector = detector
+        # Nas janelas roda só o estágio de PLACA. Repetir o estágio de veículo por janela
+        # multiplicaria a latência sem ganho: se ele fosse achar o veículo, a passada
+        # normal já teria achado — é justamente o veículo não detectado (moto ocluída,
+        # que o YOLOX classifica como `bicycle` ou nem vê) que traz o fluxo até aqui.
+        # Costuma vir com limiar de confiança MAIS BAIXO que o detector principal (ver
+        # `tiles_conf`): aqui já se sabe que o caminho normal não achou nada, e a placa
+        # nessas janelas sai raspando o limiar (0.19-0.37 na cena medida). Baixar o limiar
+        # amplia a faixa de enquadramentos que registram algo, e o custo de um recorte
+        # ruim é baixo — ele ainda tem que passar pelo OCR, por `validar()` e pelo
+        # consenso entre frames antes de virar uma leitura. Medido na cena real: nenhum
+        # falso positivo até 0.10 (só a placa certa aparecia).
+        self.detector_tiles = detector_tiles if detector_tiles is not None else detector
+        self.lado_alvo = max(64, lado_alvo)
+        self.sobreposicao = min(max(sobreposicao, 0.0), 0.9)
+        self.max_janelas = max(1, max_janelas)
+        self.sess = None
+
+    def carregar(self) -> None:
+        self.detector.carregar()
+        if self.detector_tiles is not self.detector:
+            self.detector_tiles.carregar()
+        self.sess = self.detector.sess
+
+    def detectar(self, frame) -> list[tuple[int, int, int, int, float]]:
+        if frame is None or frame.size == 0:
+            return []
+        achados = self.detector.detectar(frame)
+        if achados:
+            return achados
+
+        janelas = self._janelas(frame.shape[1], frame.shape[0])
+        if not janelas:
+            return []
+        for x0, y0, x1, y1 in janelas:
+            tile = frame[y0:y1, x0:x1]
+            if tile.size == 0:
+                continue
+            for px, py, pw, ph, pconf in self.detector_tiles.detectar(tile):
+                achados.append((px + x0, py + y0, pw, ph, pconf))
+
+        if achados:
+            log.info("BuscaEmTiles: %d placa(s) recuperada(s) em %d janela(s) — a passada "
+                     "única no recorte de %dx%d não tinha achado nada",
+                     len(achados), len(janelas), frame.shape[1], frame.shape[0])
+        # Uma placa perto da divisa entre janelas aparece nas duas (é para isso que existe
+        # a sobreposição); _dedup mantém a de maior confiança.
+        return DetectorDoisEstagios._dedup(achados) if len(achados) > 1 else achados
+
+    def _janelas(self, w: int, h: int) -> list[tuple[int, int, int, int]]:
+        """Grade de janelas sobrepostas cobrindo o frame, respeitando `max_janelas`."""
+        nx = max(1, math.ceil(w / self.lado_alvo))
+        ny = max(1, math.ceil(h / self.lado_alvo))
+        # Cabe em `max_janelas`? Se não, engrossa as janelas (tira divisões do eixo mais
+        # dividido) em vez de deixar parte do frame sem varrer.
+        while nx * ny > self.max_janelas and (nx > 1 or ny > 1):
+            if nx >= ny and nx > 1:
+                nx -= 1
+            else:
+                ny -= 1
+        if nx * ny <= 1:
+            return []   # 1 janela = a mesma passada que já falhou; não repete de graça
+
+        pw, ph = w / nx, h / ny
+        ox, oy = pw * self.sobreposicao, ph * self.sobreposicao
+        janelas = []
+        for iy in range(ny):
+            for ix in range(nx):
+                x0 = max(0, int(ix * pw - ox))
+                y0 = max(0, int(iy * ph - oy))
+                x1 = min(w, int((ix + 1) * pw + ox))
+                y1 = min(h, int((iy + 1) * ph + oy))
+                janelas.append((x0, y0, x1, y1))
+        return janelas
+
+
 def _criar_detector_veiculo(cfg: dict) -> VehicleDetector:
     classes = frozenset(
         int(c) for c in cfg.get("veiculo_classes", "2,3,5,7").split(",") if c.strip().isdigit()
@@ -539,7 +652,9 @@ def obter_detector_leitura(cfg: dict):
         ident_placa = ("onnx", cfg.get("modelo_path", ""))
 
     dois_estagios = _bool_cfg(cfg, "veiculo_dois_estagios_get", "sim")
-    ident = (*ident_placa, dois_estagios, cfg.get("veiculo_modelo_path", "") if dois_estagios else "")
+    tiles = _bool_cfg(cfg, "tiles_fallback_get", "sim")
+    ident = (*ident_placa, dois_estagios, cfg.get("veiculo_modelo_path", "") if dois_estagios else "",
+             tiles, (cfg.get("tiles_lado_alvo", ""), cfg.get("tiles_conf", "")) if tiles else "")
 
     if _detector_leitura is None or _detector_leitura_id != ident:
         with _detector_leitura_criacao_lock:
@@ -561,8 +676,31 @@ def obter_detector_leitura(cfg: dict):
                 else:
                     det = det_placa
 
+                # Sempre por FORA do 2 estágios: as janelas só devem ser varridas quando o
+                # caminho normal inteiro (veículo→placa, com fallback no recorte todo) não
+                # achou nada. Por dentro, cada recorte de veículo dispararia sua própria
+                # varredura — latência multiplicada sem motivo.
+                if tiles:
+                    # Detector próprio para as janelas quando `tiles_conf` for mais
+                    # permissivo que o principal — é uma segunda sessão do MESMO modelo,
+                    # só com outro limiar (o open-image-models fixa o limiar na
+                    # construção, não aceita por chamada). Igual ou maior, reusa o
+                    # principal e não gasta memória à toa.
+                    conf_tiles = float(cfg.get("tiles_conf", "0.15"))
+                    if backend == "open_image_models" and conf_tiles < float(cfg.get("conf_threshold", "0.3")):
+                        det_tiles = OpenImageDetector(modelo=ident_placa[1], conf=conf_tiles)
+                    else:
+                        det_tiles = det_placa
+                    det = BuscaEmTiles(
+                        det, det_tiles,
+                        lado_alvo=int(cfg.get("tiles_lado_alvo", "300")),
+                        sobreposicao=float(cfg.get("tiles_sobreposicao", "0.30")),
+                        max_janelas=int(cfg.get("tiles_max_janelas", "6")),
+                    )
+
                 det.carregar()
                 _detector_leitura = det
                 _detector_leitura_id = ident
-                log.info("Detector de leitura (GET) carregado: %s (2 estágios=%s)", ident_placa[1], dois_estagios)
+                log.info("Detector de leitura (GET) carregado: %s (2 estágios=%s, tiles=%s)",
+                         ident_placa[1], dois_estagios, tiles)
     return _detector_leitura

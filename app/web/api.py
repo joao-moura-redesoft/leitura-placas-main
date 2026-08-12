@@ -4,6 +4,7 @@ import logging
 import sqlite3
 import threading
 import time
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
@@ -48,11 +49,15 @@ def listar_deteccoes(
     empresa_id: int | None = None,
     bico_id: int | None = None,
     incluir_testes: bool = False,
+    origem: Literal["producao", "teste", "todas"] | None = None,
 ):
+    """`origem` filtra por conjunto: 'producao' (default — exclui testes manuais),
+    'teste' (só eles) ou 'todas'. `incluir_testes` é o parâmetro antigo equivalente a
+    'todas'; continua aceito, mas `origem` tem precedência quando os dois vêm."""
     empresa_id = _empresa_efetiva(request, empresa_id)
     return banco.listar_deteccoes(placa=placa, desde=desde, ate=ate, limit=limit,
                                   offset=offset, empresa_id=empresa_id, bico_id=bico_id,
-                                  incluir_testes=incluir_testes)
+                                  incluir_testes=incluir_testes, origem=origem)
 
 
 @router.get("/chamadas")
@@ -362,7 +367,11 @@ def cameras_detalhe(id_: int, request: Request):
     bicos = [{**b, "automacao_codigo": (automacoes.get(b["automacao_id"]) or {}).get("codigo", "?")}
              for b in banco.bicos_listar(camera_id=id_)]
 
-    ao_vivo = id_ in pipeline._instancias
+    # "ao vivo" é ter IMAGEM saindo, não ter um objeto Pipeline registrado — ver
+    # `pipeline.estado_stream`. A tela usava `id in _instancias` e, com
+    # `deteccao_automatica=nao`, apontava o <img> para um MJPEG mudo.
+    modo = pipeline.estado_stream(id_)
+    ao_vivo = modo == "ao_vivo"
     # Nada de `a or b` aqui: com arrays numpy o `or` avalia o array inteiro como
     # booleano e levanta ValueError. Tem que ser comparação explícita com None.
     frame = estado.obter_frame_camera_limpo(id_)
@@ -378,6 +387,7 @@ def cameras_detalhe(id_: int, request: Request):
         "entidade": ent,
         "bicos": bicos,
         "ao_vivo": ao_vivo,
+        "stream_modo": modo,          # ao_vivo | aquecendo | sob_demanda
         "ultimo_frame_seg": idade,
         # A sobreposição das áreas precisa das dimensões reais do frame; o MJPEG nem
         # sempre expõe naturalWidth a tempo no navegador.

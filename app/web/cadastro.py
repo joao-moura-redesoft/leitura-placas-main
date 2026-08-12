@@ -91,11 +91,12 @@ def posto_detalhe(empresa_id: int, request: Request):
         raise HTTPException(404, "Posto não encontrado")
     ent = banco.entidades_obter(emp["entidade_id"])
     cams = {c["id"]: c for c in banco.cameras_listar(empresa_id=empresa_id)}
-    # `ao_vivo` = há pipeline contínuo com o stream aberto → a tela pode exibir MJPEG
-    # em vez de captura sob demanda.
+    # `ao_vivo` = há pipeline contínuo ENTREGANDO frames → a tela pode exibir MJPEG
+    # em vez de captura sob demanda (ver `pipeline.estado_stream`).
     from app.visao import pipeline as pipeline_mod
     for c in cams.values():
-        c["ao_vivo"] = c["id"] in pipeline_mod._instancias
+        c["stream_modo"] = pipeline_mod.estado_stream(c["id"])
+        c["ao_vivo"] = c["stream_modo"] == "ao_vivo"
     autos = []
     for a in banco.automacoes_listar(empresa_id=empresa_id):
         bicos = []

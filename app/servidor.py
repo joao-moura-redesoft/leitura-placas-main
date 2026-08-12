@@ -44,6 +44,11 @@ from app.web import usuarios as usuarios_rotas
 # Garante MIME types corretos para servir arquivos HLS via StaticFiles
 mimetypes.add_type("application/vnd.apple.mpegurl", ".m3u8")
 mimetypes.add_type("video/mp2t", ".ts")
+# Fontes: o Windows não registra .woff2 e o StaticFiles cai em
+# application/octet-stream. Os <link rel="preload" as="font" type="font/woff2">
+# do base.html/auth_base.html são descartados quando o Content-Type não bate, e
+# o browser baixa a fonte de novo — o preload vira download duplicado.
+mimetypes.add_type("font/woff2", ".woff2")
 
 
 log = logging.getLogger(__name__)
@@ -103,6 +108,39 @@ class _AuthMiddleware(BaseHTTPMiddleware):
         if path.startswith("/api/") or path.startswith("/stream/"):
             return JSONResponse({"detail": "Não autenticado."}, status_code=401)
         return RedirectResponse("/login", status_code=303)
+
+
+class _SegurancaMiddleware(BaseHTTPMiddleware):
+    """Headers de defesa em profundidade contra XSS de origem externa, clickjacking
+    e MIME-sniffing.
+
+    O CSP libera 'unsafe-inline' em script/style porque o frontend hoje usa
+    onclick="" e <style>/style="" inline por toda parte — apertar mais que isso
+    quebraria a aplicação inteira sem antes migrar esses padrões (ver avaliação
+    de frontend). Mesmo com 'unsafe-inline', já fecha a porta de scripts/estilos
+    carregados de fora (ex.: um payload de XSS tentando <script src="https://
+    evil.com/x.js">, ou uma dependência de CDN comprometida) e de o site ser
+    embutido em iframe de outra origem (clickjacking).
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        resp = await call_next(request)
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; "
+            "media-src 'self' blob:; "
+            "connect-src 'self' ws: wss:; "
+            "font-src 'self'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
+        )
+        return resp
 
 
 def _iniciar_pipeline_bg(cfg: dict) -> None:
@@ -186,6 +224,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Leitura de Placas (ALPR)", lifespan=lifespan)
+app.add_middleware(_SegurancaMiddleware)
 app.add_middleware(_AuthMiddleware)
 app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
 _FOTOS_TESTE_DIR = "testes/fotos"

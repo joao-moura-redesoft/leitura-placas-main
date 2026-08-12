@@ -63,6 +63,7 @@ descartado antes de comparar.
   "padrao": "mercosul",
   "confianca": 0.91,
   "acordo": 0.85,
+  "confirmada": true,
   "votos_snapshot": 5, "total_snapshots": 6,
   "votos_ocr": 2, "total_engines": 2,
   "detalhes_ocr": [{"engine": "fast_plate_ocr", "placa": "PGK2D93", "padrao": "mercosul", "confianca": 0.91}],
@@ -72,8 +73,17 @@ descartado antes de comparar.
   "frame_url": "/static/snapshots/preview_bico_2.jpg"
 }
 ```
-HTTP `200`. Use o campo `"placa"`. `"acordo"` (0 a 1) é a confiança do consenso interno
-— abaixo de ~0.6 vale tratar como "leitura duvidosa" em vez de aceitar cegamente.
+HTTP `200`. Use o campo `"placa"` — **e confira `"confirmada"` antes de vincular a placa
+a um abastecimento.**
+
+`"confirmada": false` significa que a leitura terminou sem atingir o consenso mínimo
+configurado no servidor (o loop esgotou o tempo e devolveu a melhor candidata). Ela vem
+com `"placa"` preenchida, mas **não deve ser tratada como placa boa**: encaminhe para
+conferência do atendente em vez de cobrar direto. É o caso típico de moto e de placa
+distante/suja. `"acordo"` (0 a 1) é o número bruto por trás dessa decisão, útil para
+diagnóstico — mas prefira `"confirmada"`, que já aplica o limiar configurado no posto, em
+vez de fixar um corte próprio no lado do roteador.
+
 Os demais campos (`votos_ocr`, `detalhes_ocr`, etc.) são detalhe interno de diagnóstico;
 não é necessário processá-los.
 
@@ -81,14 +91,28 @@ não é necessário processá-los.
 
 ```json
 {
-  "placa": null, "mensagem": "Nenhuma placa detectada nos frames",
-  "camera_id": 3, "bico_id": 2,
+  "placa": null,
+  "mensagem": "Nenhuma placa detectada nos frames — verifique o enquadramento da área do bico e se o veículo aparece dentro dela",
+  "camera_id": 3, "bico_id": 2, "bboxes_detectadas": 0,
   "snapshots_analisados": 12, "tentativas": 12, "parada_motivo": "timeout",
   "frame_url": "/static/snapshots/preview_bico_2.jpg"
 }
 ```
 Também HTTP `200`. `"placa": null` é uma resposta válida — sem carro na área, placa
 suja, ou tempo esgotado sem conseguir ler. Não é erro de integração.
+
+`bboxes_detectadas` separa dois problemas que antes chegavam com a mesma mensagem, e que
+se resolvem de formas opostas:
+
+- **`0`** — o detector não achou placa em nenhuma foto. É enquadramento: veículo fora da
+  área do bico, ou placa longe/oculta demais.
+- **`> 0`** — achou a placa, mas nenhum recorte virou texto válido (a mensagem muda para
+  "Placa localizada em N recorte(s)..."). É resolução/nitidez: a placa está no lugar
+  certo, pequena ou borrada demais para o OCR. Mexer na área do bico não muda nada aqui —
+  precisa aproximar/zoomar a câmera.
+
+`mensagem` é texto livre para diagnóstico humano; não faça o roteador depender do seu
+conteúdo (use `placa`, `confirmada` e, se quiser detalhar, `bboxes_detectadas`).
 
 ### Erro de cadastro (cnpj/automação/bico não encontrado, ou desativado)
 

@@ -109,6 +109,27 @@ _LIMITE_LEITURA_IP_MIN = 60
 _LIMITE_LEITURA_CNPJ_MIN = 30
 
 
+def _status_da_leitura(resultado: dict) -> tuple[str, str]:
+    """Classifica o resultado de `ler_placa` para o log de chamadas: (status, motivo).
+
+    Função separada porque esta regra decide o que conta como sucesso — e portanto o que
+    o painel mostra como taxa de sucesso e o que um atendente trata como placa boa. Uma
+    leitura que saiu por timeout devolve placa mas NÃO é sucesso: contá-la como 'ok'
+    esconderia justamente as leituras que precisam de conferência antes de virar cobrança.
+
+    `confirmada` ausente (None) significa consenso desconhecido, não consenso fraco — é o
+    caso de chamadas antigas e de origens que não passam pelo loop; nesses, não rebaixa.
+    """
+    if not resultado.get("placa"):
+        return "sem_placa", (resultado.get("mensagem") or "sem placa")
+    if resultado.get("confirmada") is False:
+        acordo = resultado.get("acordo")
+        acordo_txt = f"{acordo:.2f}" if isinstance(acordo, (int, float)) else "?"
+        return "nao_confirmada", (f"acordo {acordo_txt} abaixo do mínimo "
+                                  f"(parada: {resultado.get('parada_motivo')})")
+    return "ok", ""
+
+
 @router.get("/leitura")
 def leitura_reativa(
     request: Request,
@@ -192,9 +213,9 @@ def leitura_reativa(
         _registrar("erro_camera", e.mensagem)
         raise HTTPException(e.status, e.mensagem)
 
+    status_chamada, motivo_chamada = _status_da_leitura(resultado)
     _registrar(
-        "ok" if resultado.get("placa") else "sem_placa",
-        "" if resultado.get("placa") else (resultado.get("mensagem") or "sem placa"),
+        status_chamada, motivo_chamada,
         placa=resultado.get("placa"),
         acordo=resultado.get("acordo"),
         tentativas=resultado.get("tentativas"),

@@ -53,8 +53,12 @@ def chamadas_resumo(horas: int = 24, empresa_id: int | None = None) -> dict:
             f"SELECT status, COUNT(*) n FROM chamadas WHERE criado_em >= datetime('now', ?){filtro_emp} "
             "GROUP BY status", (desde, *params_emp))}
         total = sum(por_status.values())
+        # Média sobre TODA chamada que produziu placa, confirmada ou não: restringir a
+        # 'ok' esconderia as leituras fracas justamente da métrica que serve para detectar
+        # que a qualidade caiu (câmera suja, ângulo ruim, moto).
         acordo = c.execute(
-            f"SELECT AVG(acordo) a FROM chamadas WHERE status='ok' AND acordo IS NOT NULL "
+            f"SELECT AVG(acordo) a FROM chamadas WHERE status IN ('ok','nao_confirmada') "
+            f"AND acordo IS NOT NULL "
             f"AND criado_em >= datetime('now', ?){filtro_emp}", (desde, *params_emp)).fetchone()["a"]
         duracao = c.execute(
             f"SELECT AVG(duracao_ms) d FROM chamadas WHERE duracao_ms IS NOT NULL "
@@ -78,6 +82,7 @@ def chamadas_resumo(horas: int = 24, empresa_id: int | None = None) -> dict:
         "total": total,
         "ok": ok,
         "sem_placa": por_status.get("sem_placa", 0),
+        "nao_confirmada": por_status.get("nao_confirmada", 0),
         "erro_cadastro": por_status.get("erro_cadastro", 0),
         "erro_camera": por_status.get("erro_camera", 0),
         "taxa_sucesso": round(ok / total, 3) if total else None,

@@ -141,6 +141,10 @@ Edite via UI em `/configuracao` ou diretamente em `config.txt`. Principais parâ
 |-------|--------|-----------|
 | `detector_backend` | `open_image_models` | `open_image_models` (MIT, padrão) ou `onnx` (modelo local, ver licença acima) |
 | `veiculo_dois_estagios_get` | `sim` | Detecção em 2 estágios (veículo→placa) na leitura sob demanda |
+| `tiles_fallback_get` | `sim` | Quando nada é detectado, revarre o recorte em janelas sobrepostas — é o que recupera placa de **moto** parada na bomba (ver [Placa de moto](#placa-de-moto--o-caso-difícil)) |
+| `tiles_lado_alvo` | `300` | Lado alvo da janela, em px do recorte analisado |
+| `tiles_sobreposicao` | `0.30` | Sobreposição entre janelas. Faixa útil estreita (0.25–0.35): mais que isso e a janela volta a ser o recorte inteiro, que é o enquadramento que falha |
+| `tiles_conf` | `0.15` | Limiar de confiança só nas janelas (mais permissivo de propósito) |
 | `ocr_engine` | `auto` | `auto`, `easyocr`, `fast_plate_ocr`, `tesseract`, `paddleocr`, `doctr` |
 | `ocr_leitura_paddle` | `sim` | Reforço PaddleOCR na leitura sob demanda (ajuda placa antiga borrada) |
 | `leitura_timeout_seg` | `28` | Teto de tempo do loop reject-retry por chamada |
@@ -302,3 +306,64 @@ Dataset de 42 placas (sintéticas + fotos reais):
 | `auto` (AutoOCR) | **92.9%** (39/42) |
 
 Limitação conhecida: caractere `Q` em posição 4 de placas Mercosul é sistematicamente lido como `O` pelos modelos EasyOCR e fast-plate-ocr (ambiguidade visual do Arial Bold em baixa resolução).
+
+## Placa de moto — o caso difícil
+
+A placa de moto é o pior cenário do sistema, e por um motivo físico: ela é pequena
+(~200×170 mm contra 400×130 do carro), fica baixa e inclinada, e a moto costuma parar
+mais longe da câmera que o carro. Medido numa cena real de posto (frame 1280×720, moto
+parada na bomba), a placa chega com **38×35 px** — contra ~56×30 do carro na mesma cena,
+que sai com confiança 0.87.
+
+**Detecção** (resolvido). O detector faz *letterbox* de tudo o que recebe para o lado do
+input do modelo (608 px), então numa área de bico grande a placa de moto chegava pequena
+demais e não era detectada. O que foi medido nessa cena:
+
+| Enquadramento entregue ao detector | Resultado |
+|---|---|
+| Área do bico inteira (397×610) | nada, mesmo baixando o limiar a 0.05 |
+| Mesma área ampliada 2× / 3× | nada — inútil por construção: o modelo reduz de volta a 608 |
+| Recorte fechado só na placa (38–153 px) | nada — não é só escala, o modelo precisa do veículo em volta |
+| Janelas de ~250–320 px pegando moto + placa | **conf 0.19–0.81** |
+
+Não é escala, é **enquadramento** — e o loop de leitura repetia no tempo, nunca no
+espaço: com a área do bico fixa, as 12 tentativas eram 12 recortes idênticos, logo 12
+falhas idênticas. Daí o fallback `tiles_fallback_get` (ver `BuscaEmTiles` em
+`app/visao/detector.py`), que revarre o recorte em janelas sobrepostas quando a passada
+normal não acha nada. Custo zero quando acha (o caso comum, carro).
+
+O estágio de veículo não ajuda aqui: o YOLOX classifica a moto ocluída pelo piloto e
+pelo frentista como `bicycle` (0.50) ou só vê `person`. Incluir `bicycle` em
+`veiculo_classes` foi testado e **não resolve** — o recorte resultante (98×119) é fechado
+demais, cai no terceiro caso da tabela.
+
+**OCR — dois defeitos corrigidos.** A placa de moto tem **duas linhas** (letras em cima,
+dígitos embaixo) e isso quebrava o OCR de duas formas independentes, nenhuma delas de
+resolução:
+
+1. **`_ler_paddleocr` ficava só com a MAIOR caixa.** Regra certa para carro — a placa é o
+   maior texto do crop e 'BRASIL'/cidade/UF são menores — e destrutiva para moto, onde as
+   duas linhas são caixas separadas de tamanho parecido: metade da placa era descartada,
+   sempre. Medido nas 27 placas de moto de `testes/dataset.json`: **0/27**, e em todas o
+   retorno era uma linha sozinha (`YZA3456` saía `3456`, `NOP5Q67` saía `NOP`). Não era
+   resolução — são sintéticas e limpas. Agora as caixas de tamanho comparável são unidas
+   em ordem de leitura.
+2. **`_remover_ruidos_mercosul` apagava o 1º caractere de cada linha.** Ela pinta os cantos
+   esquerdos (20%×28% em cima, 18%×30% embaixo) para cobrir o QR do CRLV-e e o marcador
+   "BR". Numa placa **antiga** de moto real do posto, `_remover_header` devolveu
+   `e_mercosul=True` por engano (faixa metálica), a limpeza cobriu o `Y` e o `5`, e o
+   Paddle passou de `NOI`+`5947` para nada. Agora, se a limpeza rodou e o OCR voltou vazio,
+   a leitura é repetida sem ela.
+
+| PaddleOCR no dataset | antes | depois |
+|---|---|---|
+| moto (27) | 0/27 — 0% | **22/27 — 81,5%** (26/27 com o hint `mercosul_moto` do `validar()`) |
+| carro (14) | 13/14 — 92,9% | 13/14 — 92,9% (sem regressão, mesma falha) |
+| total (41) | 13/41 — 31,7% | **35/41 — 85,4%** |
+
+**O que ainda não fecha.** Na moto real de 38×35 px, a leitura foi de `''` (nada) para
+`NOT5947` — 5 dos 7 caracteres. Os dígitos saem certos e confiantes (`5947` a 0,998); as
+letras não. A ~10 px de altura de caractere não há informação para recuperar, e ampliar o
+recorte não cria o que a câmera não capturou. A saída aqui é de campo: aproximar/zoomar a
+câmera, ou uma câmera dedicada ao box da moto, de modo que a placa chegue com ≥ 80–100 px
+de largura.

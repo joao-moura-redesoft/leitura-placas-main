@@ -106,7 +106,7 @@ class _EstadoTrack:
     """Estado OCR acumulado de um veículo rastreado."""
 
     __slots__ = ("track_id", "frames_visto", "ultimo_ocr_frame",
-                 "resultados", "emitido", "bbox", "conf_det")
+                 "resultados", "emitido", "bbox", "conf_det", "frames_sem_match")
 
     def __init__(self, track_id: int) -> None:
         self.track_id = track_id
@@ -116,6 +116,9 @@ class _EstadoTrack:
         self.emitido: bool = False
         self.bbox: tuple[int, int, int, int] | None = None
         self.conf_det: float = 0.0
+        # Frames de detecção seguidos em que este track não veio na saída do backend.
+        # Zerado a cada reaparecimento; ver Tracker._limpar_mortos.
+        self.frames_sem_match: int = 0
 
     def precisa_ocr(self, frame_global: int, intervalo: int) -> bool:
         if self.emitido:
@@ -260,6 +263,7 @@ class Tracker:
             log.debug("Tracker: novo veículo ID=%d", tid)
         st = self._estados[tid]
         st.frames_visto += 1
+        st.frames_sem_match = 0
         st.bbox = bbox
         st.conf_det = conf
 
@@ -296,9 +300,25 @@ class Tracker:
     # ── Manutenção interna ────────────────────────────────────────────────────
 
     def _limpar_mortos(self, ids_ativos: set[int]) -> None:
-        mortos = [tid for tid in self._estados if tid not in ids_ativos]
-        for tid in mortos:
-            st = self._estados.pop(tid)
+        """Expira o estado OCR de tracks ausentes — só depois de `paciencia` frames.
+
+        Nem o ByteTrack nem o `_IoUTracker` devolvem um track que ficou sem match: os
+        dois o guardam INTERNAMENTE (track_buffer / max_perdido) e voltam a devolvê-lo,
+        com o MESMO id, quando o veículo reaparece. Descartar o `_EstadoTrack` no
+        primeiro frame de ausência — como era feito aqui — zerava os votos de OCR e a
+        marca `emitido` a cada oclusão de um único frame (pessoa passando na frente,
+        mangueira, reflexo), fazendo `tracker_paciencia_frames` valer 1 na prática
+        justamente contra o cenário que ele existe para cobrir. O contador espelha a
+        paciência do backend, então os dois esquecem o veículo no mesmo momento.
+        """
+        for tid in list(self._estados):
+            if tid in ids_ativos:
+                continue
+            st = self._estados[tid]
+            st.frames_sem_match += 1
+            if st.frames_sem_match <= self._paciencia:
+                continue
+            del self._estados[tid]
             if st.resultados and not st.emitido:
                 melhor = st.placa_eleita(1)
                 if melhor:

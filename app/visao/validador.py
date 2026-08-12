@@ -33,20 +33,54 @@ RE_MERCOSUL = re.compile(r"^[A-Z]{3}[0-9][A-Z][0-9]{2}$")
 POSICOES_ANTIGO = list("LLLDDDD")
 POSICOES_MERCOSUL = list("LLLDLDD")
 
+# Máximo de trocas dígito↔letra aceitas para encaixar um texto num padrão de placa.
+#
+# Sem teto, a correção posicional encaixa QUALQUER coisa: uma sequência de 7 dígitos vira
+# placa Mercosul em 51,1% dos casos (medido em 100k strings aleatórias), porque o padrão
+# LLLDLDD só precisa que as 4 posições de letra tenham mapeamento no dicionário de
+# confusões. O teto separa os dois usos do mesmo mecanismo: recuperar uma placa REAL cujo
+# OCR trocou 1-2 caracteres (o que ele foi feito para fazer) e fabricar uma placa a partir
+# de texto que nunca foi placa (o que ele fazia de graça junto).
+#
+# 2 é onde a separação é limpa nas correções legítimas conhecidas: 'FBI0123'→'FBI0I23'
+# custa 1, 'ABCO234'→'ABC0Z34' custa 2, e os falsos positivos de dígito puro custam 4
+# (3 posições de letra + a posição 4) — nenhum encosta no teto pelo lado errado.
+MAX_CORRECOES = 2
 
-def _corrigir(texto: str, posicoes: list[str]) -> str:
+
+def _corrigir(texto: str, posicoes: list[str]) -> tuple[str, int]:
+    """Aplica as trocas posicionais e devolve (texto_corrigido, nº de trocas aplicadas).
+
+    Só conta como troca o caractere que REALMENTE mudou: um dígito sem mapeamento numa
+    posição de letra (ex.: '9', '4') sai intacto e não consome orçamento — o encaixe
+    falha depois, na regex, como já falhava antes.
+    """
     out = []
+    n = 0
     for ch, alvo in zip(texto, posicoes):
         if alvo == "L" and ch.isdigit():
-            out.append(DIGITO_PARA_LETRA.get(ch, ch))
+            novo = DIGITO_PARA_LETRA.get(ch, ch)
         elif alvo == "D" and ch.isalpha():
-            out.append(LETRA_PARA_DIGITO.get(ch, ch))
+            novo = LETRA_PARA_DIGITO.get(ch, ch)
         else:
-            out.append(ch)
-    return "".join(out)
+            novo = ch
+        if novo != ch:
+            n += 1
+        out.append(novo)
+    return "".join(out), n
 
 
-def _validar_7(trecho: str, formato_hint: str = "") -> tuple[str, str] | None:
+def _encaixar(trecho: str, posicoes: list[str], regex: re.Pattern, padrao: str,
+              max_correcoes: int) -> tuple[str, str] | None:
+    """Tenta encaixar `trecho` no padrão, respeitando o orçamento de correções."""
+    c, n = _corrigir(trecho, posicoes)
+    if n <= max_correcoes and regex.match(c):
+        return c, padrao
+    return None
+
+
+def _validar_7(trecho: str, formato_hint: str = "",
+               max_correcoes: int = MAX_CORRECOES) -> tuple[str, str] | None:
     """Tenta validar exatamente 7 chars — direto e com correções posicionais.
 
     formato_hint:
@@ -65,9 +99,9 @@ def _validar_7(trecho: str, formato_hint: str = "") -> tuple[str, str] | None:
     # "FBI0123" (OCR de "FBI0I23") nunca seriam corrigidas. A visão de moto é confiável
     # (aspecto ≤2 do crop já confirma o layout, não depende só da cor do header).
     if formato_hint == "mercosul_moto":
-        c = _corrigir(trecho, POSICOES_MERCOSUL)
-        if RE_MERCOSUL.match(c):
-            return c, "mercosul"
+        r = _encaixar(trecho, POSICOES_MERCOSUL, RE_MERCOSUL, "mercosul", max_correcoes)
+        if r:
+            return r
 
     # Antigo direto tem prioridade sobre correção Mercosul de CARRO (single-line) — evita
     # que um texto já CORRETAMENTE lido como antigo (ex: CDV2112) seja corrompido por um
@@ -80,29 +114,30 @@ def _validar_7(trecho: str, formato_hint: str = "") -> tuple[str, str] | None:
     # Com hint Mercosul (carro, ou moto que não bateu acima): tenta correção antes das
     # correções genéricas por dígito ambíguo abaixo.
     if formato_hint in ("mercosul", "mercosul_moto"):
-        c = _corrigir(trecho, POSICOES_MERCOSUL)
-        if RE_MERCOSUL.match(c):
-            return c, "mercosul"
+        r = _encaixar(trecho, POSICOES_MERCOSUL, RE_MERCOSUL, "mercosul", max_correcoes)
+        if r:
+            return r
     # Só aqui tenta correção Mercosul para dígitos ambíguos na pos-4 (8≈B, 0≈O, 1≈I).
     # Neste ponto sabemos que o texto não bate diretamente nem como Mercosul nem antigo.
     if trecho[4] in _AMBIGUOS_POS4:
-        c = _corrigir(trecho, POSICOES_MERCOSUL)
-        if RE_MERCOSUL.match(c):
-            return c, "mercosul"
-    c = _corrigir(trecho, POSICOES_MERCOSUL)
-    if RE_MERCOSUL.match(c):
-        return c, "mercosul"
-    c = _corrigir(trecho, POSICOES_ANTIGO)
-    if RE_ANTIGO.match(c):
-        return c, "antigo"
-    return None
+        r = _encaixar(trecho, POSICOES_MERCOSUL, RE_MERCOSUL, "mercosul", max_correcoes)
+        if r:
+            return r
+    r = _encaixar(trecho, POSICOES_MERCOSUL, RE_MERCOSUL, "mercosul", max_correcoes)
+    if r:
+        return r
+    return _encaixar(trecho, POSICOES_ANTIGO, RE_ANTIGO, "antigo", max_correcoes)
 
 
-def validar(texto: str, formato_hint: str = "") -> tuple[str, str] | None:
+def validar(texto: str, formato_hint: str = "",
+            max_correcoes: int = MAX_CORRECOES) -> tuple[str, str] | None:
     """Retorna (placa_normalizada, padrao) ou None se inválida.
 
     formato_hint: 'mercosul' para priorizar correção Mercosul antes de aceitar
     antigo direto. Útil quando o caller detectou header Mercosul na imagem.
+
+    max_correcoes: orçamento de trocas dígito↔letra por encaixe (ver MAX_CORRECOES).
+    Passar um valor alto (>=4) reproduz o comportamento anterior ao teto.
 
     Quando o OCR devolve mais de 7 chars (ex: leu o cabeçalho "BRASIL"
     junto com a placa), aplica janela deslizante de 7 chars para encontrar
@@ -116,7 +151,7 @@ def validar(texto: str, formato_hint: str = "") -> tuple[str, str] | None:
         return None
 
     if n == 7:
-        return _validar_7(bruto, formato_hint)
+        return _validar_7(bruto, formato_hint, max_correcoes)
 
     # Texto maior que 7 — OCR leu artefatos (cabeçalho, QR, marcadores).
     # Varre janelas de 7 chars; prefere match sem correção (mais confiável).
@@ -131,28 +166,25 @@ def validar(texto: str, formato_hint: str = "") -> tuple[str, str] | None:
     # Com hint Mercosul: tenta correção Mercosul antes de aceitar antigo
     if formato_hint in ("mercosul", "mercosul_moto"):
         for i in range(n - 6):
-            t = bruto[i: i + 7]
-            c = _corrigir(t, POSICOES_MERCOSUL)
-            if RE_MERCOSUL.match(c):
-                return c, "mercosul"
+            r = _encaixar(bruto[i: i + 7], POSICOES_MERCOSUL, RE_MERCOSUL, "mercosul", max_correcoes)
+            if r:
+                return r
 
     # Segunda passagem: aceita mercosul corrigido para pos-4 ambígua
     for i in range(n - 6):
         t = bruto[i: i + 7]
         if t[4] in _AMBIGUOS_POS4:
-            c = _corrigir(t, POSICOES_MERCOSUL)
-            if RE_MERCOSUL.match(c):
-                return c, "mercosul"
+            r = _encaixar(t, POSICOES_MERCOSUL, RE_MERCOSUL, "mercosul", max_correcoes)
+            if r:
+                return r
 
     # Terceira passagem: aceita com correções posicionais completas
     for i in range(n - 6):
         t = bruto[i: i + 7]
-        c = _corrigir(t, POSICOES_MERCOSUL)
-        if RE_MERCOSUL.match(c):
-            return c, "mercosul"
-        c = _corrigir(t, POSICOES_ANTIGO)
-        if RE_ANTIGO.match(c):
-            return c, "antigo"
+        r = (_encaixar(t, POSICOES_MERCOSUL, RE_MERCOSUL, "mercosul", max_correcoes)
+             or _encaixar(t, POSICOES_ANTIGO, RE_ANTIGO, "antigo", max_correcoes))
+        if r:
+            return r
 
     return None
 

@@ -58,6 +58,26 @@ PADROES: dict[str, str] = {
     # Limita quantos veículos (maiores primeiro) disparam busca de placa por frame — protege
     # a latência em cenas movimentadas (estacionamento/rua com dezenas de veículos visíveis).
     "veiculo_max_veiculos": "5",
+    # ── Varredura em janelas (fallback de último recurso da leitura GET) ────────
+    # Quando a passada normal não acha NENHUMA placa no recorte, reexamina o recorte em
+    # janelas sobrepostas de ~`tiles_lado_alvo` px. Recupera placa de MOTO parada na bomba:
+    # medido em cena real, uma placa de 38px numa ROI de 397x610 não sai em passada única
+    # (nem ampliando a ROI — o modelo redimensiona de volta para 608), mas sai com conf
+    # 0.4-0.8 numa janela de ~250x300 que pegue moto+placa juntas. Ver `BuscaEmTiles`.
+    # Só no GET: custa até `tiles_max_janelas` passadas extras (~200ms cada em CPU), e
+    # apenas nas leituras que teriam falhado de todo jeito.
+    "tiles_fallback_get": "sim",
+    "tiles_lado_alvo": "300",         # lado alvo da janela, em px do recorte analisado
+    # Faixa útil ESTREITA e por motivo geométrico: sobreposição maior = janela maior, e em
+    # 0.5 a janela já é quase o recorte inteiro (o enquadramento que falhou). Medido:
+    # 0.25-0.35 acham a placa da moto, 0.20/0.40/0.50 não acham nada. Não mexa sem medir.
+    "tiles_sobreposicao": "0.30",
+    "tiles_max_janelas": "6",         # teto de janelas por tentativa (protege a latência)
+    # Limiar de confiança só nas janelas — mais permissivo que `conf_threshold` de propósito:
+    # nas janelas a placa de moto sai raspando (0.19-0.37 medido) e aqui já se sabe que o
+    # caminho normal falhou. Recorte ruim ainda tem que passar por OCR + validar() + consenso
+    # entre frames; medido na cena real, nenhum falso positivo até 0.10.
+    "tiles_conf": "0.15",
     # ocr_engine: auto | tesseract | easyocr | paddleocr | doctr | fast_plate_ocr
     # auto = detecta formato pela faixa colorida: Mercosul→fast_plate_ocr, Antigo→easyocr
     # engines não instalados são instalados automaticamente via pip na primeira inicialização

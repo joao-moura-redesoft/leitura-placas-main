@@ -4,6 +4,8 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.core import banco
 
 
@@ -74,6 +76,48 @@ class TestListagemDeDeteccoes:
         assert len(banco.listar_deteccoes(bico_id=1)) == 1
 
 
+class TestFiltroDeOrigem:
+    """O filtro tri-estado que substituiu o booleano `incluir_testes`."""
+
+    def _cenario(self):
+        banco.registrar_deteccao("AAA1A11", "mercosul", 0.9, origem="teste")
+        banco.registrar_deteccao("BBB2B22", "mercosul", 0.9, origem="roteador")
+        banco.registrar_deteccao("CCC3C33", "mercosul", 0.9, origem="pipeline")
+
+    def test_producao_e_o_padrao_e_exclui_so_os_testes(self, ambiente):
+        """'produção' não é sinônimo de 'roteador': a detecção do pipeline contínuo
+        aconteceu de verdade e precisa continuar aparecendo."""
+        self._cenario()
+        placas = {d["placa"] for d in banco.listar_deteccoes(origem="producao")}
+        assert placas == {"BBB2B22", "CCC3C33"}
+        assert placas == {d["placa"] for d in banco.listar_deteccoes()}
+
+    def test_teste_traz_somente_as_leituras_manuais(self, ambiente):
+        """O que o booleano antigo não conseguia expressar."""
+        self._cenario()
+        assert [d["placa"] for d in banco.listar_deteccoes(origem="teste")] == ["AAA1A11"]
+
+    def test_todas_nao_filtra_nada(self, ambiente):
+        self._cenario()
+        assert len(banco.listar_deteccoes(origem="todas")) == 3
+
+    def test_origem_tem_precedencia_sobre_o_parametro_antigo(self, ambiente):
+        self._cenario()
+        listadas = banco.listar_deteccoes(incluir_testes=True, origem="teste")
+        assert [d["placa"] for d in listadas] == ["AAA1A11"]
+
+    def test_valor_invalido_falha_alto(self, ambiente):
+        """Silenciosamente virar 'todas' vazaria testes para um relatório de cobrança."""
+        with pytest.raises(ValueError):
+            banco.listar_deteccoes(origem="roteador")   # valor da coluna, não do filtro
+
+    def test_contagem_por_placa_aceita_o_mesmo_filtro(self, ambiente):
+        banco.registrar_deteccao("ABC1D23", "mercosul", 0.9, origem="roteador")
+        banco.registrar_deteccao("ABC1D23", "mercosul", 0.9, origem="teste")
+        assert banco.contar_deteccoes_placa("ABC1D23", origem="teste") == 1
+        assert banco.contar_deteccoes_placa("ABC1D23", origem="todas") == 2
+
+
 class TestRetencao:
     def test_apaga_o_que_passou_do_prazo_e_devolve_os_arquivos(self, ambiente):
         antiga = banco.registrar_deteccao("AAA1A11", "mercosul", 0.9,
@@ -141,3 +185,45 @@ class TestListas:
         banco.listas_inserir("AAA1A11", "branca")
         banco.listas_inserir("BBB2B22", "negra")
         assert len(banco.listas_listar(tipo="negra")) == 1
+
+
+class TestAcordoEConfirmacao:
+    """Uma leitura devolvida por timeout, sem consenso, não pode ficar indistinguível
+    de uma leitura sólida — é ela que vira cobrança no cliente errado."""
+
+    def _linha(self, id_):
+        import sqlite3
+        from app.core.banco import _base
+        con = sqlite3.connect(_base.caminho())
+        con.row_factory = sqlite3.Row
+        try:
+            return dict(con.execute("SELECT * FROM deteccoes WHERE id=?", (id_,)).fetchone())
+        finally:
+            con.close()
+
+    def test_grava_acordo_e_confirmacao(self, ambiente):
+        id_ = banco.registrar_deteccao("ABC1D23", "mercosul", 0.9, acordo=0.95, confirmada=True)
+        linha = self._linha(id_)
+        assert linha["acordo"] == 0.95
+        assert linha["confirmada"] == 1
+
+    def test_leitura_fraca_fica_marcada_como_nao_confirmada(self, ambiente):
+        id_ = banco.registrar_deteccao("ABC1D23", "mercosul", 0.9, acordo=0.30, confirmada=False)
+        assert self._linha(id_)["confirmada"] == 0
+
+    def test_sem_consenso_conhecido_nao_presume_confirmada(self, ambiente):
+        """Pipeline ao vivo não passa pelo loop de consenso: NULL, nunca 1."""
+        id_ = banco.registrar_deteccao("ABC1D23", "mercosul", 0.9)
+        linha = self._linha(id_)
+        assert linha["acordo"] is None
+        assert linha["confirmada"] is None
+
+    def test_mesclar_leitura_atualiza_o_veredito(self, ambiente):
+        """Ao mesclar com a detecção anterior do mesmo bico, o veredito tem de acompanhar
+        a leitura nova — senão uma leitura fraca herda o 'confirmada' da anterior."""
+        id_ = banco.registrar_deteccao("ABC1D23", "mercosul", 0.9, acordo=0.95, confirmada=True)
+        banco.atualizar_deteccao(id_, placa="ABC1D23", padrao="mercosul", confianca=0.8,
+                                 acordo=0.40, confirmada=False)
+        linha = self._linha(id_)
+        assert linha["confirmada"] == 0
+        assert linha["acordo"] == 0.40

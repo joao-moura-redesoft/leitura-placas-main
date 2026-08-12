@@ -24,8 +24,21 @@ def stream_mjpg():
 @router.get("/stream/{camera_id}.mjpg")
 def stream_camera_mjpg(camera_id: int, request: Request):
     cam = banco.cameras_obter(camera_id)
-    if cam:
-        deps.checar_acesso_empresa(request, cam.get("empresa_id"))
+    if not cam:
+        raise HTTPException(404, "Câmera não encontrada")
+    deps.checar_acesso_empresa(request, cam.get("empresa_id"))
+
+    # Só abre a resposta se existir imagem para servir. Sem esta espera o gerador
+    # rodava sem emitir byte nenhum enquanto não houvesse frame — a resposta ficava
+    # pendurada em 200 e o <img> do navegador nunca disparava `load` nem `error`:
+    # a tela mostrava um retângulo vazio e nenhum erro, para sempre. Com 503 aqui,
+    # o `error` do <img> dispara e a página cai na captura sob demanda.
+    if not stream_mod.aguardar_frame_camera(camera_id):
+        raise HTTPException(
+            503,
+            "A câmera não está transmitindo ao vivo (nenhum quadro recebido). "
+            "Verifique se a detecção contínua está ligada e se a câmera está acessível.",
+        )
     return StreamingResponse(
         stream_mod.gerar_mjpeg_camera(camera_id),
         media_type="multipart/x-mixed-replace; boundary=frame",

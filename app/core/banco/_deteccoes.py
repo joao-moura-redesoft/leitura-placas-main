@@ -8,6 +8,40 @@ from ._base import _agora
 from ._base import cursor
 
 
+# Conjuntos de origem que o histórico sabe filtrar. Não são os valores da coluna
+# `origem` (esses são 'roteador'/'teste'/'pipeline'): 'producao' agrupa tudo que NÃO
+# é teste manual, porque do ponto de vista de quem audita um abastecimento o que
+# importa é "isto aconteceu de verdade" e não qual caminho de código gravou a linha.
+ORIGENS_FILTRO = ("producao", "teste", "todas")
+
+
+def _filtro_origem(origem: str | None, incluir_testes: bool) -> str:
+    """Fragmento SQL do filtro de origem, sobre o alias `d` de `deteccoes`.
+
+    `incluir_testes` é o parâmetro antigo, mantido porque `/api/deteccoes` é
+    documentado com ele (docs/documentacao.html) e pode haver integração usando.
+    Ele é binário e por isso não consegue expressar "só os testes" — que é o caso de
+    quem acabou de mexer num ROI e quer conferir. Quando `origem` vem preenchido é
+    ele que manda; o booleano só decide o default.
+
+    O COALESCE é defensivo e vem do código original: a migração que criou a coluna usa
+    `NOT NULL DEFAULT 'roteador'` (app/core/banco/_esquema.py), então ela já preencheu as
+    linhas antigas e NULL não deveria existir. Mantido porque custa nada e a falha seria
+    silenciosa: em SQL, tanto `origem <> 'teste'` quanto `origem = 'teste'` dão NULL para
+    uma linha NULL, então ela sumiria de 'producao' E de 'teste' — aparecendo só em
+    'todas', que é justamente o filtro que ninguém usa para conferir.
+    """
+    if origem is None:
+        origem = "todas" if incluir_testes else "producao"
+    if origem not in ORIGENS_FILTRO:
+        raise ValueError(f"origem inválida: {origem!r} (use {', '.join(ORIGENS_FILTRO)})")
+    if origem == "producao":
+        return " AND COALESCE(d.origem, 'roteador') <> 'teste'"
+    if origem == "teste":
+        return " AND COALESCE(d.origem, 'roteador') = 'teste'"
+    return ""
+
+
 def registrar_deteccao(
     placa: str,
     padrao: str,
@@ -19,13 +53,24 @@ def registrar_deteccao(
     frame: str | None = None,
     origem: str = "roteador",
     camera_db_id: int | None = None,
+    acordo: float | None = None,
+    confirmada: bool | None = None,
 ) -> int:
+    """Registra uma detecção.
+
+    `acordo` é o consenso do loop de leitura (0..1) e `confirmada` diz se esse consenso
+    atingiu `leitura_acordo_minimo`. Ambos ficam None para origens que não passam pelo
+    loop (ex.: pipeline ao vivo), onde o consenso é desconhecido — e desconhecido nunca
+    deve ser lido como confirmado.
+    """
     with cursor() as c:
         cur = c.execute(
             "INSERT INTO deteccoes (placa, padrao, confianca, snapshot, criado_em, camera_id, "
-            "bbox, bico_id, frame, origem, camera_db_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "bbox, bico_id, frame, origem, camera_db_id, acordo, confirmada) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (placa, padrao, confianca, snapshot, _agora(), camera_id,
-             json.dumps(bbox) if bbox else None, bico_id, frame, origem, camera_db_id),
+             json.dumps(bbox) if bbox else None, bico_id, frame, origem, camera_db_id,
+             acordo, None if confirmada is None else int(confirmada)),
         )
         return cur.lastrowid
 
@@ -59,7 +104,9 @@ def ultima_deteccao_camera(camera_db_id: int, desde: str, origem: str | None = N
 
 
 def atualizar_deteccao(id_: int, *, placa: str, padrao: str, confianca: float,
-                        snapshot: str | None = None, frame: str | None = None) -> bool:
+                        snapshot: str | None = None, frame: str | None = None,
+                        acordo: float | None = None,
+                        confirmada: bool | None = None) -> bool:
     """Atualiza placa/padrão/confiança de uma detecção existente — usado ao mesclar uma
     leitura nova com a detecção anterior do mesmo bico em vez de criar uma 2ª linha.
 
@@ -71,14 +118,17 @@ def atualizar_deteccao(id_: int, *, placa: str, padrao: str, confianca: float,
     with cursor() as c:
         cur = c.execute(
             "UPDATE deteccoes SET placa=?, padrao=?, confianca=?, criado_em=?, "
-            "snapshot=COALESCE(?, snapshot), frame=COALESCE(?, frame) WHERE id=?",
-            (placa, padrao, confianca, _agora(), snapshot, frame, id_),
+            "snapshot=COALESCE(?, snapshot), frame=COALESCE(?, frame), "
+            "acordo=COALESCE(?, acordo), confirmada=COALESCE(?, confirmada) WHERE id=?",
+            (placa, padrao, confianca, _agora(), snapshot, frame, acordo,
+             None if confirmada is None else int(confirmada), id_),
         )
         return cur.rowcount > 0
 
 
 def contar_deteccoes_placa(placa: str, incluir_testes: bool = False,
-                            empresa_id: int | None = None) -> int:
+                            empresa_id: int | None = None,
+                            origem: str | None = None) -> int:
     """Total de detecções de uma placa EXATA — sem o teto de `limit`.
 
     A consulta de placa fazia LIKE com limite de 50 e depois filtrava a igualdade em
@@ -94,8 +144,7 @@ def contar_deteccoes_placa(placa: str, incluir_testes: bool = False,
            "LEFT JOIN automacoes a ON b.automacao_id = a.id "
            "WHERE d.placa=?")
     params: list = [placa]
-    if not incluir_testes:
-        sql += " AND COALESCE(d.origem, 'roteador') <> 'teste'"
+    sql += _filtro_origem(origem, incluir_testes)
     if empresa_id is not None:
         sql += " AND a.empresa_id = ?"
         params.append(empresa_id)
@@ -113,6 +162,7 @@ def listar_deteccoes(
     bico_id: int | None = None,
     incluir_testes: bool = False,
     placa_exata: bool = False,
+    origem: str | None = None,
 ) -> list[dict]:
     """Detecções com o posto/bico de origem resolvidos (LEFT JOIN — leituras antigas,
     anteriores ao multi-tenant, não têm bico e aparecem com os campos vazios).
@@ -132,8 +182,7 @@ def listar_deteccoes(
     params: list = []
     # Testes ficam fora por padrão: são leituras disparadas por quem está configurando,
     # não abastecimentos, e inflariam a contagem do posto.
-    if not incluir_testes:
-        sql += " AND COALESCE(d.origem, 'roteador') <> 'teste'"
+    sql += _filtro_origem(origem, incluir_testes)
     if placa:
         if placa_exata:
             sql += " AND d.placa = ?"

@@ -24,6 +24,7 @@ from ._base import (
 )
 from ._esquema import inicializar
 from ._deteccoes import (
+    ORIGENS_FILTRO,
     atualizar_deteccao,
     contar_deteccoes_placa,
     deteccoes_e_chamadas_antigas,

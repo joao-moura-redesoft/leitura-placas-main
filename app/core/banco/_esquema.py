@@ -78,6 +78,22 @@ def _migrar(c: sqlite3.Connection) -> None:
     # 'roteador'/'teste' da mesma câmera física para evitar duplicar o mesmo veículo.
     if "camera_db_id" not in cols_det:
         c.execute("ALTER TABLE deteccoes ADD COLUMN camera_db_id INTEGER")
+    # Grau de consenso do loop de leitura (0..1). `confianca` é a confiança do OCR num
+    # crop; `acordo` é quantos frames concordaram com a placa eleita — é ele que separa
+    # uma leitura sólida de um chute devolvido por timeout. Sem essa coluna as duas
+    # ficam indistinguíveis no histórico: quem audita uma cobrança contestada não tem
+    # como saber se a placa foi consenso ou palpite. Fica NULL para detecções do
+    # pipeline ao vivo, que não passam pelo loop de consenso.
+    if "acordo" not in cols_det:
+        c.execute("ALTER TABLE deteccoes ADD COLUMN acordo REAL")
+    # Veredito congelado NO MOMENTO DA GRAVAÇÃO: 1 = acordo atingiu o mínimo, 0 = ficou
+    # abaixo (leitura fraca, devolvida por timeout). Guardado em vez de recalculado a
+    # partir de `acordo` porque `leitura_acordo_minimo` é configurável: se o limiar mudar
+    # amanhã, uma cobrança contestada de hoje precisa ser julgada pelo critério que valia
+    # quando foi gravada. NULL = não se aplica (pipeline ao vivo) ou linha anterior a esta
+    # migração, casos em que o consenso é desconhecido — nunca presumir confirmada.
+    if "confirmada" not in cols_det:
+        c.execute("ALTER TABLE deteccoes ADD COLUMN confirmada INTEGER")
     # `deteccoes` é alimentada por toda leitura reativa de todos os postos — sem
     # índice, listar/filtrar por bico vira table scan conforme a tabela cresce.
     # Fica em `_migrar` (não no CREATE TABLE inicial) porque só depois daqui a
@@ -233,7 +249,9 @@ def inicializar() -> None:
             bico TEXT NOT NULL DEFAULT '',
             bico_id INTEGER,
             empresa_id INTEGER,
-            status TEXT NOT NULL,        -- ok | sem_placa | erro_cadastro | erro_camera
+            status TEXT NOT NULL,        -- ok | nao_confirmada | sem_placa | erro_cadastro | erro_camera
+                                         -- nao_confirmada: devolveu placa, mas o acordo
+                                         -- ficou abaixo de leitura_acordo_minimo
             motivo TEXT NOT NULL DEFAULT '',
             placa TEXT,
             acordo REAL,

@@ -22,25 +22,49 @@ def test_recusa_texto_que_nao_e_placa(texto):
     assert validar(texto) is None
 
 
-@pytest.mark.parametrize("texto, esperado", [
-    ("1234567", "IZJ4S67"),      # só dígitos
-    ("0000000", "OOO0O00"),
-])
-def test_texto_sem_placa_nenhuma_ainda_pode_virar_placa(texto, esperado):
-    """Comportamento DELIBERADO, fixado aqui para não mudar sem querer.
+@pytest.mark.parametrize("texto", ["1234567", "0000000", "5551234", "8888888"])
+def test_sequencia_de_digitos_nao_vira_mais_placa(texto):
+    """Reverte um comportamento que ERA deliberado, com medição — ver MAX_CORRECOES.
 
-    A correção posicional de última instância troca dígito↔letra em qualquer posição
-    onde o padrão peça o outro tipo. Quando todas as trocas necessárias existem no mapa
-    de confusões (0↔O, 1↔I, 2↔Z, 3↔J, 5↔S, 6↔G, 8↔B), texto que não é placa nenhuma sai
-    daqui como placa "válida" — uma sequência de dígitos lida de um preço ou de um
-    telefone, por exemplo. É o mesmo mecanismo que recupera placa borrada de verdade.
+    Até 2026-08-12 estes textos saíam daqui como placa Mercosul ('1234567'→'IZJ4S67'),
+    e a versão anterior deste teste fixava isso de propósito, com o argumento de que quem
+    barraria o falso positivo seria o resto da pilha: 2 estágios, consenso entre frames e
+    limiar de confiança. Medindo, o argumento não se sustenta:
 
-    Quem barra esse falso positivo é o resto da pilha, não esta função: detecção em 2
-    estágios (a placa tem que estar dentro de um veículo), consenso entre frames e o
-    limiar de confiança. Mexer aqui altera a acurácia medida contra o UFPR-ALPR.
+    - Escala: 51,1% de 100k sequências aleatórias de 7 dígitos viravam placa "válida"
+      (7 alfanuméricos: 10,3%; 8-14 chars, via janela deslizante: 36,4%).
+    - 2 estágios não cobre: `veiculo_obrigatorio=nao` é o padrão (cai para o frame
+      inteiro), e o texto que mais gera esse falso positivo — telefone de frota pintado
+      na porta, numeração de tanque — está DENTRO do recorte do veículo.
+    - Consenso e limiar não cobrem: os dois filtram ruído ALEATÓRIO entre frames. Um
+      texto fixo pintado no veículo é lido igual em todo frame, então tira acordo alto e
+      sai `confirmada=1` — o consenso reforça o falso positivo em vez de barrá-lo.
+
+    O teto de MAX_CORRECOES=2 separa os dois usos do mesmo mecanismo. Os falsos positivos
+    de dígito puro custam 4 correções no padrão Mercosul e 3 no antigo; as correções
+    legítimas conhecidas custam 1 e 2 (ver os dois testes abaixo, que continuam valendo).
+    Por isso o teto é 2 e não 3: com 3, o encaixe no padrão antigo (LLLDDDD, só 3 posições
+    de letra) deixa passar exatamente os mesmos 51,1%.
+
+    Custo medido no `dataset.json` (41 itens, instrumentando o custo de cada encaixe
+    aceito numa passada com o teto aberto): 1 leitura perdida, a sintética `EQG0Q00`, que
+    precisava de 3 correções. As 5 fotos REAIS não foram afetadas (4 casam direto, 1 custa
+    1 correção), e das leituras mantidas 10 custam 1 correção e 1 custa 2 — ou seja, a
+    correção posicional continua carregando peso, e o teto preserva o uso legítimo dela.
+
+    ATENÇÃO ao que essa medição NÃO cobre: o dataset é quase todo sintético e não inclui
+    o UFPR-ALPR, que era a preocupação declarada da versão anterior deste teste. Se for
+    calibrar o teto contra placa real borrada, é lá que a conta muda — o parâmetro
+    `max_correcoes` existe para medir os dois lados sem editar código.
     """
-    placa, _padrao = validar(texto)
-    assert placa == esperado
+    assert validar(texto) is None
+
+
+def test_teto_de_correcoes_e_parametrizavel():
+    """O teto é um parâmetro para o caminho de avaliação poder medir os dois lados
+    (`max_correcoes=99` reproduz o comportamento anterior, sem teto)."""
+    assert validar("1234567", max_correcoes=99) == ("IZJ4S67", "mercosul")
+    assert validar("1234567", max_correcoes=2) is None
 
 
 def test_correcao_mercosul_tem_prioridade_sobre_antigo_corrigido():

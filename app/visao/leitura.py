@@ -189,6 +189,53 @@ def _mesclar_com_anterior(melhor: dict, anterior: dict) -> dict:
     return fundido
 
 
+def _mesclar_com_historico(
+    melhor: dict,
+    bico_id: int,
+    camera_id: int,
+    origem: str,
+    cooldown_seg: float,
+) -> tuple[dict, int | None]:
+    """Cruza esta leitura com o histórico recente e decide se ela é o MESMO veículo.
+
+    Devolve `(melhor, anterior_id)`: com `anterior_id` preenchido, quem chama deve
+    ATUALIZAR aquela linha em vez de inserir uma nova — o histórico mostra um evento por
+    veículo, não um por chamada do roteador.
+
+    Teste manual (botão da tela de ROI/posto) fica de fora, por duas razões:
+
+    1. Quem está ajustando enquadramento aperta o botão várias vezes de propósito e
+       precisa ver uma linha por aperto — mesclar esconderia exatamente a comparação
+       entre tentativas que motivou o teste.
+    2. Mais grave: o ramo `else` abaixo ABSORVE a detecção do 'pipeline' e APAGA a linha
+       original. Essa absorção foi escrita para a leitura do roteador, que é o evento com
+       significado de negócio; disparada por um teste, ela deletava do histórico uma
+       detecção real do monitoramento contínuo só porque alguém foi conferir a câmera.
+    """
+    if origem == "teste":
+        return melhor, None
+
+    desde = (datetime.now(timezone.utc) - timedelta(seconds=cooldown_seg)).isoformat()
+
+    # Mesmo bico, ainda dentro do cooldown, placa parecida: o roteador aciona de novo pro
+    # mesmo veículo (retry dele, novo pulso do bico) e sem isto cada chamada emitia sua
+    # própria linha, mesmo quando só 1-2 caracteres divergiam por ruído de OCR.
+    anterior = banco.ultima_deteccao_bico(bico_id, desde, origem)
+    if anterior and parecidas(anterior["placa"], melhor["placa"], max_diff=3):
+        return _mesclar_com_anterior(melhor, anterior), anterior["id"]
+
+    # Sem match no mesmo bico: cruza com o 'pipeline' (monitoramento contínuo da MESMA
+    # câmera física, sem bico_id) — o mesmo veículo é comum aparecer nos dois quase ao
+    # mesmo tempo. A leitura reativa é o evento com significado de negócio (ligada ao
+    # bico), então ABSORVE o 'pipeline' em vez do contrário: some com aquela linha e
+    # grava só a reativa.
+    pipeline_anterior = banco.ultima_deteccao_camera(camera_id, desde, origem="pipeline")
+    if pipeline_anterior and parecidas(pipeline_anterior["placa"], melhor["placa"], max_diff=3):
+        melhor = _mesclar_com_anterior(melhor, pipeline_anterior)
+        banco.remover_deteccao(pipeline_anterior["id"])
+    return melhor, None
+
+
 def _detectar(det_inst, frame, roi: dict | None, lock: threading.Lock):
     """Detecta placas no frame, recortando por ROI antes (mesmo padrão de
     Pipeline._processar_frame) quando o bico tem uma área própria configurada.
@@ -294,6 +341,11 @@ def ler_placa(
 
     camera_direta: Camera | None = None
     candidatos: list[dict] = []
+    # Quantos recortes o DETECTOR entregou ao longo do loop, mesmo os que o OCR recusou.
+    # Sem isso, "detector não viu placa nenhuma" e "viu, mas o OCR não leu" chegavam ao
+    # usuário como a mesma mensagem — e são problemas opostos (enquadramento/modelo de
+    # detecção vs resolução/nitidez da placa), que se resolvem de formas diferentes.
+    bboxes_total = 0
     frame_principal = None       # melhor (mais nítido) frame já visto — usado no preview
     nitidez_principal = -1.0
     tentativas = 0
@@ -399,6 +451,7 @@ def ler_placa(
             # podem travar/crashar — o lock serializa só a chamada individual, não o loop
             # inteiro, pra não bloquear um bico pela duração toda da leitura do outro.
             bboxes = _detectar(det_inst, frame, roi, detector_leitura_lock)
+            bboxes_total += len(bboxes)
             f_h, f_w = frame.shape[:2]
             for x, y, w, h, conf_det in bboxes:
                 x, y, w, h = _expandir_bbox(x, y, w, h, f_w, f_h)
@@ -485,28 +538,12 @@ def ler_placa(
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     melhor = _eleger_placa(candidatos) if candidatos else None
 
-    # Mescla com a detecção anterior do MESMO bico se ainda dentro do cooldown e a placa
-    # for parecida — o roteador aciona de novo pro mesmo veículo (retry dele, novo pulso
-    # do bico) e sem isto cada chamada emitia sua própria linha, mesmo quando só 1-2
-    # caracteres divergiam por ruído de OCR entre as duas leituras.
     anterior_id: int | None = None
     if melhor is not None and bico_id is not None:
-        cooldown_seg = float(cfg.get("cooldown_seg", "120"))
-        desde = (datetime.now(timezone.utc) - timedelta(seconds=cooldown_seg)).isoformat()
-        anterior = banco.ultima_deteccao_bico(bico_id, desde, origem)
-        if anterior and parecidas(anterior["placa"], melhor["placa"], max_diff=3):
-            anterior_id = anterior["id"]
-            melhor = _mesclar_com_anterior(melhor, anterior)
-        else:
-            # Sem match no mesmo bico: cruza com o 'pipeline' (monitoramento contínuo da
-            # MESMA câmera física, sem bico_id) — o mesmo veículo é comum aparecer nos
-            # dois quase ao mesmo tempo. A leitura reativa é o evento com significado de
-            # negócio (ligada ao bico), então ABSORVE o 'pipeline' em vez do contrário:
-            # some com aquela linha e grava só a reativa.
-            pipeline_anterior = banco.ultima_deteccao_camera(camera_id, desde, origem="pipeline")
-            if pipeline_anterior and parecidas(pipeline_anterior["placa"], melhor["placa"], max_diff=3):
-                melhor = _mesclar_com_anterior(melhor, pipeline_anterior)
-                banco.remover_deteccao(pipeline_anterior["id"])
+        melhor, anterior_id = _mesclar_com_historico(
+            melhor, bico_id=bico_id, camera_id=camera_id, origem=origem,
+            cooldown_seg=float(cfg.get("cooldown_seg", "120")),
+        )
 
     # Preview: quando houve leitura, mostra o FRAME DE ONDE a placa vencedora saiu, com a
     # caixa exata que o OCR usou. Antes rodava uma segunda detecção sobre o frame mais
@@ -530,17 +567,29 @@ def ler_placa(
                 [int(cv2.IMWRITE_JPEG_QUALITY), 80])
     frame_url = f"/static/snapshots/{preview_nome}.jpg"
 
+    # `melhor` só é None quando `candidatos` está vazio (_eleger_placa sempre elege algo a
+    # partir de um candidato), então os dois casos de falha se separam por `bboxes_total`:
+    # o detector não achou placa, ou achou e nenhum recorte virou texto válido.
     if not candidatos:
-        return {"placa": None, "mensagem": "Nenhuma placa detectada nos frames", "frame_url": frame_url,
-                "camera_id": camera_id, "bico_id": bico_id,
-                "snapshots_analisados": tentativas, "tentativas": tentativas, "parada_motivo": parada_motivo}
-    if not melhor:
-        return {"placa": None, "mensagem": "Placa detectada mas texto não reconhecido", "frame_url": frame_url,
-                "camera_id": camera_id, "bico_id": bico_id,
+        if bboxes_total:
+            mensagem = (f"Placa localizada em {bboxes_total} recorte(s), mas o texto não foi "
+                        "reconhecido — placa pequena, borrada ou muito inclinada para o OCR")
+        else:
+            mensagem = ("Nenhuma placa detectada nos frames — verifique o enquadramento da "
+                        "área do bico e se o veículo aparece dentro dela")
+        return {"placa": None, "mensagem": mensagem, "frame_url": frame_url,
+                "camera_id": camera_id, "bico_id": bico_id, "bboxes_detectadas": bboxes_total,
                 "snapshots_analisados": tentativas, "tentativas": tentativas, "parada_motivo": parada_motivo}
 
     n_votos_snap = melhor.pop("n_votos_snap")
     acordo_final = melhor.pop("acordo")
+
+    # O loop pode sair por TIMEOUT sem nunca ter atingido o consenso mínimo — nesse caso
+    # `melhor` é a candidata menos ruim, não uma leitura confiável. Marcamos isso no
+    # registro em vez de deixá-la indistinguível de uma leitura sólida: quem consome
+    # (roteador, atendente, auditoria) precisa poder tratar as duas de forma diferente
+    # antes de vincular a placa a um abastecimento.
+    confirmada = acordo_final >= acordo_min
 
     # ── Quadro inteiro desta detecção ─────────────────────────────────────────
     # O preview acima é sobrescrito a cada leitura; aqui guardamos uma cópia com nome
@@ -570,6 +619,7 @@ def ler_placa(
         banco.atualizar_deteccao(
             anterior_id, placa=melhor["placa"], padrao=melhor["padrao"],
             confianca=melhor["confianca"], snapshot=snapshot_rel, frame=frame_rel,
+            acordo=acordo_final, confirmada=confirmada,
         )
         det_id = anterior_id
     else:
@@ -577,15 +627,20 @@ def ler_placa(
             placa=melhor["placa"], padrao=melhor["padrao"], confianca=melhor["confianca"],
             snapshot=snapshot_rel, camera_id=especificacao.camera_tipo, bbox=melhor["bbox"],
             bico_id=bico_id, frame=frame_rel, origem=origem, camera_db_id=camera_id,
+            acordo=acordo_final, confirmada=confirmada,
         )
     estado.adicionar_deteccao({
         "id": det_id, "placa": melhor["placa"], "padrao": melhor["padrao"],
         "confianca": melhor["confianca"], "snapshot": snapshot_rel,
         "criado_em": datetime.now(timezone.utc).isoformat(),
+        # Sem isto o painel de recentes mostraria uma leitura fraca idêntica a uma
+        # sólida, contradizendo o que ficou gravado no banco.
+        "acordo": acordo_final, "confirmada": confirmada,
     })
-    log.info("Ler-placa: %s (%s, conf=%.2f, acordo=%.2f, tentativas=%d/%d, parada=%s, ocr=%d/%d, "
+    log.info("Ler-placa: %s (%s, conf=%.2f, acordo=%.2f%s, tentativas=%d/%d, parada=%s, ocr=%d/%d, "
              "camera_id=%d, bico_id=%s)",
              melhor["placa"], melhor["padrao"], melhor["confianca"], acordo_final,
+             "" if confirmada else " NAO-CONFIRMADA",
              tentativas, n_max, parada_motivo, melhor["votos_ocr"], melhor["total_engines"],
              camera_id, bico_id)
 
@@ -604,5 +659,6 @@ def ler_placa(
         "frame_url":           frame_url,
         "tentativas":          tentativas,
         "acordo":              acordo_final,
+        "confirmada":          confirmada,
         "parada_motivo":       parada_motivo,
     }

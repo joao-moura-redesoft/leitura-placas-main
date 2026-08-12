@@ -495,6 +495,42 @@ class Pipeline:
 
 _instancias: dict[int, Pipeline] = {}
 
+# Idade máxima do último frame publicado para a câmera ainda contar como "ao vivo".
+# Folgado de propósito: o pipeline publica a `deteccao_fps_max` (5/s = 200ms), então
+# 5s só é ultrapassado quando a transmissão realmente parou.
+FRAME_VIVO_MAX_IDADE_SEG = 5.0
+
+
+def estado_stream(camera_db_id: int) -> str:
+    """Como a interface deve buscar a imagem desta câmera.
+
+    - "ao_vivo":    pipeline contínuo publicando frames → MJPEG em /stream/{id}.mjpg
+    - "aquecendo":  pipeline contínuo segurando a câmera mas ainda sem frame recente
+                    (subindo, ou reconectando) → MJPEG assim que o primeiro frame sair.
+                    NÃO é sob demanda: a Intelbras aceita uma conexão RTSP só, e ela
+                    está com o pipeline — uma captura direta agora falharia.
+    - "sob_demanda": ninguém está com a câmera → captura direta (1 frame e desconecta)
+
+    Existir em `_instancias` NÃO significa que há imagem saindo: com
+    `deteccao_automatica=nao` o pipeline nem abre a câmera (`_loop` só dorme), e
+    `iniciar_camera` deixa a instância registrada mesmo quando `iniciar()` falha.
+    A tela usava justamente `id in _instancias` como "ao vivo" e apontava o <img>
+    para um MJPEG que nunca emitia byte nenhum — retângulo vazio, sem erro nenhum.
+    """
+    p = _instancias.get(camera_db_id)
+    if p is None or not p.deteccao_automatica:
+        return "sob_demanda"
+    idade = time.time() - estado.ultimo_frame_ts.get(camera_db_id, 0.0)
+    if idade <= FRAME_VIVO_MAX_IDADE_SEG:
+        return "ao_vivo"
+    if p.iniciando or (p._thread is not None and p._thread.is_alive()):
+        return "aquecendo"
+    # Thread morta e sem frame: o supervisor vai reiniciar com backoff. Até lá, a
+    # captura direta é a única chance de imagem — pode falhar (se a conexão RTSP
+    # anterior ficou pendurada), e aí a tela mostra o erro da captura, que é
+    # informação de verdade em vez de um espaço em branco.
+    return "sob_demanda"
+
 
 def _cfg_para_camera(global_cfg: dict, cam: dict) -> dict:
     merged = dict(global_cfg)
