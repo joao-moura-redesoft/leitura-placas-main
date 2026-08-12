@@ -19,12 +19,18 @@
   <label style="min-width:150px">Desde
     <input id="filtro-desde" type="date" style="width:100%;box-sizing:border-box;margin-top:4px">
   </label>
+  {# Três estados em vez do antigo checkbox "incluir testes": ele não conseguia dizer
+     "só os testes", que é o caso de quem acabou de ajustar um ROI e quer conferir as
+     leituras manuais sem o ruído dos abastecimentos reais. #}
+  <label style="min-width:160px">Origem
+    <select id="filtro-origem" onchange="carregar()" style="width:100%;margin-top:4px">
+      <option value="producao">Produção</option>
+      <option value="teste">Somente testes</option>
+      <option value="todas">Todas</option>
+    </select>
+  </label>
   <button onclick="carregar()" style="height:36px">Buscar</button>
   <button onclick="limparFiltros()" style="height:36px;background:#fff;color:#374151;border:1px solid #e2e8f0">Limpar</button>
-  <label style="display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap;height:36px">
-    <input type="checkbox" id="incluir-testes" onchange="carregar()" style="width:auto;padding:0">
-    Incluir testes
-  </label>
 </div>
 
 <div class="card">
@@ -38,6 +44,8 @@
     <tbody id="corpo"></tbody>
   </table>
   <p id="vazio" style="display:none;color:#94a3b8;margin:12px 0 0">Nenhuma leitura encontrada com esses filtros.</p>
+  <p id="aviso-testes" style="display:none;margin:10px 0 0;padding:10px 12px;background:#f0f9ff;
+     border:1px solid #bae6fd;border-radius:6px;color:#0c4a6e;font-size:13px"></p>
 </div>
 {% endblock %}
 
@@ -46,7 +54,6 @@
 const params = new URLSearchParams(location.search);
 let _bicos = [], _empresas = [], _automacoes = [];
 
-function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 async function carregarFiltros() {
   [_empresas, _automacoes, _bicos] = await Promise.all([
@@ -58,8 +65,17 @@ async function carregarFiltros() {
     '<option value="">Todos</option>' +
     _empresas.map(e => `<option value="${e.id}">${esc(e.nome)}</option>`).join('');
   if (params.get('empresa_id')) document.getElementById('filtro-empresa').value = params.get('empresa_id');
-  if (params.get('bico_id')) document.getElementById('filtro-bico').value = params.get('bico_id');
+  // Permite linkar direto para as leituras manuais (ex: da tela de ROI, depois de testar).
+  // Valida contra a lista: um valor inventado na URL zeraria o select e o back-end
+  // devolveria 422 na primeira carga.
+  const orig = params.get('origem');
+  if (['producao','teste','todas'].includes(orig)) document.getElementById('filtro-origem').value = orig;
+  // O bico só pode ser escolhido DEPOIS de `atualizarBicos()`: é ela que cria as
+  // <option>. Atribuir `.value` num <select> sem a option correspondente é ignorado
+  // pelo navegador, sem erro — era assim que o `?bico_id=` do link da tela de ROI
+  // sumia silenciosamente e o histórico abria com todos os bicos.
   atualizarBicos();
+  if (params.get('bico_id')) document.getElementById('filtro-bico').value = params.get('bico_id');
 }
 
 // O select de bico acompanha o posto escolhido — senão vira uma lista enorme de bicos
@@ -80,6 +96,7 @@ function atualizarBicos() {
 function limparFiltros() {
   ['filtro-placa','filtro-desde'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('filtro-empresa').value = '';
+  document.getElementById('filtro-origem').value = 'producao';
   atualizarBicos();
   carregar();
 }
@@ -106,6 +123,32 @@ function imagens(d) {
   return partes.join('') || '—';
 }
 
+// O filtro padrão é "Produção", que esconde as leituras de teste — é de propósito, para
+// leitura manual não sujar a base que serve de referência para cobrança. O efeito colateral
+// é que quem acabou de testar um bico vê a tela vazia e conclui que a leitura não gravou.
+// Este aviso só aparece quando a busca não trouxe nada E existem testes escondidos nos
+// MESMOS filtros: custa uma requisição extra apenas nesse caso.
+async function avisarTestesOcultos(q, encontrados) {
+  const aviso = document.getElementById('aviso-testes');
+  aviso.style.display = 'none';
+  if (encontrados > 0) return;
+  if (document.getElementById('filtro-origem').value !== 'producao') return;
+
+  const qt = new URLSearchParams(q);
+  qt.set('origem', 'teste');
+  const t = await fetch('/api/deteccoes?' + qt).then(r => r.json()).catch(() => []);
+  if (!t.length) return;
+
+  aviso.innerHTML = `${t.length} leitura(s) de teste ficaram de fora deste filtro. ` +
+    `<a href="#" onclick="mostrarTestes();return false;" style="font-weight:600;color:#0369a1;">Mostrar</a>`;
+  aviso.style.display = '';
+}
+
+function mostrarTestes() {
+  document.getElementById('filtro-origem').value = 'teste';
+  carregar();
+}
+
 async function carregar() {
   const q = new URLSearchParams({ limit: '200' });
   const placa = document.getElementById('filtro-placa').value.trim();
@@ -116,11 +159,12 @@ async function carregar() {
   if (emp)   q.set('empresa_id', emp);
   if (bico)  q.set('bico_id', bico);
   if (desde) q.set('desde', new Date(desde).toISOString());
-  if (document.getElementById('incluir-testes').checked) q.set('incluir_testes', 'true');
+  q.set('origem', document.getElementById('filtro-origem').value);
 
   const r = await fetch('/api/deteccoes?' + q).then(r => r.json());
   document.getElementById('contador').textContent = `${r.length} leitura(s)`;
   document.getElementById('vazio').style.display = r.length ? 'none' : '';
+  await avisarTestesOcultos(q, r.length);
   document.getElementById('corpo').innerHTML = r.map(d => {
     // Leituras anteriores ao multi-tenant não têm bico — marca em vez de fingir que tem.
     const posto = d.empresa_nome
@@ -135,8 +179,16 @@ async function carregar() {
       : d.origem === 'pipeline'
         ? ' <span class="badge" style="background:#f1f5f9;color:#475569" title="Detecção contínua do stream">contínuo</span>'
         : '';
+    // Leitura devolvida sem atingir o acordo mínimo — é a que pode cobrar o cliente
+    // errado. `confirmada` é null no pipeline contínuo e nas leituras anteriores a esta
+    // marcação: desconhecido não é o mesmo que fraco, então esses não recebem selo.
+    const conferir = d.confirmada === 0
+      ? ` <span class="badge" style="background:#ffedd5;color:#c2410c" title="Acordo ${
+          d.acordo != null ? Math.round(d.acordo * 100) + '%' : '?'
+        } abaixo do mínimo — confira antes de cobrar">a conferir</span>`
+      : '';
     return `<tr${d.origem === 'teste' ? ' style="opacity:.72"' : ''}>
-      <td><strong style="font-family:'Consolas',monospace;letter-spacing:.04em">${esc(d.placa)}</strong>${selo}</td>
+      <td><strong style="font-family:'Consolas',monospace;letter-spacing:.04em">${esc(d.placa)}</strong>${selo}${conferir}</td>
       <td><span class="badge badge-${esc(d.padrao)}">${esc(d.padrao)}</span></td>
       <td>${(d.confianca * 100).toFixed(0)}%</td>
       <td>${posto}</td>
