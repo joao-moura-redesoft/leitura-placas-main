@@ -122,11 +122,27 @@ def _status_da_leitura(resultado: dict) -> tuple[str, str]:
     """
     if not resultado.get("placa"):
         return "sem_placa", (resultado.get("mensagem") or "sem placa")
+    acordo = resultado.get("acordo")
+    acordo_txt = f"{acordo:.2f}" if isinstance(acordo, (int, float)) else "?"
     if resultado.get("confirmada") is False:
-        acordo = resultado.get("acordo")
-        acordo_txt = f"{acordo:.2f}" if isinstance(acordo, (int, float)) else "?"
-        return "nao_confirmada", (f"acordo {acordo_txt} abaixo do mínimo "
+        # Relata os números em vez de afirmar a causa: `confirmada` cai por acordo baixo
+        # OU por votos de menos (uma única foto detectando fecha acordo em 1.0 sozinha,
+        # ver `_confirmada`). A mensagem antiga dizia sempre "acordo abaixo do mínimo" e
+        # ficava simplesmente errada no segundo caso — "acordo 1.00 abaixo do mínimo".
+        votos = resultado.get("votos_snapshot")
+        total = resultado.get("total_snapshots")
+        votos_txt = f", {votos}/{total} fotos" if votos is not None and total else ""
+        return "nao_confirmada", (f"consenso insuficiente: acordo {acordo_txt}{votos_txt} "
                                   f"(parada: {resultado.get('parada_motivo')})")
+    # Sair por timeout significa que o loop NUNCA fechou consenso: a parada por consenso
+    # é o outro motivo possível (`parada_motivo == "acordo"`). A regra estava só na
+    # docstring acima — o código olhava apenas `confirmada`, então uma leitura que
+    # esgotou o tempo e voltou com a candidata menos ruim era contada como sucesso na
+    # taxa do painel. `nao_confirmada` (e não um status novo) porque o significado é o
+    # mesmo que o painel já mostra como "A conferir": devolveu placa, precisa de olho
+    # humano antes de virar cobrança.
+    if resultado.get("parada_motivo") == "timeout":
+        return "nao_confirmada", f"tempo esgotado sem consenso (acordo {acordo_txt})"
     return "ok", ""
 
 

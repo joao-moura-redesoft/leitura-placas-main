@@ -14,6 +14,30 @@ from ._base import cursor
 # importa é "isto aconteceu de verdade" e não qual caminho de código gravou a linha.
 ORIGENS_FILTRO = ("producao", "teste", "todas")
 
+# Tipos de veículo que o histórico sabe filtrar. 'desconhecido' é um filtro de PRIMEIRA
+# CLASSE, e não um resto: a coluna `tipo_veiculo` só passou a existir agora, então toda
+# leitura anterior a ela é NULL, e sem esse valor não haveria como listar justamente as
+# linhas que ninguém consegue classificar. Fundi-las em 'carro' seria inventar dado.
+TIPOS_VEICULO_FILTRO = ("moto", "carro", "desconhecido", "todos")
+
+
+def _filtro_tipo_veiculo(tipo: str | None) -> str:
+    """Fragmento SQL do filtro de tipo de veículo, sobre o alias `d` de `deteccoes`.
+
+    Espelha `_filtro_origem`: valida contra a lista e levanta ValueError em valor
+    inválido, em vez de devolver silenciosamente o conjunto errado.
+    """
+    if tipo is None or tipo == "todos":
+        return ""
+    if tipo not in TIPOS_VEICULO_FILTRO:
+        raise ValueError(
+            f"tipo_veiculo inválido: {tipo!r} (use {', '.join(TIPOS_VEICULO_FILTRO)})")
+    if tipo == "desconhecido":
+        return " AND d.tipo_veiculo IS NULL"
+    # Sem o `IS NOT NULL` explícito o SQL já excluiria NULL, mas deixar escrito evita que
+    # alguém "otimize" para NOT IN mais tarde e faça as linhas NULL sumirem de todo filtro.
+    return " AND d.tipo_veiculo IS NOT NULL AND d.tipo_veiculo = ?"
+
 
 def _filtro_origem(origem: str | None, incluir_testes: bool) -> str:
     """Fragmento SQL do filtro de origem, sobre o alias `d` de `deteccoes`.
@@ -55,22 +79,34 @@ def registrar_deteccao(
     camera_db_id: int | None = None,
     acordo: float | None = None,
     confirmada: bool | None = None,
+    tipo_veiculo: str | None = None,
 ) -> int:
     """Registra uma detecção.
 
-    `acordo` é o consenso do loop de leitura (0..1) e `confirmada` diz se esse consenso
-    atingiu `leitura_acordo_minimo`. Ambos ficam None para origens que não passam pelo
-    loop (ex.: pipeline ao vivo), onde o consenso é desconhecido — e desconhecido nunca
-    deve ser lido como confirmado.
+    `acordo` é a fração das leituras independentes que apontaram esta placa (0..1) e
+    `confirmada` é o veredito de `app/visao/consenso.py` sobre ela. As duas origens
+    preenchem os dois campos — muda só o que conta como uma leitura: fotos do loop
+    reject-retry na leitura reativa, passadas de OCR no mesmo veículo rastreado (ou
+    frames consecutivos iguais) no pipeline ao vivo.
+
+    Ficam None onde o consenso é de fato desconhecido: linhas gravadas antes desta
+    marcação existir. Desconhecido nunca deve ser lido como confirmado — por isso a
+    coluna admite NULL em vez de assumir um padrão.
+
+    `tipo_veiculo` ('moto'/'carro'/None) é a ESTIMATIVA do AutoOCR, não um cadastro —
+    ver a nota da coluna em `app/core/banco/_esquema.py`. None quando não há estimativa,
+    nunca 'carro' por omissão: o histórico distingue "é carro" de "não sei".
     """
+    if tipo_veiculo not in (None, "moto", "carro"):
+        raise ValueError(f"tipo_veiculo inválido: {tipo_veiculo!r}")
     with cursor() as c:
         cur = c.execute(
             "INSERT INTO deteccoes (placa, padrao, confianca, snapshot, criado_em, camera_id, "
-            "bbox, bico_id, frame, origem, camera_db_id, acordo, confirmada) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "bbox, bico_id, frame, origem, camera_db_id, acordo, confirmada, tipo_veiculo) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (placa, padrao, confianca, snapshot, _agora(), camera_id,
              json.dumps(bbox) if bbox else None, bico_id, frame, origem, camera_db_id,
-             acordo, None if confirmada is None else int(confirmada)),
+             acordo, None if confirmada is None else int(confirmada), tipo_veiculo),
         )
         return cur.lastrowid
 
@@ -106,7 +142,8 @@ def ultima_deteccao_camera(camera_db_id: int, desde: str, origem: str | None = N
 def atualizar_deteccao(id_: int, *, placa: str, padrao: str, confianca: float,
                         snapshot: str | None = None, frame: str | None = None,
                         acordo: float | None = None,
-                        confirmada: bool | None = None) -> bool:
+                        confirmada: bool | None = None,
+                        tipo_veiculo: str | None = None) -> bool:
     """Atualiza placa/padrão/confiança de uma detecção existente — usado ao mesclar uma
     leitura nova com a detecção anterior do mesmo bico em vez de criar uma 2ª linha.
 
@@ -115,20 +152,26 @@ def atualizar_deteccao(id_: int, *, placa: str, padrao: str, confianca: float,
     cooldown_seg (ex.: 3 chamadas 70s uma da outra = 140s de ponta a ponta) volta a
     duplicar linha na 3ª chamada mesmo todas sendo o mesmo veículo.
     """
+    if tipo_veiculo not in (None, "moto", "carro"):
+        raise ValueError(f"tipo_veiculo inválido: {tipo_veiculo!r}")
     with cursor() as c:
         cur = c.execute(
             "UPDATE deteccoes SET placa=?, padrao=?, confianca=?, criado_em=?, "
             "snapshot=COALESCE(?, snapshot), frame=COALESCE(?, frame), "
-            "acordo=COALESCE(?, acordo), confirmada=COALESCE(?, confirmada) WHERE id=?",
+            "acordo=COALESCE(?, acordo), confirmada=COALESCE(?, confirmada), "
+            # COALESCE, como os demais: a leitura que mescla pode não ter estimativa
+            # (engine único), e sobrescrever com NULL apagaria a que já estava lá.
+            "tipo_veiculo=COALESCE(?, tipo_veiculo) WHERE id=?",
             (placa, padrao, confianca, _agora(), snapshot, frame, acordo,
-             None if confirmada is None else int(confirmada), id_),
+             None if confirmada is None else int(confirmada), tipo_veiculo, id_),
         )
         return cur.rowcount > 0
 
 
 def contar_deteccoes_placa(placa: str, incluir_testes: bool = False,
                             empresa_id: int | None = None,
-                            origem: str | None = None) -> int:
+                            origem: str | None = None,
+                            tipo_veiculo: str | None = None) -> int:
     """Total de detecções de uma placa EXATA — sem o teto de `limit`.
 
     A consulta de placa fazia LIKE com limite de 50 e depois filtrava a igualdade em
@@ -145,6 +188,13 @@ def contar_deteccoes_placa(placa: str, incluir_testes: bool = False,
            "WHERE d.placa=?")
     params: list = [placa]
     sql += _filtro_origem(origem, incluir_testes)
+    # O filtro precisa valer aqui também: sem isso o total do cabeçalho contaria TODAS as
+    # leituras da placa enquanto a lista mostraria só as de um tipo, e os dois números na
+    # mesma tela se contradiriam.
+    frag_tipo = _filtro_tipo_veiculo(tipo_veiculo)
+    sql += frag_tipo
+    if "?" in frag_tipo:
+        params.append(tipo_veiculo)
     if empresa_id is not None:
         sql += " AND a.empresa_id = ?"
         params.append(empresa_id)
@@ -163,12 +213,16 @@ def listar_deteccoes(
     incluir_testes: bool = False,
     placa_exata: bool = False,
     origem: str | None = None,
+    tipo_veiculo: str | None = None,
 ) -> list[dict]:
     """Detecções com o posto/bico de origem resolvidos (LEFT JOIN — leituras antigas,
     anteriores ao multi-tenant, não têm bico e aparecem com os campos vazios).
 
     `placa_exata` troca o LIKE por igualdade — a busca da interface quer o LIKE
     (digitar parte da placa), a consulta de uma placa específica quer só ela.
+
+    `tipo_veiculo`: 'moto' | 'carro' | 'desconhecido' | 'todos' (ver
+    `TIPOS_VEICULO_FILTRO`). É a estimativa do AutoOCR, não cadastro.
     """
     sql = """
         SELECT d.*, b.codigo AS bico_codigo, b.nome AS bico_nome,
@@ -183,6 +237,10 @@ def listar_deteccoes(
     # Testes ficam fora por padrão: são leituras disparadas por quem está configurando,
     # não abastecimentos, e inflariam a contagem do posto.
     sql += _filtro_origem(origem, incluir_testes)
+    frag_tipo = _filtro_tipo_veiculo(tipo_veiculo)
+    sql += frag_tipo
+    if "?" in frag_tipo:
+        params.append(tipo_veiculo)
     if placa:
         if placa_exata:
             sql += " AND d.placa = ?"

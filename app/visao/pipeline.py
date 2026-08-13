@@ -12,9 +12,12 @@ import cv2
 from app.core import banco
 from app.core import broadcaster as bc
 from app.core import estado
+from app.visao import contexto_log
 from app.visao.camera import Camera
+from app.visao.consenso import confirmada as _confirmada
 from app.visao.detector import Detector
 from app.visao.ocr import OCR
+from app.visao.ocr.auto import crop_legivel
 from app.visao.validador import parecidas, validar
 
 log = logging.getLogger(__name__)
@@ -43,6 +46,44 @@ def _expandir_bbox(x: int, y: int, w: int, h: int, frame_w: int, frame_h: int,
     else:
         h2 = min(frame_h - y2, h + dy)   # expande só para baixo
     return x2, y2, w2, h2
+
+
+def _vale_como_negativo(crop) -> bool:
+    """Se este recorte não-lido merece virar imagem na fila de classificação.
+
+    Um negativo serve para alguém olhar e dizer qual era a placa. Recorte abaixo do
+    mínimo do OCR não tem o que olhar: medido em 13/08/2026, 38,5% dos 936 negativos já
+    coletados estão nessa faixa, e não há como rotulá-los. Eles consumiam a cota de
+    `captura_dataset_max_arquivos` (5000) que existe para guardar o caso difícil — e,
+    quando a cota estoura, a coleta PARA, inclusive para os negativos que valem.
+    """
+    if crop is None or crop.size == 0 or crop.ndim != 3:
+        return False
+    h, w = crop.shape[:2]
+    return crop_legivel(w, h)
+
+
+def _consenso_janela(janela: list[str], placa: str) -> tuple[float, int]:
+    """(acordo, votos) da placa emitida dentro da janela de leituras válidas recentes.
+
+    É o equivalente, no modo clássico, do que o tracker calcula por veículo: que fração
+    das leituras recentes apontou a placa que foi emitida. A janela é o `_historico`, que
+    guarda só o que PASSOU pelo validador e é zerado a cada emissão — o que o OCR cuspiu
+    e o validador recusou nunca entra aqui, então o denominador são leituras plausíveis,
+    não lixo.
+
+    Esta conta pode SUBESTIMAR: sem tracker não existe noção de veículo, e se o carro
+    anterior foi lido mas nunca fechou consenso, as leituras dele continuam na janela e
+    entram no denominador do carro seguinte. Isso é de propósito, e o erro está no lado
+    seguro: subestimar só produz um selo "a conferir" a mais no histórico (alguém olha
+    uma imagem à toa), enquanto superestimar esconde uma leitura fraca e ela vira cobrança
+    sem ninguém olhar. Quem quiser a medida exata por veículo liga o tracker, que é o
+    padrão — este caminho é o fallback de quando ele está desligado.
+    """
+    if not janela:
+        return 0.0, 0
+    votos = janela.count(placa)
+    return votos / len(janela), votos
 
 
 class Pipeline:
@@ -89,9 +130,17 @@ class Pipeline:
         self.captura_dataset = CapturaDataset(cfg, self.camera_db_id)
         self.votos_minimos = max(1, int(cfg.get("ocr_votos_minimos", "1")))
         self.frames_consenso = int(cfg["frames_consenso"])
+        # Mesmo limiar da leitura reativa, de propósito: as duas origens caem na MESMA
+        # tabela e no mesmo histórico, e um "a conferir" que significasse coisas
+        # diferentes conforme a linha não serviria para decidir nada.
+        self.acordo_min = float(cfg.get("leitura_acordo_minimo", "0.80"))
         self.cooldown_seg = int(cfg["cooldown_seg"])
         self._intervalo_deteccao = 1.0 / max(1, int(cfg.get("deteccao_fps_max", "5")))
         self.salvar_snapshot = cfg["salvar_snapshot"].lower() in ("sim", "true", "1")
+        # Mesma chave que a leitura reativa usa (app/visao/leitura.py): o histórico
+        # mostra as duas origens na mesma tabela, e uma linha do pipeline sem o quadro
+        # era indistinguível de uma leitura antiga, anterior à gravação do contexto.
+        self.salvar_frame = cfg.get("salvar_frame_deteccao", "sim").lower() in ("sim", "true", "1")
         self.snapshot_q = int(cfg["snapshot_qualidade"])
         self.deteccao_automatica = cfg.get("deteccao_automatica", "sim").lower() in ("sim", "true", "1")
 
@@ -167,6 +216,13 @@ class Pipeline:
         log.info("Pipeline parado")
 
     def _loop(self) -> None:
+        # Rotula TUDO que esta thread logar com a câmera de origem — inclusive o que sai
+        # lá do fundo do OCR, que não tem como saber de onde veio o recorte. Sem isso as
+        # linhas de dois pipelines se intercalam sem dono; ver app/visao/contexto_log.py.
+        with contexto_log.usar(camera=self.camera_db_id):
+            self._loop_camera()
+
+    def _loop_camera(self) -> None:
         if not self.deteccao_automatica:
             while not self._parar.is_set():
                 time.sleep(1.0)
@@ -267,7 +323,7 @@ class Pipeline:
                         estado.registrar_frame_camera_limpo(self.camera_db_id, frame)
 
                         frame_saida = frame.copy()
-                        self._processar_frame(frame_saida)
+                        self._processar_frame(frame_saida, frame)
                         ultimo_saida = frame_saida
                         estado.registrar_frame(frame_saida)
                         estado.registrar_frame_camera(self.camera_db_id, frame_saida)
@@ -284,7 +340,12 @@ class Pipeline:
                           self.camera_db_id, e)
                 time.sleep(1.0)
 
-    def _processar_frame(self, frame) -> None:
+    def _processar_frame(self, frame, frame_limpo) -> None:
+        """`frame` é a cópia que vai virar o MJPEG e RECEBE os retângulos; `frame_limpo`
+        é o quadro como veio da câmera. Os dois andam juntos porque o que é bom para o
+        stream (caixa e rótulo por cima) é exatamente o que estraga o que vai para o
+        disco: um recorte com o retângulo desenhado em cima da placa não serve para
+        auditar leitura nem para virar dado de treino."""
         roi = self.roi
         if roi:
             rx, ry, rw, rh = roi["x"], roi["y"], roi["w"], roi["h"]
@@ -298,56 +359,81 @@ class Pipeline:
         # Amostra o quadro INTEIRO, tenha havido detecção ou não. É o único gatilho que
         # pega moto cuja placa nem chega a ser detectada — e essa é a hipótese mais
         # provável hoje, já que a varredura em janelas que resolveu moto está no caminho
-        # da leitura GET, não neste pipeline. Amostrar antes de processar é de propósito:
-        # o frame ainda não tem os retângulos desenhados por cima.
-        self.captura_dataset.amostrar(frame)
+        # da leitura GET, não neste pipeline. Vai o quadro LIMPO: antes ia o mesmo
+        # array que recebe os retângulos, sem problema só porque o desenho ainda não
+        # tinha acontecido — uma dependência de ordem que não sobrevive à primeira
+        # reorganização deste método, e o dataset é o último lugar onde se quer
+        # descobrir que a imagem tem o palpite do sistema desenhado por cima.
+        self.captura_dataset.amostrar(frame_limpo)
 
         f_h, f_w = frame.shape[:2]
         if self.tracker is not None and self.tracker.ativo():
-            self._processar_com_tracker(frame, bboxes, f_h, f_w)
+            self._processar_com_tracker(frame, bboxes, f_h, f_w, frame_limpo)
         else:
-            self._processar_classico(frame, bboxes, f_h, f_w)
+            self._processar_classico(frame, bboxes, f_h, f_w, frame_limpo)
 
-    def _processar_com_tracker(self, frame, bboxes, f_h: int, f_w: int) -> None:
+    def _processar_com_tracker(self, frame, bboxes, f_h: int, f_w: int, frame_limpo) -> None:
         tracks = self.tracker.update(bboxes, frame)
         for x, y, w, h, conf_det, track_id in tracks:
             x, y, w, h = _expandir_bbox(x, y, w, h, f_w, f_h)
+            with contexto_log.usar(track=track_id):
+                self._processar_track(frame, frame_limpo, x, y, w, h, conf_det, track_id)
 
-            if self.tracker.precisa_ocr(track_id):
-                crop = frame[y: y + h, x: x + w]
-                if crop.size > 0:
-                    texto, conf_ocr = self.ocr.ler(crop)
-                    resultado = validar(texto)
-                    if not resultado:
-                        # Mesmo caso do modo clássico: detectou e não leu. Sem isto, o
-                        # gatilho de negativo só existiria em um dos dois modos.
-                        self.captura_dataset.negativo(crop)
-                    if resultado:
-                        placa, padrao = resultado
-                        aceitar = True
-                        if self.votos_minimos > 1 and hasattr(self.ocr, "_ultimo_detalhe"):
-                            det = self.ocr._ultimo_detalhe
-                            if det.get("votos", 1) < self.votos_minimos:
-                                aceitar = False
-                        if aceitar:
-                            conf_total = (conf_det + conf_ocr) / 2
-                            self.tracker.registrar_ocr(track_id, placa, padrao, conf_total)
+    def _processar_track(self, frame, frame_limpo, x, y, w, h,
+                         conf_det: float, track_id: int) -> None:
+        """Um veículo rastreado, num tick. Extraído do laço para que o contexto de log
+        (`[camN trkN]`) tenha um bloco onde valer."""
+        if self.tracker.precisa_ocr(track_id):
+            # Do quadro limpo: este recorte vai para o OCR e, quando a leitura
+            # falha, para o dataset — nos dois casos o retângulo de uma detecção
+            # anterior atravessando a placa é ruído introduzido pelo próprio sistema.
+            crop = frame_limpo[y: y + h, x: x + w]
+            if crop.size > 0:
+                texto, conf_ocr = self.ocr.ler(crop)
+                resultado = validar(texto)
+                if not resultado and _vale_como_negativo(crop):
+                    # Mesmo caso do modo clássico: detectou e não leu. Sem isto, o
+                    # gatilho de negativo só existiria em um dos dois modos.
+                    self.captura_dataset.negativo(crop)
+                if resultado:
+                    placa, padrao = resultado
+                    aceitar = True
+                    if self.votos_minimos > 1 and hasattr(self.ocr, "_ultimo_detalhe"):
+                        det = self.ocr._ultimo_detalhe
+                        if det.get("votos", 1) < self.votos_minimos:
+                            aceitar = False
+                            log.info("Leitura %s descartada: %d de %d engines (mínimo %d)",
+                                     placa, det.get("votos", 1),
+                                     det.get("total_engines", 1), self.votos_minimos)
+                    if aceitar:
+                        conf_total = (conf_det + conf_ocr) / 2
+                        self.tracker.registrar_ocr(track_id, placa, padrao, conf_total)
 
-            pronto = self.tracker.placa_pronta(track_id)
-            if pronto:
-                placa, padrao, conf = pronto
-                self.tracker.marcar_emitido(track_id)
-                self._desenhar_bbox(frame, x, y, w, h, placa, conf)
-                self._emitir(placa, padrao, conf, frame, (x, y, w, h))
-            else:
-                votos = self.tracker.votos_atuais(track_id)
-                self._desenhar_bbox_track(frame, x, y, w, h, track_id, conf_det, votos)
+        pronto = self.tracker.placa_pronta(track_id)
+        if pronto:
+            placa, padrao, conf = pronto
+            # Quantas das leituras deste veículo apontaram a placa emitida. É a
+            # medida de consenso do contínuo, e sem ela a detecção chegava ao banco
+            # com `acordo`/`confirmada` nulos — indistinguível, no histórico, de uma
+            # leitura sólida.
+            votos, total = self.tracker.consenso(track_id)
+            acordo = votos / total if total else 0.0
+            self.tracker.marcar_emitido(track_id)
+            self._desenhar_bbox(frame, x, y, w, h, placa, conf)
+            self._emitir(placa, padrao, conf, frame_limpo, (x, y, w, h),
+                         acordo=acordo,
+                         confirmada=_confirmada(acordo, votos, self.acordo_min,
+                                                self.tracker.votos_minimos),
+                         votos=votos, total_leituras=total)
+        else:
+            votos = self.tracker.votos_atuais(track_id)
+            self._desenhar_bbox_track(frame, x, y, w, h, track_id, conf_det, votos)
 
-    def _processar_classico(self, frame, bboxes, f_h: int, f_w: int) -> None:
+    def _processar_classico(self, frame, bboxes, f_h: int, f_w: int, frame_limpo) -> None:
         """Comportamento original: OCR em todo bbox detectado, consenso por frames."""
         for x, y, w, h, conf_det in bboxes:
             x, y, w, h = _expandir_bbox(x, y, w, h, f_w, f_h)
-            crop = frame[y: y + h, x: x + w]
+            crop = frame_limpo[y: y + h, x: x + w]   # mesmo motivo do modo tracker
             if crop.size == 0:
                 continue
             texto, conf_ocr = self.ocr.ler(crop)
@@ -357,7 +443,8 @@ class Pipeline:
                 log.debug("YOLO detectou (conf=%.2f) mas OCR/validador rejeitou: %r", conf_det, texto)
                 # Achou a placa e não conseguiu ler: é justamente o caso que o dataset
                 # não tem, porque o histórico só guarda o que deu certo.
-                self.captura_dataset.negativo(crop)
+                if _vale_como_negativo(crop):
+                    self.captura_dataset.negativo(crop)
                 continue
             if self.votos_minimos > 1 and hasattr(self.ocr, "_ultimo_detalhe"):
                 det = self.ocr._ultimo_detalhe
@@ -372,7 +459,7 @@ class Pipeline:
             placa, padrao = resultado
             conf_total = (conf_det + conf_ocr) / 2
             self._desenhar_bbox(frame, x, y, w, h, placa, conf_total)
-            self._tentar_emitir(placa, padrao, conf_total, frame, (x, y, w, h))
+            self._tentar_emitir(placa, padrao, conf_total, frame_limpo, (x, y, w, h))
 
     def _desenhar_bbox(self, frame, x, y, w, h, placa, conf):
         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
@@ -391,20 +478,37 @@ class Pipeline:
         label = f"ID:{track_id} {conf_det:.2f} [{votos}v]"
         cv2.putText(frame, label, (x, max(y - 8, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
 
-    def _tentar_emitir(self, placa, padrao, conf, frame, bbox) -> None:
+    def _tentar_emitir(self, placa, padrao, conf, frame_limpo, bbox) -> None:
         """Modo clássico: acumula frames_consenso leituras iguais antes de emitir."""
         self._historico.append(placa)
         recentes = list(self._historico)[-self.frames_consenso:]
         if len(recentes) < self.frames_consenso or len(set(recentes)) != 1:
             return
+        # Medido ANTES do clear, que é o que apaga a janela.
+        total_janela = len(self._historico)
+        acordo, votos = _consenso_janela(list(self._historico), placa)
         # Limpa histórico — evita segundo consenso imediato do mesmo veículo
         self._historico.clear()
-        self._emitir(placa, padrao, conf, frame, bbox)
+        self._emitir(placa, padrao, conf, frame_limpo, bbox, acordo=acordo,
+                     confirmada=_confirmada(acordo, votos, self.acordo_min,
+                                            self.frames_consenso),
+                     votos=votos, total_leituras=total_janela)
 
-    def _emitir(self, placa, padrao, conf, frame, bbox) -> None:
+    def _emitir(self, placa, padrao, conf, frame_limpo, bbox,
+                acordo: float, confirmada: bool,
+                votos: int = 0, total_leituras: int = 0) -> None:
         """Persiste detecção, atualiza estado, broadcast WS e dispara webhooks.
         Respeita cooldown_seg para evitar re-emissão do mesmo veículo parado.
         Usado por ambos os paths: tracker e clássico.
+
+        `acordo`/`confirmada` chegam prontos porque só quem chama sabe o que conta como
+        um voto no seu modo (leituras do mesmo veículo rastreado, ou frames consecutivos)
+        — obrigatórios de propósito, para que um terceiro modo de emissão no futuro não
+        consiga gravar detecção sem declarar quão sólida ela é.
+
+        `votos`/`total_leituras` são só para o log: `acordo=0.10` responde "quão sólida",
+        mas `2/20` responde "sólida com base em quê", e é a diferença entre uma placa
+        confirmada duas vezes e um veículo que foi lido vinte vezes sem nunca convergir.
         """
         # Cooldown por SIMILARIDADE, não string exata: ruído de OCR de 1-2 caracteres
         # (0/O/D/Q, I/1/J...) fazia o mesmo veículo escapar do cooldown e virar uma
@@ -429,15 +533,41 @@ class Pipeline:
 
         estado.registrar_emissao(self.camera_db_id, placa)
 
+        x, y, w, h = bbox
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+
+        # Recorte do quadro LIMPO. Vinha do quadro do stream, que já tinha recebido o
+        # retângulo verde e o rótulo do `_desenhar_bbox` logo antes desta chamada — ou
+        # seja, todo recorte gravado pelo contínuo saía com uma caixa desenhada em cima
+        # da placa. Dá para ver isso nas miniaturas antigas do histórico.
         snapshot_rel = None
         if self.salvar_snapshot:
-            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
             nome = f"{ts}_{placa}.jpg"
             caminho = SNAPSHOT_DIR / nome
-            x, y, w, h = bbox
-            crop = frame[y: y + h, x: x + w]
+            crop = frame_limpo[y: y + h, x: x + w]
             cv2.imwrite(str(caminho), crop, [int(cv2.IMWRITE_JPEG_QUALITY), self.snapshot_q])
             snapshot_rel = f"/static/snapshots/{nome}"
+
+        # Quadro inteiro com a caixa lida, igual ao que a leitura reativa grava. Só o
+        # recorte não permite auditar erro do contínuo: numa placa lida errada não dá
+        # para saber se o detector pegou o veículo da pista ao lado, um adesivo ou um
+        # reflexo — a informação que responde isso só existe fora do recorte.
+        # A marcação é desenhada AQUI, sobre o quadro limpo: usar o quadro do stream
+        # (que já vem anotado) escrevia placa e caixa duas vezes, uma por cima da outra.
+        frame_rel = None
+        if self.salvar_frame:
+            nome_f = f"{ts}_{placa}_frame.jpg"
+            marcado = frame_limpo.copy()
+            cv2.rectangle(marcado, (x, y), (x + w, y + h), (0, 200, 255), 2)
+            cv2.putText(marcado, placa, (x, max(y - 8, 14)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
+            if self.roi:
+                r = self.roi
+                cv2.rectangle(marcado, (r["x"], r["y"]),
+                              (r["x"] + r["w"], r["y"] + r["h"]), (120, 120, 120), 1)
+            cv2.imwrite(str(SNAPSHOT_DIR / nome_f), marcado,
+                        [int(cv2.IMWRITE_JPEG_QUALITY), self.snapshot_q])
+            frame_rel = f"/static/snapshots/{nome_f}"
 
         deteccao_id = banco.registrar_deteccao(
             placa=placa,
@@ -446,8 +576,11 @@ class Pipeline:
             snapshot=snapshot_rel,
             camera_id=self.cfg["camera_tipo"],
             bbox={"x": bbox[0], "y": bbox[1], "w": bbox[2], "h": bbox[3]},
+            frame=frame_rel,
             origem="pipeline",
             camera_db_id=self.camera_db_id,
+            acordo=round(acordo, 3),
+            confirmada=confirmada,
         )
         criado_em = datetime.now(timezone.utc).isoformat()
         estado.adicionar_deteccao({
@@ -464,7 +597,9 @@ class Pipeline:
             "lista": lista,
         })
 
-        log.info("Placa detectada: %s (%s, conf=%.2f)", placa, padrao, conf)
+        log.info("EMITIDA %s (%s, conf=%.2f, acordo=%.2f%s)%s", placa, padrao, conf, acordo,
+                 " → %d/%d leituras" % (votos, total_leituras) if total_leituras else "",
+                 "" if confirmada else " NAO-CONFIRMADA")
         self._notificar_webhook_todas(placa, padrao, conf, snapshot_rel)
         self._verificar_alerta(placa, padrao)
 

@@ -65,12 +65,17 @@ class Camera:
         altura: int = 720,
         fps: int = 15,
         intelbras: dict | None = None,
+        log_abertura_debug: bool = False,
     ):
         self.tipo = tipo
         self.indice = indice
         self.largura = largura
         self.altura = altura
         self.fps = fps
+        # Abrir/fechar RTSP em laço (coletor de dataset) não é evento — ver
+        # `capturar_frame_unico`. Parâmetro, e não atributo mexido de fora depois de
+        # construir, para que a decisão seja visível em quem cria a câmera.
+        self.log_abertura_debug = log_abertura_debug
         self.intelbras = intelbras or {}
         self.cap: cv2.VideoCapture | None = None
 
@@ -93,6 +98,9 @@ class Camera:
             )
         return self.indice
 
+    def _log_abertura(self, msg: str, *args) -> None:
+        log.log(logging.DEBUG if self.log_abertura_debug else logging.INFO, msg, *args)
+
     def abrir(self) -> None:
         if self.tipo in ("rtsp", "intelbras"):
             origem = self._origem_rtsp()
@@ -101,7 +109,7 @@ class Camera:
             transporte = self.intelbras.get("rtsp_transporte", "tcp") or "tcp"
             import os as _os
             _os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = f"rtsp_transport;{transporte}"
-            log.info("Abrindo stream: %s (transporte=%s)", log_origem, transporte)
+            self._log_abertura("Abrindo stream: %s (transporte=%s)", log_origem, transporte)
             self.cap = cv2.VideoCapture(origem, cv2.CAP_FFMPEG)
             try:
                 self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -133,7 +141,8 @@ class Camera:
             except Exception:
                 pass
 
-        log.info("Câmera aberta: tipo=%s %dx%d@%d", self.tipo, self.largura, self.altura, self.fps)
+        self._log_abertura("Câmera aberta: tipo=%s %dx%d@%d",
+                           self.tipo, self.largura, self.altura, self.fps)
 
         # Inicia thread leitora que drena o buffer continuamente
         self._parar_leitura.clear()
@@ -209,9 +218,17 @@ def capturar_frame_unico(
     altura: int = 720,
     fps: int = 15,
     intelbras: dict | None = None,
+    silencioso: bool = False,
 ):
-    """Conecta, captura UM frame e desconecta. Retorna numpy array ou None."""
-    cam = Camera(tipo=tipo, indice=indice, largura=largura, altura=altura, fps=fps, intelbras=intelbras)
+    """Conecta, captura UM frame e desconecta. Retorna numpy array ou None.
+
+    `silencioso` desce "Abrindo stream"/"Câmera aberta" para DEBUG. Abrir e fechar RTSP
+    é evento digno de INFO quando um pipeline sobe; quando é o coletor de dataset fazendo
+    isso a cada `captura_dataset_intervalo_seg`, por câmera, viram quatro linhas por
+    minuto que só repetem que o relógio bateu. A falha continua em ERROR nos dois casos.
+    """
+    cam = Camera(tipo=tipo, indice=indice, largura=largura, altura=altura, fps=fps,
+                 intelbras=intelbras, log_abertura_debug=silencioso)
     try:
         cam.abrir()
     except Exception as e:

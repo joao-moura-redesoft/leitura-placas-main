@@ -664,6 +664,158 @@ button.carregando::after {
   to   { opacity: 1; transform: none; }
 }
 
+/* ── Visualizador de imagem ──
+   Auditar uma leitura é comparar o RECORTE (o que o OCR leu) com o QUADRO inteiro
+   (qual veículo era). Com <a target="_blank"> isso virava duas abas soltas, sem zoom
+   controlável e sem caminho de volta para a linha da tabela. Aqui as imagens da mesma
+   leitura ficam no mesmo palco, com zoom e arrasto — que é o gesto necessário para
+   conferir uma placa de moto, que chega ao banco com poucas dezenas de pixels.
+
+   Painel escuro pelo mesmo critério das telas de câmera (ver tokens.css): atrás de
+   imagem, o claro rouba contraste do que se está tentando enxergar.
+   z-index acima do .modal-overlay — a imagem pode ser aberta de dentro de um modal. */
+.visu {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: rgba(8, 12, 18, .96);
+  /* Mesmo critério do .modal-overlay: cobre a tela inteira sobre conteúdo parado. */
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  flex-direction: column;
+}
+.visu.aberto { display: flex; animation: fundo-entra var(--t-media) both; }
+
+.visu-topo {
+  display: flex;
+  align-items: center;
+  gap: var(--e-3);
+  padding: var(--e-3) var(--e-4);
+  border-bottom: 1px solid var(--painel-borda);
+  background: var(--painel);
+  flex-wrap: wrap;
+}
+.visu-titulo {
+  font-family: var(--fonte-mono);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: .04em;
+  color: var(--painel-texto);
+}
+.visu-sub { font-size: 12.5px; color: var(--painel-texto-2); }
+.visu-ferramentas { display: flex; align-items: center; gap: var(--e-1); margin-left: auto; }
+
+/* Botões da barra: fundo do painel, não o verde da marca — aqui nada é ação
+   destrutiva nem primária, é tudo controle de visualização. */
+.visu-btn {
+  background: var(--painel-3);
+  color: var(--painel-texto);
+  border: 1px solid var(--painel-borda);
+  border-radius: var(--r-1);
+  padding: 6px 10px;
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1;
+  min-width: 32px;
+  box-shadow: none;
+}
+.visu-btn:hover:not(:disabled) { background: #2b3a4d; box-shadow: none; }
+.visu-btn:disabled { opacity: .35; }
+.visu-btn.ativo { background: var(--marca); border-color: var(--marca); color: #fff; }
+.visu-zoom {
+  font-family: var(--fonte-mono);
+  font-size: 12px;
+  color: var(--painel-texto-2);
+  min-width: 52px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.visu-palco {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: var(--e-4);
+  /* touch-action: o pinch e o arrasto são tratados no JS; sem isto o navegador
+     do tablet aplica o próprio scroll/zoom por cima e o gesto briga com a página. */
+  touch-action: none;
+  user-select: none;
+  cursor: zoom-in;
+}
+.visu-palco.ampliado { cursor: grab; }
+.visu-palco.arrastando { cursor: grabbing; }
+/* Sem max-width/max-height: o tamanho é o natural da imagem e QUEM enquadra é o
+   transform do JS. Com o limite em CSS, o recorte de uma placa (uns 60px de largura)
+   aparecia como um selo no meio de um palco preto — justamente a imagem que mais
+   precisa ser ampliada. `flex: none` impede o flex de reencolher a imagem grande. */
+.visu-img {
+  flex: none;
+  max-width: none;
+  max-height: none;
+  transform-origin: center center;
+  will-change: transform;
+  -webkit-user-drag: none;
+  /* Sem border-radius: o raio é multiplicado pelo scale — num recorte a 2000% o
+     canto arredondado vira um chanfro gigante que come parte da placa. */
+}
+/* O recorte da placa tem poucos pixels: ampliado com interpolação vira um borrão
+   liso que esconde o traço da letra. Este modo mostra o pixel como ele é — é o que
+   permite decidir se o 8 era mesmo um B. */
+.visu-img.pixels { image-rendering: pixelated; }
+.visu-erro { color: var(--painel-texto-2); font-size: 14px; }
+
+.visu-tira {
+  display: flex;
+  justify-content: center;
+  gap: var(--e-2);
+  padding: var(--e-3);
+  border-top: 1px solid var(--painel-borda);
+  background: var(--painel);
+  flex-wrap: wrap;
+}
+.visu-tira button {
+  background: var(--painel-2);
+  border: 1px solid var(--painel-borda);
+  border-radius: var(--r-1);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  box-shadow: none;
+}
+.visu-tira button:hover { background: var(--painel-3); box-shadow: none; }
+.visu-tira button[aria-current="true"] { border-color: var(--marca); background: var(--painel-3); }
+.visu-tira img { height: 40px; max-width: 130px; object-fit: contain; display: block; border-radius: 3px; }
+.visu-tira span { font-size: 10.5px; color: var(--painel-texto-2); }
+.visu-tira button[aria-current="true"] span { color: var(--painel-texto); }
+
+/* Miniatura clicável na tabela — abre o visualizador em vez de uma aba nova.
+   É um <button> e não um <img onclick>: o operador que navega por teclado precisa
+   chegar na imagem com Tab e abrir com Enter, o que um <img> não dá de graça.
+   As regras zeram o botão verde padrão; o :hover precisa do :not(:disabled) para
+   ter a mesma especificidade da regra global de button e vencer por ordem. */
+.thumb {
+  display: inline-flex;
+  padding: 0;
+  border: 1px solid var(--borda);
+  border-radius: var(--r-1);
+  background: var(--superficie-2);
+  cursor: zoom-in;
+  vertical-align: middle;
+  overflow: hidden;
+}
+.thumb:hover:not(:disabled) {
+  border-color: var(--marca);
+  background: var(--superficie-2);
+  box-shadow: var(--sombra-2);
+}
+.thumb img { display: block; }
+
 /* ── Estado vazio ── */
 .vazio {
   text-align: center;

@@ -71,6 +71,7 @@
         <button onclick="clfDescartar()" style="flex:1;background:#fff;color:#b91c1c;border:1px solid #fecaca;">Descartar</button>
         <button onclick="clfPular()" style="flex:1;background:#fff;color:#374151;border:1px solid #e2e8f0;">Pular</button>
       </div>
+      <div id="clf-status" style="font-size:12px;color:#16a34a;margin-top:10px;display:none;"></div>
       <div style="font-size:11px;color:#94a3b8;margin-top:10px;">
         <strong>Descartar</strong> tira da fila para sempre (ilegível, duplicada).
         <strong>Pular</strong> só adia.
@@ -753,8 +754,38 @@ async function clfAdicionar() {
     body: JSON.stringify(corpo),
   });
   if (!r.ok) { alert('Falha ao adicionar: ' + (await r.text())); return; }
+  // O servidor rotula junto o irmão do par recorte/quadro (mesma detecção, mesma
+  // placa). Sem tirá-lo da fila local ele reapareceria nesta sessão pedindo a mesma
+  // placa de novo — a fila só é recarregada do servidor ao abrir a página.
+  const { propagado } = await r.json();
+  clfRemoverDaFila(propagado);
+  clfStatus(propagado
+    ? `${placa} gravada nas duas imagens da detecção (recorte + cena)`
+    : `${placa} gravada`);
   clfAvancar();
   await Promise.all([carregarDataset(), carregarSnapshots()]);
+}
+
+function clfStatus(msg) {
+  const el = document.getElementById('clf-status');
+  el.textContent = msg;
+  el.style.display = '';
+}
+
+// Remove um arquivo da fila em memória sem deslocar o candidato atual: tirar um item
+// ANTES da posição corrente puxaria a fila para trás e pularia uma captura sem rótulo.
+// Remove TODAS as ocorrências porque `clfPular` reenfileira o mesmo objeto no fim —
+// um irmão já pulado aparece duas vezes e voltaria a pedir a placa lá na frente.
+function clfRemoverDaFila(arquivo) {
+  if (!arquivo) return;
+  let antesDoAtual = 0;
+  _clfFila = _clfFila.filter((c, i) => {
+    if (c.arquivo !== arquivo) return true;
+    if (i < _clfPos) antesDoAtual++;
+    return false;
+  });
+  _clfPos -= antesDoAtual;
+  _clfPulados.delete(arquivo);
 }
 
 async function clfDescartar() {

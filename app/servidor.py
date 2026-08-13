@@ -31,7 +31,7 @@ from app.operacao import retencao as ret_mod
 from app.operacao import supervisor as sv
 from app.seguranca import sessao as auth_mod
 from app.streaming import hls_encoder as hls_mod
-from app.visao import pipeline
+from app.visao import contexto_log, pipeline
 from app.web import api, paginas
 from app.web import auth as auth_rotas
 from app.web import cadastro as cadastro_rotas
@@ -173,6 +173,45 @@ def _aquecer_modelos_bg(cfg: dict) -> None:
                     "na primeira leitura", e)
 
 
+# Endpoints consultados em laço, sem ninguém pedir: os três primeiros a interface
+# atualiza sozinha, o último é o healthcheck do Docker a cada 30s (ver Dockerfile). O
+# access log do uvicorn repete cada um a cada volta, com formato próprio (sem timestamp,
+# sem nível), e `/api/logs` é o caso extremo — a tela de logs enche de ruído justamente
+# o log que ela está exibindo. Só o poll BEM-SUCEDIDO some: 4xx/5xx continuam aparecendo,
+# que é quando a linha informa alguma coisa (healthcheck falhando é o que derruba o
+# container, e precisa estar no log).
+_ROTAS_POLLING = frozenset((
+    "/api/logs", "/api/chamadas", "/api/chamadas/resumo", "/api/healthz",
+))
+
+
+class _FiltroPolling(logging.Filter):
+    """Descarta a linha de access log dos pollings de rotina.
+
+    O record do uvicorn.access traz `args = (cliente, método, caminho, versão, status)`;
+    tudo que não tiver essa forma passa intacto, para que uma mudança no formato do
+    uvicorn silencie no máximo nada — nunca o log inteiro.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Em DEBUG quem ligou o nível quer ver TUDO, inclusive o poll.
+        if logging.getLogger().getEffectiveLevel() <= logging.DEBUG:
+            return True
+        args = record.args
+        if not isinstance(args, tuple) or len(args) < 5:
+            return True
+        try:
+            if int(args[4]) >= 400:
+                return True
+        except (TypeError, ValueError):
+            return True
+        return str(args[2]).split("?")[0] not in _ROTAS_POLLING
+
+
+def _silenciar_polling_da_ui() -> None:
+    logging.getLogger("uvicorn.access").addFilter(_FiltroPolling())
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     cfg = config.carregar()
@@ -180,6 +219,8 @@ async def lifespan(_app: FastAPI):
         level=cfg["log_level"].upper(),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    _silenciar_polling_da_ui()
+    contexto_log.instalar()
     estado.instalar_log_handler()
     banco.inicializar()
     auth_mod.iniciar_cleanup()
@@ -232,7 +273,28 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Leitura de Placas (ALPR)", lifespan=lifespan)
 app.add_middleware(_SegurancaMiddleware)
 app.add_middleware(_AuthMiddleware)
-app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
+class _EstaticosApp(StaticFiles):
+    """StaticFiles que obriga o navegador a revalidar CSS e JS.
+
+    Sem `Cache-Control`, o navegador aplica cache heurístico: guarda o arquivo por
+    uma fração da idade dele e serve da memória SEM perguntar ao servidor. Numa
+    atualização do sistema isso entrega a página nova com o base.css/app.js VELHOS —
+    o sintoma é layout quebrado e botão que não responde, porque o HTML chama uma
+    função que a versão em cache ainda não tem. Não é hipótese: aconteceu.
+
+    `no-cache` não desliga o cache, só exige revalidação — a resposta normal é um
+    304 sem corpo. Snapshot e fonte ficam de fora de propósito: têm nome único (ou
+    nunca mudam) e são o volume de verdade.
+    """
+
+    async def get_response(self, path: str, scope):
+        resposta = await super().get_response(path, scope)
+        if path.endswith((".css", ".js")):
+            resposta.headers["Cache-Control"] = "no-cache"
+        return resposta
+
+
+app.mount("/static", _EstaticosApp(directory="app/web/static"), name="static")
 _FOTOS_TESTE_DIR = "testes/fotos"
 _CROPS_TESTE_DIR = "testes/resultados/crops"
 import os as _os; _os.makedirs(_FOTOS_TESTE_DIR, exist_ok=True); _os.makedirs(_CROPS_TESTE_DIR, exist_ok=True)

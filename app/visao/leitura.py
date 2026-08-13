@@ -26,7 +26,10 @@ import numpy as np
 
 from app.core import banco
 from app.core import estado
+from app.visao import contexto_log
 from app.visao.camera import Camera
+# Alias com underscore: `confirmada` é o nome da variável local em `ler_placa`.
+from app.visao.consenso import confirmada as _confirmada
 from app.visao.pipeline import _expandir_bbox
 from app.visao.validador import parecidas, validar
 
@@ -283,7 +286,16 @@ def lock_camera(camera_id: int) -> threading.Lock:
     return _obter_lock_camera(camera_id)
 
 
-def ler_placa(
+def ler_placa(**kw) -> dict:
+    """Rotula com a câmera de origem tudo que a leitura logar, inclusive o que sai do
+    fundo do OCR — sem isso as linhas da leitura reativa entram sem dono no mesmo arquivo
+    dos pipelines contínuos. Ver app/visao/contexto_log.py. Envelope fino de propósito:
+    o corpo é keyword-only, então não há assinatura para duplicar aqui."""
+    with contexto_log.usar(camera=kw.get("camera_id")):
+        return _ler_placa(**kw)
+
+
+def _ler_placa(
     *,
     camera_id: int,
     especificacao: EspecificacaoCamera,
@@ -493,6 +505,12 @@ def ler_placa(
                     "bbox":          {"x": x, "y": y, "w": w, "h": h},
                     "frame":         frame,
                     "snapshot_idx":  tentativas - 1,
+                    # Estimativa moto/carro do AutoOCR deste crop (None = engine único,
+                    # que não calcula, ou sem header para decidir). Vem por candidato e
+                    # não da última chamada ao OCR porque `_eleger_placa` pode eleger um
+                    # candidato que não é o último analisado — ler o atributo depois do
+                    # laço gravaria o tipo do crop errado.
+                    "tipo_veiculo":  getattr(ocr_inst, "_ultimo_tipo_veiculo", None),
                 })
 
             # Parada antecipada: só depois do mínimo de fotos, e só se o consenso for forte
@@ -584,12 +602,12 @@ def ler_placa(
     n_votos_snap = melhor.pop("n_votos_snap")
     acordo_final = melhor.pop("acordo")
 
-    # O loop pode sair por TIMEOUT sem nunca ter atingido o consenso mínimo — nesse caso
-    # `melhor` é a candidata menos ruim, não uma leitura confiável. Marcamos isso no
-    # registro em vez de deixá-la indistinguível de uma leitura sólida: quem consome
-    # (roteador, atendente, auditoria) precisa poder tratar as duas de forma diferente
-    # antes de vincular a placa a um abastecimento.
-    confirmada = acordo_final >= acordo_min
+    confirmada = _confirmada(acordo_final, n_votos_snap, acordo_min, n_min)
+
+    # Tipo estimado do candidato ELEITO (`_eleger_placa` devolve uma cópia dele, então a
+    # chave vem junto). `.get` e não indexação: `_mesclar_com_anterior`/`_mesclar_com_
+    # historico` remontam o dict a partir da leitura anterior e podem não trazer a chave.
+    tipo_veiculo = melhor.get("tipo_veiculo")
 
     # ── Quadro inteiro desta detecção ─────────────────────────────────────────
     # O preview acima é sobrescrito a cada leitura; aqui guardamos uma cópia com nome
@@ -619,7 +637,7 @@ def ler_placa(
         banco.atualizar_deteccao(
             anterior_id, placa=melhor["placa"], padrao=melhor["padrao"],
             confianca=melhor["confianca"], snapshot=snapshot_rel, frame=frame_rel,
-            acordo=acordo_final, confirmada=confirmada,
+            acordo=acordo_final, confirmada=confirmada, tipo_veiculo=tipo_veiculo,
         )
         det_id = anterior_id
     else:
@@ -627,7 +645,7 @@ def ler_placa(
             placa=melhor["placa"], padrao=melhor["padrao"], confianca=melhor["confianca"],
             snapshot=snapshot_rel, camera_id=especificacao.camera_tipo, bbox=melhor["bbox"],
             bico_id=bico_id, frame=frame_rel, origem=origem, camera_db_id=camera_id,
-            acordo=acordo_final, confirmada=confirmada,
+            acordo=acordo_final, confirmada=confirmada, tipo_veiculo=tipo_veiculo,
         )
     estado.adicionar_deteccao({
         "id": det_id, "placa": melhor["placa"], "padrao": melhor["padrao"],
@@ -636,6 +654,7 @@ def ler_placa(
         # Sem isto o painel de recentes mostraria uma leitura fraca idêntica a uma
         # sólida, contradizendo o que ficou gravado no banco.
         "acordo": acordo_final, "confirmada": confirmada,
+        "tipo_veiculo": tipo_veiculo,
     })
     log.info("Ler-placa: %s (%s, conf=%.2f, acordo=%.2f%s, tentativas=%d/%d, parada=%s, ocr=%d/%d, "
              "camera_id=%d, bico_id=%s)",
@@ -661,4 +680,5 @@ def ler_placa(
         "acordo":              acordo_final,
         "confirmada":          confirmada,
         "parada_motivo":       parada_motivo,
+        "tipo_veiculo":        tipo_veiculo,
     }

@@ -142,6 +142,24 @@ class _EstadoTrack:
         melhor_conf, padrao = max(candidatos)
         return placa, padrao, melhor_conf
 
+    def consenso(self) -> tuple[int, int]:
+        """(votos da placa mais votada, total de leituras OCR deste veículo).
+
+        A razão entre os dois é o `acordo` do contínuo no modo tracker, e é diretamente
+        comparável ao da leitura reativa: nos dois casos é "que fração das leituras
+        INDEPENDENTES do mesmo veículo apontou a placa que foi emitida". `placa_eleita`
+        já calcula essa contagem para decidir a emissão — aqui ela é devolvida para
+        registro, em vez de ser descartada e o número chegar ao banco como desconhecido.
+
+        (0, 0) quando ainda não houve nenhuma leitura: quem chama nunca deve dividir por
+        `total` sem checar, porque um veículo detectado e nunca lido tem consenso NENHUM,
+        não consenso perfeito.
+        """
+        if not self.resultados:
+            return 0, 0
+        contagem = Counter(p for p, _, _ in self.resultados)
+        return contagem.most_common(1)[0][1], len(self.resultados)
+
 
 # ── Interface pública ─────────────────────────────────────────────────────────
 
@@ -260,7 +278,7 @@ class Tracker:
     def _registrar_track(self, tid: int, bbox: tuple, conf: float) -> None:
         if tid not in self._estados:
             self._estados[tid] = _EstadoTrack(tid)
-            log.debug("Tracker: novo veículo ID=%d", tid)
+            log.info("Novo veículo trk%d", tid)
         st = self._estados[tid]
         st.frames_visto += 1
         st.frames_sem_match = 0
@@ -277,9 +295,15 @@ class Tracker:
         st = self._estados.get(track_id)
         if st:
             st.registrar(placa, padrao, conf, self._frame_count)
-            log.debug(
-                "Tracker ID=%d: OCR=%s conf=%.2f (%d/%d votos)",
-                track_id, placa, conf, len(st.resultados), self._votos,
+            # `(12/2 votos)` — o formato antigo — lia-se como "12 de 2" e, pior, escondia
+            # o que decide a emissão: quantas leituras apontam a MESMA placa. No log de
+            # 13/08/2026 o trk360 chegou a 20 leituras todas diferentes (SOB4318,
+            # IID4318, IOB4318, SLD4318…) e a linha do tracker seguia parecendo progresso
+            # rumo ao consenso. Aqui vai a contagem da placa líder, que é a que conta.
+            votos_lider, total = st.consenso()
+            log.info(
+                "Leitura %d de trk%d: %s conf=%.2f — líder %d/%d (emite com %d)",
+                total, track_id, placa, conf, votos_lider, total, self._votos,
             )
 
     def placa_pronta(self, track_id: int) -> tuple[str, str, float] | None:
@@ -296,6 +320,23 @@ class Tracker:
     def votos_atuais(self, track_id: int) -> int:
         st = self._estados.get(track_id)
         return len(st.resultados) if st else 0
+
+    @property
+    def votos_minimos(self) -> int:
+        """Votos exigidos para emitir (`tracker_votos_emitir`). Exposto porque o pipeline
+        precisa dele para decidir se a leitura conta como confirmada — a mesma pergunta
+        que `app/visao/consenso.py` faz nos dois caminhos de leitura."""
+        return self._votos
+
+    def consenso(self, track_id: int) -> tuple[int, int]:
+        """(votos da placa eleita, total de leituras) do track, ou (0, 0) se não existe.
+
+        Ler ANTES de `marcar_emitido` não é obrigatório — a marca não apaga `resultados` —
+        mas ler antes de `_limpar_mortos` é: o estado do veículo some quando ele deixa
+        de aparecer por `paciencia_frames`.
+        """
+        st = self._estados.get(track_id)
+        return st.consenso() if st else (0, 0)
 
     # ── Manutenção interna ────────────────────────────────────────────────────
 
@@ -322,7 +363,13 @@ class Tracker:
             if st.resultados and not st.emitido:
                 melhor = st.placa_eleita(1)
                 if melhor:
-                    log.debug(
-                        "Tracker ID=%d saiu sem emitir (melhor: %s, %d leitura(s))",
-                        tid, melhor[0], len(st.resultados),
+                    votos_lider, total = st.consenso()
+                    log.info(
+                        "trk%d SAIU sem emitir — %d leitura(s), melhor %s com %d voto(s)",
+                        tid, total, melhor[0], votos_lider,
                     )
+            elif not st.resultados:
+                # Veículo detectado e nunca lido é um caso diferente de "lido e não
+                # convergiu", e some do log se não for dito aqui — o de cima só dispara
+                # quando houve alguma leitura válida.
+                log.info("trk%d SAIU sem nenhuma leitura válida", tid)

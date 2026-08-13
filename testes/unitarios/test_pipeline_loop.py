@@ -94,7 +94,15 @@ def _pipeline_de_teste(*, camera, ajustador, deteccao_fps_max=5, camera_fps=15, 
     p._ultima_deteccao = 0.0
     p._parar = threading.Event()
     p.chamadas_processar_frame = []
-    p._processar_frame = lambda frame: p.chamadas_processar_frame.append(frame)
+    # `_processar_frame` recebe DOIS arrays: o que vai virar MJPEG (e recebe os
+    # retângulos) e o quadro limpo que vai para OCR/disco. `chamadas_processar_frame`
+    # segue sendo o primeiro — é o publicado, que é o que as asserções de cadência e de
+    # ajuste medem; o segundo fica em lista própria para o teste do invariante.
+    p.chamadas_frame_limpo = []
+    def _dube_processar(frame, frame_limpo):
+        p.chamadas_processar_frame.append(frame)
+        p.chamadas_frame_limpo.append(frame_limpo)
+    p._processar_frame = _dube_processar
     return p
 
 
@@ -275,6 +283,26 @@ class TestInvarianteDoAjuste:
         limpo = estado.obter_frame_camera_limpo(2)
         assert _AjustadorFalso.foi_marcado(limpo)
 
+    def test_quadro_do_stream_e_o_limpo_sao_arrays_separados(self, relogio):
+        """O que `_processar_frame` recebe como 1º argumento é rabiscado com os
+        retângulos e vai para o MJPEG; o 2º é o que vira recorte de OCR, snapshot e
+        amostra de dataset. Se os dois forem o MESMO array, todo snapshot gravado sai
+        com a caixa verde desenhada por cima da placa — que era o comportamento antigo,
+        visível nas miniaturas do histórico.
+        """
+        cam = _CameraFalsa()
+        cam.definir(_novo_frame())
+        aj = _AjustadorFalso()
+        pinst = _pipeline_de_teste(camera=cam, ajustador=aj, deteccao_fps_max=5, camera_fps=15)
+        _rodar_por(pinst, relogio, 1.0)
+
+        assert pinst.chamadas_processar_frame, "nada foi processado — teste não mediu nada"
+        for saida, limpo in zip(pinst.chamadas_processar_frame, pinst.chamadas_frame_limpo):
+            assert saida is not limpo
+            # Separados, mas partindo do mesmo conteúdo: a cópia é feita DEPOIS do
+            # ajuste de ambiente, senão o OCR receberia um quadro sem o ajuste.
+            assert np.array_equal(saida, limpo)
+
 
 class TestFrameDuplicado:
     def test_camera_parada_processa_uma_vez_mas_republica_a_cada_tick(self, relogio, espiao_publicacao):
@@ -435,7 +463,7 @@ class TestCasosDeBorda:
 
         chamadas = [0]
 
-        def _processar_com_falha_na_primeira(frame):
+        def _processar_com_falha_na_primeira(frame, frame_limpo):
             chamadas[0] += 1
             if chamadas[0] == 1:
                 raise RuntimeError("falha simulada de detector")

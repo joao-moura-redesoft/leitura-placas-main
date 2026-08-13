@@ -29,6 +29,17 @@
       <option value="todas">Todas</option>
     </select>
   </label>
+  {# "Não estimado" é opção de verdade, não resto: a estimativa só passou a ser gravada
+     agora, então toda leitura anterior cai aqui — e é justamente a lista que alguém
+     precisa ver para saber o que o filtro ainda não alcança. #}
+  <label style="min-width:170px">Veículo
+    <select id="filtro-tipo-veiculo" onchange="carregar()" style="width:100%;margin-top:4px">
+      <option value="todos">Todos</option>
+      <option value="carro">Carro</option>
+      <option value="moto">Moto</option>
+      <option value="desconhecido">Não estimado</option>
+    </select>
+  </label>
   <button onclick="carregar()" style="height:36px">Buscar</button>
   <button onclick="limparFiltros()" style="height:36px;background:#fff;color:#374151;border:1px solid #e2e8f0">Limpar</button>
 </div>
@@ -37,7 +48,7 @@
   <table>
     <thead>
       <tr>
-        <th>Placa</th><th>Padrão</th><th>Confiança</th>
+        <th>Placa</th><th>Padrão</th><th>Veículo</th><th>Confiança</th>
         <th>Posto</th><th>Bico</th><th>Data</th><th>Imagens</th>
       </tr>
     </thead>
@@ -53,6 +64,10 @@
 <script>
 const params = new URLSearchParams(location.search);
 let _bicos = [], _empresas = [], _automacoes = [];
+// Última página de resultados, na mesma ordem da tabela: o visualizador precisa dos
+// dados da leitura (placa, posto, data), não só da URL da imagem, e serializar isso
+// em atributos onclick escaparia mal na primeira placa com aspas.
+let _leituras = [];
 
 
 async function carregarFiltros() {
@@ -70,6 +85,11 @@ async function carregarFiltros() {
   // devolveria 422 na primeira carga.
   const orig = params.get('origem');
   if (['producao','teste','todas'].includes(orig)) document.getElementById('filtro-origem').value = orig;
+  // Mesma validação contra lista que a `origem` faz, e pelo mesmo motivo: um valor
+  // inventado na URL zeraria o select e o back-end devolveria 422 na primeira carga.
+  const tv = params.get('tipo_veiculo');
+  if (['todos','carro','moto','desconhecido'].includes(tv))
+    document.getElementById('filtro-tipo-veiculo').value = tv;
   // O bico só pode ser escolhido DEPOIS de `atualizarBicos()`: é ela que cria as
   // <option>. Atribuir `.value` num <select> sem a option correspondente é ignorado
   // pelo navegador, sem erro — era assim que o `?bico_id=` do link da tela de ROI
@@ -97,6 +117,7 @@ function limparFiltros() {
   ['filtro-placa','filtro-desde'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('filtro-empresa').value = '';
   document.getElementById('filtro-origem').value = 'producao';
+  document.getElementById('filtro-tipo-veiculo').value = 'todos';
   atualizarBicos();
   carregar();
 }
@@ -104,23 +125,45 @@ function limparFiltros() {
 // Duas imagens por leitura: o RECORTE (o que o OCR leu) e o QUADRO INTEIRO com a
 // marcação (o contexto — qual veículo era, se a área do bico pegou o lugar certo).
 // Só o recorte não permite auditar uma leitura errada.
-function imagens(d) {
+//
+// A miniatura abre o visualizador (app.js) em vez de uma aba nova: conferir uma
+// leitura é ampliar o recorte, olhar o quadro e voltar para a linha seguinte da
+// tabela — o que a aba nova, com JPEG estático, obrigava a fazer no braço.
+function imagens(d, i) {
   const partes = [];
   if (d.snapshot) {
-    partes.push(`<a href="${esc(d.snapshot)}" target="_blank" title="Recorte lido pelo OCR"
-      style="display:inline-block;vertical-align:middle;margin-right:6px">
-      <img src="${esc(d.snapshot)}" alt="recorte" loading="lazy"
-           style="height:26px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc"></a>`);
+    partes.push(`<button type="button" class="thumb" style="margin-right:6px"
+        title="Recorte lido pelo OCR — clique para ampliar" onclick="abrirLeitura(${i}, 0)">
+        <img src="${esc(d.snapshot)}" alt="Ampliar o recorte da placa ${esc(d.placa)}"
+             loading="lazy" style="height:26px"></button>`);
   }
   if (d.frame) {
-    partes.push(`<a href="${esc(d.frame)}" target="_blank" title="Quadro inteiro da câmera"
-      style="display:inline-block;vertical-align:middle">
-      <img src="${esc(d.frame)}" alt="quadro" loading="lazy"
-           style="height:34px;border:1px solid #e2e8f0;border-radius:4px"></a>`);
+    partes.push(`<button type="button" class="thumb"
+        title="Quadro inteiro da câmera — clique para ampliar"
+        onclick="abrirLeitura(${i}, ${d.snapshot ? 1 : 0})">
+        <img src="${esc(d.frame)}" alt="Ampliar o quadro da câmera da leitura ${esc(d.placa)}"
+             loading="lazy" style="height:34px"></button>`);
   } else if (d.snapshot) {
     partes.push('<span style="color:#cbd5e1;font-size:12px" title="Leitura anterior à gravação do quadro">só recorte</span>');
   }
   return partes.join('') || '—';
+}
+
+// Abre as imagens da leitura `i` já posicionado na que foi clicada; as duas entram
+// no visualizador para dar para alternar recorte↔quadro sem fechar e reabrir.
+function abrirLeitura(i, inicial) {
+  const d = _leituras[i];
+  if (!d) return;
+  const itens = [];
+  if (d.snapshot) itens.push({ url: d.snapshot, rotulo: 'recorte (OCR)' });
+  if (d.frame)    itens.push({ url: d.frame,    rotulo: 'quadro da câmera' });
+  const legenda = [
+    d.empresa_nome,
+    d.bico_codigo ? 'bico ' + d.bico_codigo : null,
+    new Date(d.criado_em).toLocaleString('pt-BR'),
+    `${(d.confianca * 100).toFixed(0)}% de confiança`,
+  ].filter(Boolean).join(' · ');
+  abrirVisualizador(itens, inicial, d.placa, legenda);
 }
 
 // O filtro padrão é "Produção", que esconde as leituras de teste — é de propósito, para
@@ -160,12 +203,14 @@ async function carregar() {
   if (bico)  q.set('bico_id', bico);
   if (desde) q.set('desde', new Date(desde).toISOString());
   q.set('origem', document.getElementById('filtro-origem').value);
+  q.set('tipo_veiculo', document.getElementById('filtro-tipo-veiculo').value);
 
   const r = await fetch('/api/deteccoes?' + q).then(r => r.json());
+  _leituras = r;
   document.getElementById('contador').textContent = `${r.length} leitura(s)`;
   document.getElementById('vazio').style.display = r.length ? 'none' : '';
   await avisarTestesOcultos(q, r.length);
-  document.getElementById('corpo').innerHTML = r.map(d => {
+  document.getElementById('corpo').innerHTML = r.map((d, i) => {
     // Leituras anteriores ao multi-tenant não têm bico — marca em vez de fingir que tem.
     const posto = d.empresa_nome
       ? `<a href="/posto/${d.empresa_id}" style="color:#16a34a;text-decoration:none">${esc(d.empresa_nome)}</a>`
@@ -179,22 +224,39 @@ async function carregar() {
       : d.origem === 'pipeline'
         ? ' <span class="badge" style="background:#f1f5f9;color:#475569" title="Detecção contínua do stream">contínuo</span>'
         : '';
-    // Leitura devolvida sem atingir o acordo mínimo — é a que pode cobrar o cliente
-    // errado. `confirmada` é null no pipeline contínuo e nas leituras anteriores a esta
-    // marcação: desconhecido não é o mesmo que fraco, então esses não recebem selo.
+    // Leitura gravada sem consenso suficiente — é a que pode cobrar o cliente errado.
+    // Vale para as DUAS origens: o contínuo também mede o próprio acordo (votos do
+    // mesmo veículo rastreado, ou frames consecutivos iguais) e grava esta marca.
+    // `confirmada` continua null nas leituras anteriores a esta gravação, e
+    // desconhecido não é o mesmo que fraco — essas não recebem selo.
+    //
+    // O tooltip mostra o número em vez de afirmar a causa: falta consenso tanto por
+    // acordo baixo quanto por votos de menos, e nesse segundo caso "acordo 100% abaixo
+    // do mínimo" mandaria quem investiga mexer no parâmetro errado (mesmo motivo da
+    // mensagem em app/web/leitura.py).
     const conferir = d.confirmada === 0
-      ? ` <span class="badge" style="background:#ffedd5;color:#c2410c" title="Acordo ${
+      ? ` <span class="badge" style="background:#ffedd5;color:#c2410c" title="Consenso insuficiente (acordo ${
           d.acordo != null ? Math.round(d.acordo * 100) + '%' : '?'
-        } abaixo do mínimo — confira antes de cobrar">a conferir</span>`
+        }) — confira a imagem antes de cobrar">a conferir</span>`
       : '';
+    // Tipo ESTIMADO pelo OCR a partir do formato do recorte, não cadastro do veículo —
+    // por isso o tracejado e o tooltip. Apresentar como fato seria pior que não mostrar:
+    // o limiar atual (aspecto ≤ 2,0) classifica alguns carros como moto, e quem filtrar
+    // "Moto" precisa saber que a lista pode conter carro.
+    const veiculo = d.tipo_veiculo
+      ? `<span title="Estimado pelo OCR a partir do formato da placa — não é cadastro do veículo"
+              style="border-bottom:1px dotted #94a3b8;cursor:help">${
+           d.tipo_veiculo === 'moto' ? 'Moto' : 'Carro'}</span>`
+      : '<span style="color:#cbd5e1" title="Leitura sem estimativa: anterior a este campo, engine único, ou sem cabeçalho para decidir">—</span>';
     return `<tr${d.origem === 'teste' ? ' style="opacity:.72"' : ''}>
       <td><strong style="font-family:'Consolas',monospace;letter-spacing:.04em">${esc(d.placa)}</strong>${selo}${conferir}</td>
       <td><span class="badge badge-${esc(d.padrao)}">${esc(d.padrao)}</span></td>
+      <td>${veiculo}</td>
       <td>${(d.confianca * 100).toFixed(0)}%</td>
       <td>${posto}</td>
       <td>${bico}</td>
       <td style="white-space:nowrap">${new Date(d.criado_em).toLocaleString('pt-BR')}</td>
-      <td>${imagens(d)}</td>
+      <td>${imagens(d, i)}</td>
     </tr>`;
   }).join('');
 }

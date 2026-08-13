@@ -251,6 +251,15 @@
       "formato": "mercosul",
       "tipo": "crop",
       "obs": ""
+    },
+    {
+      "id": "f7d21487",
+      "arquivo": "app/web/static/snapshots/20260813T131703_TOX2C08.jpg",
+      "placa_correta": "TOX2C08",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
     }
   ]
 }

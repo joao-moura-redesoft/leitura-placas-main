@@ -6,7 +6,9 @@ nada visivelmente, só devolve a placa errada de vez em quando.
 """
 from __future__ import annotations
 
-from app.visao.leitura import _consenso_caractere, _eleger_placa, _mesclar_com_anterior
+from app.visao.leitura import (
+    _confirmada, _consenso_caractere, _eleger_placa, _mesclar_com_anterior,
+)
 
 
 def _candidato(placa, confianca=0.9, padrao="mercosul", detalhes=None):
@@ -98,3 +100,37 @@ class TestMesclarComAnterior:
         atual = {"placa": "ABC1D23", "confianca": 0.2, "padrao": "mercosul"}
         anterior = {"placa": "XYZ9K88", "confianca": 0.9}
         assert _mesclar_com_anterior(atual, anterior)["placa"] == "XYZ9K88"
+
+
+class TestConfirmada:
+    """A regra que separa leitura sólida de 'candidata menos ruim'.
+
+    O que ela decide vai para o banco (`deteccoes.confirmada`), para a resposta do
+    roteador e para a taxa de sucesso do painel — marcar uma leitura fraca como sólida
+    é o caminho para vincular a placa errada a um abastecimento.
+    """
+
+    def test_acordo_alto_com_dois_votos_confirma(self):
+        assert _confirmada(0.95, 2, acordo_min=0.80, n_min=3) is True
+
+    def test_um_voto_so_nao_confirma_mesmo_com_acordo_perfeito(self):
+        """Regressão do falso positivo em pista vazia: 1 frame com detecção fecha
+        acordo=1.0 sozinho (a placa dele e os engines dele são o pool inteiro), sem
+        nenhuma concordância ENTRE frames. Isto voltava como confirmada e virava 'ok'."""
+        assert _confirmada(1.0, 1, acordo_min=0.80, n_min=3) is False
+
+    def test_acordo_baixo_nao_confirma_mesmo_com_muitos_votos(self):
+        assert _confirmada(0.42, 3, acordo_min=0.80, n_min=3) is False
+
+    def test_acordo_exatamente_no_minimo_confirma(self):
+        """O mínimo é um piso inclusivo — configurar 0.80 e ver 0.80 recusado seria
+        surpresa para quem ajusta o parâmetro."""
+        assert _confirmada(0.80, 2, acordo_min=0.80, n_min=3) is True
+
+    def test_snapshots_votacao_1_nao_deixa_tudo_nao_confirmado(self):
+        """Quem configura `snapshots_votacao=1` abriu mão da votação entre frames.
+        Exigir 2 votos ali deixaria TODA leitura não-confirmada, o oposto do ajuste."""
+        assert _confirmada(0.95, 1, acordo_min=0.80, n_min=1) is True
+
+    def test_tres_votos_de_tres_confirma(self):
+        assert _confirmada(1.0, 3, acordo_min=0.80, n_min=3) is True

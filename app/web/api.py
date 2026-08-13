@@ -50,14 +50,20 @@ def listar_deteccoes(
     bico_id: int | None = None,
     incluir_testes: bool = False,
     origem: Literal["producao", "teste", "todas"] | None = None,
+    tipo_veiculo: Literal["moto", "carro", "desconhecido", "todos"] | None = None,
 ):
     """`origem` filtra por conjunto: 'producao' (default — exclui testes manuais),
     'teste' (só eles) ou 'todas'. `incluir_testes` é o parâmetro antigo equivalente a
-    'todas'; continua aceito, mas `origem` tem precedência quando os dois vêm."""
+    'todas'; continua aceito, mas `origem` tem precedência quando os dois vêm.
+
+    `tipo_veiculo` filtra moto/carro. É a ESTIMATIVA do AutoOCR gravada na leitura, não
+    um cadastro: 'desconhecido' traz as leituras sem estimativa (anteriores à coluna,
+    engine único, ou sem header para decidir) e o default traz todas."""
     empresa_id = _empresa_efetiva(request, empresa_id)
     return banco.listar_deteccoes(placa=placa, desde=desde, ate=ate, limit=limit,
                                   offset=offset, empresa_id=empresa_id, bico_id=bico_id,
-                                  incluir_testes=incluir_testes, origem=origem)
+                                  incluir_testes=incluir_testes, origem=origem,
+                                  tipo_veiculo=tipo_veiculo)
 
 
 @router.get("/chamadas")

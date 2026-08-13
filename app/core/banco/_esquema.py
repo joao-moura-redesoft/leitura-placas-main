@@ -94,6 +94,22 @@ def _migrar(c: sqlite3.Connection) -> None:
     # migração, casos em que o consenso é desconhecido — nunca presumir confirmada.
     if "confirmada" not in cols_det:
         c.execute("ALTER TABLE deteccoes ADD COLUMN confirmada INTEGER")
+    # 'moto' | 'carro' | NULL. NÃO dá para derivar isto de `padrao`, que guarda o FORMATO
+    # da placa (mercosul/antigo) e vale para os dois tipos de veículo — sem coluna própria
+    # o histórico não tem como separar moto de carro.
+    #
+    # O valor vem do `e_moto` do AutoOCR (app/visao/ocr/auto.py), que é heurístico: hoje é
+    # `tinha_header and aspect <= 2.0`, e o próprio arquivo documenta a medição em que 3 de
+    # 26 carros caíram como moto. Guardar mesmo assim vale mais do que não guardar — é o
+    # único sinal que existe, e tê-lo gravado por linha é o que permite medir e corrigir o
+    # limiar depois. Mas quem lê esta coluna precisa saber que ela é estimativa, não
+    # cadastro; a interface rotula como "estimado".
+    #
+    # NULL = desconhecido, e são três casos distintos que não se deve fundir com 'carro':
+    # linhas anteriores a esta migração (as ~440 já existentes), leituras por engine único
+    # (que não passam pelo AutoOCR e nunca calculam `e_moto`) e detecções do pipeline.
+    if "tipo_veiculo" not in cols_det:
+        c.execute("ALTER TABLE deteccoes ADD COLUMN tipo_veiculo TEXT")
     # `deteccoes` é alimentada por toda leitura reativa de todos os postos — sem
     # índice, listar/filtrar por bico vira table scan conforme a tabela cresce.
     # Fica em `_migrar` (não no CREATE TABLE inicial) porque só depois daqui a

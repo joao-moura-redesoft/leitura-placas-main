@@ -46,8 +46,20 @@ def _salvar_dataset(ds: dict) -> None:
 
 
 def _placa_do_nome(nome: str) -> str:
-    """Extrai placa do padrão YYYYMMDDThhmmss_PLACA.jpg"""
-    m = re.match(r"\d{8}T\d{6}_([A-Z0-9]{7})\.", nome.upper())
+    """Extrai placa do padrão YYYYMMDDThhmmss_PLACA[_frame].jpg
+
+    O sufixo `_frame` precisa entrar aqui porque o pipeline grava DOIS arquivos por
+    detecção (`app/visao/pipeline.py`): o recorte `_PLACA.jpg` e o quadro inteiro
+    marcado `_PLACA_frame.jpg`. Exigindo ponto logo após a placa, todo quadro-cena
+    chegava na fila de classificação como "o OCR não deixou placa" — com a leitura
+    desenhada na própria imagem. Quem classificava redigitava à mão o que o OCR já
+    tinha lido, e a conferência contra o OCR se perdia (o `obs` do dataset marca
+    'confere com OCR' vs 'corrigido' comparando com esta sugestão).
+
+    Continua NÃO casando o que `app/visao/captura_dataset.py` grava (`_camN-marca.jpg`):
+    ali o hífen é proposital, porque aquela captura é justamente o que a leitura errou.
+    """
+    m = re.match(r"\d{8}T\d{6}_([A-Z0-9]{7})(?:_FRAME)?\.", nome.upper())
     return m.group(1) if m else ""
 
 
@@ -173,6 +185,63 @@ def obter_dataset():
     return _ler_dataset()
 
 
+def _upsert_foto(ds: dict, arquivo: str, placa: str, formato: str, tipo: str,
+                 obs: str, extras: dict) -> None:
+    """Insere ou atualiza uma foto do dataset, casando por `arquivo`."""
+    existente = next((f for f in ds["fotos"] if f["arquivo"] == arquivo), None)
+    if existente:
+        existente.update({
+            "placa_correta": placa,
+            "formato": formato or _inferir_formato(placa),
+            "tipo": tipo,
+            "obs": obs or existente.get("obs", ""),
+            **extras,
+        })
+    else:
+        ds["fotos"].append({
+            "id": uuid.uuid4().hex[:8],
+            "arquivo": arquivo,
+            "placa_correta": placa,
+            "formato": formato or _inferir_formato(placa),
+            "tipo": tipo,
+            "obs": obs,
+            **extras,
+        })
+
+
+# Nome que o pipeline gera para uma detecção: `TS_PLACA.jpg` (recorte) e
+# `TS_PLACA_frame.jpg` (quadro inteiro marcado). Só esse par é irmão.
+_PAR_PIPELINE = re.compile(r"^(\d{8}T\d{6}_[A-Z0-9]{7})(_FRAME)?\.(JPG|JPEG|PNG)$")
+
+
+def _irmao_do_par(arquivo: str) -> tuple[str, str] | None:
+    """Devolve (caminho, tipo) do arquivo irmão de uma detecção, ou None.
+
+    O pipeline grava DOIS arquivos por detecção (`app/visao/pipeline.py`): o recorte da
+    placa e o quadro inteiro com a caixa desenhada. É o MESMO veículo e a MESMA placa —
+    o recorte sai de dentro do bbox do quadro —, então rotular um determina o outro e
+    fazer o humano digitar a mesma placa duas vezes é só trabalho repetido.
+
+    O que NÃO se pode fazer é colapsar os dois em um: eles medem etapas diferentes. O
+    recorte (`tipo: crop`) vai direto ao OCR; o quadro (`tipo: frame`) passa antes pelo
+    detector. Descartar um lado apagaria justamente a separação entre erro de detecção
+    e erro de OCR. Por isso a placa se propaga e os dois ficam no dataset.
+    """
+    p = Path(arquivo)
+    if p.parent != _SNAPSHOTS:          # uploads e capturas de bico não têm par
+        return None
+    m = _PAR_PIPELINE.match(p.name.upper())
+    if not m:
+        return None
+    base, era_frame = m.group(1), bool(m.group(2))
+    # O irmão preserva a extensão real do arquivo original (o regex casou em maiúsculas).
+    nome_irmao = p.name[:len(base)] + ("" if era_frame else "_frame") + p.suffix
+    irmao = p.parent / nome_irmao
+    if not irmao.exists():
+        return None
+    return irmao.as_posix(), ("crop" if era_frame else "frame")
+
+
 @router.post("/dataset")
 def adicionar_foto(payload: dict):
     arquivo = (payload.get("arquivo") or "").strip()
@@ -196,27 +265,30 @@ def adicionar_foto(payload: dict):
     if layout:
         origem["layout"] = layout
 
-    existente = next((f for f in ds["fotos"] if f["arquivo"] == arquivo), None)
-    if existente:
-        existente.update({
-            "placa_correta": placa,
-            "formato": payload.get("formato") or _inferir_formato(placa),
-            "tipo": payload.get("tipo", "crop"),
-            "obs": payload.get("obs", existente.get("obs", "")),
-            **origem,
-        })
-    else:
-        ds["fotos"].append({
-            "id": uuid.uuid4().hex[:8],
-            "arquivo": arquivo,
-            "placa_correta": placa,
-            "formato": payload.get("formato") or _inferir_formato(placa),
-            "tipo": payload.get("tipo", "crop"),
-            "obs": payload.get("obs", ""),
-            **origem,
-        })
+    formato = payload.get("formato") or ""
+    _upsert_foto(ds, arquivo, placa, formato, payload.get("tipo", "crop"),
+                 payload.get("obs", ""), origem)
+
+    # Propaga para o irmão do par recorte/quadro: mesma detecção, mesma placa.
+    propagado = None
+    par = _irmao_do_par(arquivo)
+    if par:
+        irmao, tipo_irmao = par
+        ja_rotulado = any(f["arquivo"] == irmao for f in ds["fotos"])
+        # Um irmão já rotulado carrega o julgamento explícito de um humano, e um irmão
+        # descartado carrega a recusa explícita dele (quadro ilegível, veículo saindo).
+        # Sobrescrever qualquer um dos dois seria a máquina desfazendo a decisão de quem
+        # olhou a imagem — exatamente o que a fila existe para evitar.
+        if not ja_rotulado and irmao not in _ler_descartados():
+            # `obs` registra que NINGUÉM olhou este arquivo específico: a placa veio do
+            # irmão. Sem essa marca não daria para separar, numa medição estranha, o que
+            # foi conferido do que foi herdado.
+            _upsert_foto(ds, irmao, placa, formato, tipo_irmao,
+                         f"propagado do par ({Path(arquivo).name})", origem)
+            propagado = irmao
+
     _salvar_dataset(ds)
-    return {"ok": True, "total": len(ds["fotos"])}
+    return {"ok": True, "total": len(ds["fotos"]), "propagado": propagado}
 
 
 @router.delete("/dataset")

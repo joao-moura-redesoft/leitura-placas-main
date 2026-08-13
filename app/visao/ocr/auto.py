@@ -6,6 +6,7 @@ import threading
 import cv2
 import numpy as np
 
+from app.visao import contexto_log
 from app.visao.ocr.engines import OCR
 
 log = logging.getLogger(__name__)
@@ -37,6 +38,67 @@ def _realcar_para_ocr(crop, alvo_h: int = 224, limiar_blur: float = 3500.0):
     # forte, que criavam confusões de caractere (O→D) em placas já limítrofes.
     borrado = cv2.GaussianBlur(crop, (0, 0), sigmaX=1.0)
     return cv2.addWeighted(crop, 1.6, borrado, -0.6, 0)
+
+
+def _fmt(engine: str, bruto: str, validado) -> str:
+    """`easyocr:''→—` / `fast_plate_ocr:'1CD4J18'→ICD4J18` — o que cada engine contribuiu.
+
+    O par bruto→validado numa peça só porque a diferença entre os dois É a informação:
+    `'11D4318'→IID4318` mostra o validador trocando 1 por I, e é isso que explica placas
+    quase-iguais votando separado no tracker.
+    """
+    return "%s:%r→%s" % (engine, bruto, validado[0] if validado else "—")
+
+
+# Abaixo disto o recorte não tem pixel para conter sete caracteres, e o que sai do OCR é
+# ruído com um número de confiança em cima: gasta ~600 ms de EasyOCR + fast_plate_ocr,
+# entra como voto no tracker e vai para a fila de classificação, tudo indistinguível de
+# leitura boa.
+#
+# MEDIDO em 13/08/2026 sobre as capturas reais em `app/web/static/snapshots/`: 936
+# recortes que o contínuo não conseguiu ler e 526 que produziram leitura "válida".
+#
+#     corte     barra dos 936 não-lidos    custa das 526 leituras
+#     10x5          116 (11,9%)                 1 (0,2%)
+#     20x8          328 (33,6%)                 4 (0,8%)
+#     24x10         376 (38,5%)                 4 (0,8%)   ← escolhido
+#     30x10         695 (71,1%)                 7 (1,3%)
+#     40x12         811 (83,0%)                22 (4,2%)
+#
+# 24x10 é o joelho: barra 38,5% do desperdício e as 4 leituras que ele custa são
+# 3x2 px (MJG6G66), 11x11 (BAC5276), 13x6 (PAO6S01) e 17x8 (SUJ7I11) — no máximo 2,4 px
+# por caractere, ou seja, alucinação que estava sendo GRAVADA como detecção. O custo real
+# é zero leitura verdadeira. Para comparação, a mediana de quem lê de verdade é 58x26 e o
+# p10 é 51x18: o corte fica bem longe da faixa que funciona.
+#
+# NÃO fui além de 24x10 de propósito. 30x10 ainda pareceria barato (7 leituras), mas as 3
+# a mais — 25x17, 26x18, 27x21 — estão em 3,6 px/caractere: provavelmente erradas, e
+# "provavelmente" não é o padrão que este arquivo usa para descartar leitura (ver a
+# arbitragem do AutoOCRPaddle e o limiar de `e_moto`). Refazer a conta quando a fila de
+# classificação tiver rótulo humano nessa faixa.
+CROP_MIN_LARGURA = 24
+CROP_MIN_ALTURA = 10
+
+
+def _sem_leitura() -> dict:
+    """Resultado de "não li nada", na forma que `ler`/`ler_detalhado` prometem.
+
+    `total_engines: 0` distingue este caso de "rodei os dois engines e nenhum validou"
+    (que devolve 2) — quem lê `_ultimo_detalhe` consegue separar recorte descartado de
+    leitura tentada e falha.
+    """
+    return {"placa": None, "padrao": None, "confianca": 0.0,
+            "votos": 0, "total_engines": 0, "detalhes": []}
+
+
+def crop_legivel(w: int, h: int) -> bool:
+    """Vale sobre o recorte COMO VEIO do detector — antes de `_realcar_para_ocr`.
+
+    Ampliar não cria informação: um crop de 4x3 px interpolado para 224 px de altura
+    continua sem os caracteres, mas passaria em qualquer checagem feita depois. Os
+    limiares acima foram medidos em recortes crus, e é neles que precisam ser aplicados.
+    """
+    return w >= CROP_MIN_LARGURA and h >= CROP_MIN_ALTURA
 
 
 class AutoOCR:
@@ -73,6 +135,18 @@ class AutoOCR:
     def ler_detalhado(self, crop) -> dict:
         from app.visao.validador import validar
 
+        # Antes de qualquer coisa: recorte sem pixel para sete caracteres não vai a
+        # engine nenhum. Medido ANTES do realce de propósito — ver `crop_legivel`.
+        if crop is None or crop.ndim != 3 or crop.size == 0:
+            log.info("OCR sem recorte utilizável — nenhum engine rodado")
+            return _sem_leitura()
+        h0, w0 = crop.shape[:2]
+        if not crop_legivel(w0, h0):
+            log.info("OCR crop=%dx%dpx DESCARTADO — abaixo de %dx%d, sem pixel para "
+                     "7 caracteres (nenhum engine rodado)",
+                     w0, h0, CROP_MIN_LARGURA, CROP_MIN_ALTURA)
+            return _sem_leitura()
+
         # Realce (upscale + sharpen) — recupera placas pequenas/borradas antes do OCR.
         crop = _realcar_para_ocr(crop)
 
@@ -101,6 +175,16 @@ class AutoOCR:
         aspect = (crop.shape[1] / max(crop.shape[0], 1)) if crop is not None else 3.0
         e_moto = tinha_header and aspect <= 2.0
         self._ultimo_e_moto = e_moto
+
+        # Estimativa de tipo de veículo, para o histórico poder filtrar moto/carro (a
+        # coluna `deteccoes.tipo_veiculo`). Três estados, não dois: `e_moto` é False
+        # tanto para "é carro" quanto para "não achei header", e essas são coisas
+        # diferentes. Sem header não dá para afirmar o tipo — uma placa ANTIGA de moto
+        # não tem a faixa azul e cairia como carro se o False fosse tratado como carro.
+        # None (desconhecido) é a resposta honesta ali; quem filtra o histórico vê a
+        # leitura em "Não estimado" em vez de vê-la contada como carro.
+        self._ultimo_tipo_veiculo = ("moto" if e_moto
+                                     else ("carro" if tinha_header else None))
 
         # fast_plate_ocr como principal para carros (com cabeçalho, Mercosul ou antigo com tarjeta)
         # Não dependemos da cor (e_mercosul_header) aqui para garantir que funcione de noite (câmeras IR)
@@ -133,16 +217,21 @@ class AutoOCR:
         # correções de posição que o hint faz (FBI0123 → FBI0I23).
         self._ultimo_formato_hint = formato_hint
 
-        tipo_placa = ("moto-mercosul" if e_moto else ("mercosul-carro" if e_mercosul_header else "antigo"))
-        h, w = (crop.shape[:2] if crop is not None else (0, 0))
-        log.info(
-            "AutoOCR: crop=%dx%d aspect=%.2f tipo=%s header=%s mercosul=%s principal=%s",
-            w, h, aspect, tipo_placa, tinha_header, e_mercosul_header, principal.engine,
-        )
+        # `layout` é o palpite sobre a DIAGRAMAÇÃO do recorte (quantas linhas, tem faixa
+        # no topo), que é o que decide qual engine roda primeiro. Não confundir com o
+        # `padrao` que sai do validador, que é o veredito sobre a placa lida — o log
+        # antigo chamava os dois de "tipo" e exibia `tipo=antigo` seguido, linhas depois,
+        # de `Placa detectada: ... (mercosul)`, parecendo contradição.
+        layout = ("moto-mercosul" if e_moto else ("mercosul-carro" if e_mercosul_header else "antigo"))
+        # `w0 x h0` é o recorte CRU; `crop` aqui já pode ter sido ampliado pelo realce, e
+        # exibir o tamanho ampliado esconderia a única medida que diz se havia informação
+        # para ler. O marcador ILEGIVEL que existia aqui saiu junto com a chegada do corte
+        # em `crop_legivel`: o que não passa não chega mais nesta linha.
+        cabecalho = "crop=%dx%dpx aspect=%.2f layout=%s" % (w0, h0, aspect, layout)
 
         texto, conf = principal.ler(crop)
         resultado = validar(texto, formato_hint)
-        log.info(
+        log.debug(
             "AutoOCR %s: bruto=%r → validado=%r conf=%.2f",
             principal.engine, texto, resultado[0] if resultado else None, conf,
         )
@@ -157,7 +246,8 @@ class AutoOCR:
         # Moto tem 2 linhas de texto e erra mais — sempre compara os dois engines.
         # Confiança baixa (< 50%) também força comparação para evitar leituras erradas.
         if resultado and not e_moto and conf >= 0.50:
-            log.info("AutoOCR: aceito %r conf=%.2f (sem fallback)", resultado[0], conf)
+            log.info("OCR %s | %s → %s conf=%.2f (sem fallback)", cabecalho,
+                     _fmt(principal.engine, texto, resultado), resultado[0], conf)
             return {
                 "placa": resultado[0], "padrao": resultado[1],
                 "confianca": round(conf, 3),
@@ -165,15 +255,17 @@ class AutoOCR:
             }
 
         motivo_fallback = "moto" if e_moto else ("conf_baixa=%.2f" % conf if resultado else "sem_resultado")
-        log.info("AutoOCR: rodando fallback=%s motivo=%s", fallback.engine, motivo_fallback)
+        log.debug("AutoOCR: rodando fallback=%s motivo=%s", fallback.engine, motivo_fallback)
 
         # Executa fallback: sempre para moto, ou quando principal falhou/conf baixa
         texto2, conf2 = fallback.ler(crop)
         resultado2 = validar(texto2, formato_hint)
-        log.info(
+        log.debug(
             "AutoOCR %s: bruto=%r → validado=%r conf=%.2f",
             fallback.engine, texto2, resultado2[0] if resultado2 else None, conf2,
         )
+        engines_lidos = "%s | %s" % (_fmt(principal.engine, texto, resultado),
+                                     _fmt(fallback.engine, texto2, resultado2))
         detalhes.append({
             "engine": fallback.engine,
             "placa": resultado2[0] if resultado2 else None,
@@ -192,12 +284,8 @@ class AutoOCR:
                 melhor = resultado2 if conf2 > conf else resultado
                 melhor_conf = conf2 if conf2 > conf else conf
                 vencedor = fallback.engine if conf2 > conf else principal.engine
-            log.info(
-                "AutoOCR: ambos validaram — %s(%r %.2f) vs %s(%r %.2f) → vencedor=%s(%r)",
-                principal.engine, resultado[0], conf,
-                fallback.engine, resultado2[0], conf2,
-                vencedor, melhor[0],
-            )
+            log.info("OCR %s | %s → %s conf=%.2f (ambos validaram, vence %s)",
+                     cabecalho, engines_lidos, melhor[0], melhor_conf, vencedor)
             return {
                 "placa": melhor[0], "padrao": melhor[1],
                 "confianca": round(melhor_conf, 3),
@@ -205,7 +293,8 @@ class AutoOCR:
             }
 
         if resultado:
-            log.info("AutoOCR: somente principal validou → %r conf=%.2f", resultado[0], conf)
+            log.info("OCR %s | %s → %s conf=%.2f (só %s validou)", cabecalho,
+                     engines_lidos, resultado[0], conf, principal.engine)
             return {
                 "placa": resultado[0], "padrao": resultado[1],
                 "confianca": round(conf, 3),
@@ -213,14 +302,15 @@ class AutoOCR:
             }
 
         if resultado2:
-            log.info("AutoOCR: somente fallback validou → %r conf=%.2f", resultado2[0], conf2)
+            log.info("OCR %s | %s → %s conf=%.2f (só %s validou)", cabecalho,
+                     engines_lidos, resultado2[0], conf2, fallback.engine)
             return {
                 "placa": resultado2[0], "padrao": resultado2[1],
                 "confianca": round(conf2, 3),
                 "votos": 1, "total_engines": 2, "detalhes": detalhes,
             }
 
-        log.info("AutoOCR: nenhum engine validou (principal=%r fallback=%r)", texto, texto2)
+        log.info("OCR %s | %s → NADA (nenhum engine validou)", cabecalho, engines_lidos)
         return {
             "placa": None, "padrao": None, "confianca": 0.0,
             "votos": 0, "total_engines": 2, "detalhes": detalhes,
@@ -271,6 +361,15 @@ class AutoOCRPaddle(AutoOCR):
         if crop is None or crop.ndim != 3 or crop.size == 0:
             return super().ler_detalhado(crop)
 
+        # Recorte degenerado sai aqui, e não só dentro do `super()`: o caminho de crop
+        # nítido abaixo aciona o PaddleOCR justamente quando o AutoOCR não validou nada
+        # — que é exatamente o que um recorte descartado devolve. Sem esta guarda, barrar
+        # os dois engines do AutoOCR só empurraria o trabalho para o Paddle, que é o mais
+        # caro dos três.
+        h0, w0 = crop.shape[:2]
+        if not crop_legivel(w0, h0):
+            return super().ler_detalhado(crop)
+
         # Nitidez decide a estratégia ANTES de rodar qualquer engine (medida é barata:
         # só um Laplaciano). Cada engine sozinho custa segundos num crop pequeno/borrado
         # (medido: AutoOCR ~3s, PaddleOCR ~3s em CPU) — por isso a estratégia muda:
@@ -293,7 +392,15 @@ class AutoOCRPaddle(AutoOCR):
                 return d
             placa_p, padrao_p = vp
             if e_moto and d.get("placa") == placa_p:
+                log.debug("Paddle confirma %s (crop nítido, lapvar=%.0f)", placa_p, nitidez)
                 return d                      # concordam: nada a trocar
+            # A troca precisa aparecer: sem esta linha o log mostrava o AutoOCR decidindo
+            # uma placa e, adiante, o sistema emitindo OUTRA, sem nada no meio explicando
+            # a substituição. Quem fosse investigar uma leitura errada deste caminho não
+            # tinha como saber que o Paddle tinha entrado.
+            log.info("Paddle SOBREPÕE %s → %s conf=%.2f (crop nítido lapvar=%.0f, motivo=%s)",
+                     d.get("placa") or "NADA", placa_p, conf_p, nitidez,
+                     "moto" if e_moto else "auto não validou")
             d = dict(d)
             d["placa"], d["padrao"], d["confianca"] = placa_p, padrao_p, round(conf_p, 3)
             d.setdefault("detalhes", []).append(
@@ -306,9 +413,13 @@ class AutoOCRPaddle(AutoOCR):
         # o MAIOR dos dois (~3s), já que numpy/onnxruntime liberam o GIL durante a inferência.
         # Vale para carro e para moto — em moto o Paddle é inclusive o mais forte dos dois.
         resultado: dict = {}
+        # O rótulo [camN trkN] mora em threading.local e NÃO é herdado — sem repassá-lo,
+        # tudo que o AutoOCR logar aqui dentro sai sem dono no meio do log das câmeras.
+        ctx = contexto_log.capturar()
 
         def _rodar_auto() -> None:
-            resultado["d"] = AutoOCR.ler_detalhado(self, crop)
+            with contexto_log.herdar(ctx):
+                resultado["d"] = AutoOCR.ler_detalhado(self, crop)
 
         t = threading.Thread(target=_rodar_auto, daemon=True)
         t.start()
@@ -323,6 +434,7 @@ class AutoOCRPaddle(AutoOCR):
         placa_a = d.get("placa")
 
         if placa_a == placa_p:
+            log.debug("Paddle confirma %s (crop borrado, lapvar=%.0f)", placa_p, nitidez)
             return d  # concordam
 
         # Discordam. Crop borrado (nitidez < limiar) → Paddle; e em moto o Paddle também
@@ -340,8 +452,10 @@ class AutoOCRPaddle(AutoOCR):
         # política de arbitragem com essa amostra é o erro que criou este bug. Medir
         # quando o dataset real crescer.
         votos_a = sum(1 for x in d.get("detalhes", []) if x.get("placa") == placa_a)
-        log.info("AutoOCRPaddle: discordam auto=%r (%d engine(s)) paddle=%r nitidez=%.0f moto=%s → paddle",
-                 placa_a, votos_a, placa_p, nitidez, getattr(self, "_ultimo_e_moto", False))
+        log.info("Paddle SOBREPÕE %s → %s conf=%.2f (crop borrado lapvar=%.0f, %d engine(s) "
+                 "sustentavam o anterior, moto=%s)",
+                 placa_a or "NADA", placa_p, conf_p, nitidez, votos_a,
+                 getattr(self, "_ultimo_e_moto", False))
         d = dict(d)
         d["placa"], d["padrao"], d["confianca"] = placa_p, padrao_p, round(conf_p, 3)
         d.setdefault("detalhes", []).append(

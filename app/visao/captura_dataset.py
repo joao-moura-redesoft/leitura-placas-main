@@ -117,7 +117,11 @@ class CapturaDataset:
             return False
         try:
             SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+            # Milissegundos, nao segundos: dois gatilhos no mesmo segundo geravam o MESMO
+            # nome e o segundo sobrescrevia o primeiro em silencio. Aconteceu no log de
+            # 13/08/2026 (20260813T164002_cam6-amostra.jpg gravado 13:40:02 e 13:40:03) —
+            # uma amostra da fila de classificacao perdida sem nenhum aviso.
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")[:-3]
             # O hifen e o que impede `_placa_do_nome` de ler isto como placa: ele exige
             # 7 alfanumericos seguidos de ponto.
             nome = f"{ts}_cam{self.camera_db_id}-{marca}.jpg"
@@ -175,6 +179,9 @@ def _coletar_de_camera(cam_id: int, intervalo: float) -> None:
                         "formato": cam.get("intelbras_formato", "padrao"),
                         "rtsp_transporte": cfg.get("rtsp_transporte", "tcp"),
                     },
+                    # Abrir e fechar RTSP é o trabalho normal deste laço, não um evento:
+                    # em INFO eram 2 linhas por câmera a cada volta, sem nada a dizer.
+                    silencioso=True,
                 )
             if frame is not None:
                 cap.salvar_amostra_agora(frame)

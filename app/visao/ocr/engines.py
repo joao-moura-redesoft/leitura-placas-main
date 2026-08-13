@@ -437,7 +437,7 @@ class OCR:
             else:
                 sat_media = 0.0
                 e_mercosul = False
-            log.info(
+            log.debug(
                 "_remover_header M1: corte=%d/%d mercosul=%s sat=%.0f",
                 corte, h, e_mercosul, sat_media,
             )
@@ -492,7 +492,7 @@ class OCR:
         faixa_hue = hsv[inicio : ultimo_header + 1, :, 0]
         hue_media = float(faixa_hue.mean()) if faixa_hue.size > 0 else 0
         if not (50 <= hue_media <= 150):
-            log.info(
+            log.debug(
                 "_remover_header M2: saturação detectada mas matiz=%.0f fora do range azul/verde"
                 " (50-150) — ignorando (provável pele ou fundo colorido)",
                 hue_media,
@@ -755,15 +755,15 @@ class OCR:
             log.error("Erro EasyOCR: %s", e)
             return "", 0.0
         if not resultados:
-            log.info("EasyOCR: nenhum texto detectado (img %dx%d)", img.shape[1], img.shape[0])
+            log.debug("EasyOCR: nenhum texto detectado (img %dx%d)", img.shape[1], img.shape[0])
             return "", 0.0
         for r in resultados:
-            log.info("EasyOCR box: %r conf=%.2f", r[1].upper(), float(r[2]))
+            log.debug("EasyOCR box: %r conf=%.2f", r[1].upper(), float(r[2]))
         textos = [r[1].upper() for r in resultados]
         confs = [float(r[2]) for r in resultados]
         texto = re.sub(r"[^A-Z0-9]", "", "".join(textos))
         conf_media = sum(confs) / len(confs)
-        log.info("EasyOCR combinado: %r conf=%.2f", texto, conf_media)
+        log.debug("EasyOCR combinado: %r conf=%.2f", texto, conf_media)
         return texto, conf_media
 
     # Caixa com área abaixo desta fração da maior é texto acessório (cidade/UF, "BRASIL",
@@ -866,16 +866,16 @@ class OCR:
             cinza = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
             result = self._fast_plate.run(cinza, return_confidence=True)
             if not result:
-                log.info("fast-plate-ocr: sem resultado (img %dx%d)", img.shape[1], img.shape[0])
+                log.debug("fast-plate-ocr: sem resultado (img %dx%d)", img.shape[1], img.shape[0])
                 return "", 0.0
             pred = result[0]
             texto = re.sub(r"[^A-Z0-9]", "", pred.plate.upper())
             conf = float(pred.char_probs.mean()) if pred.char_probs is not None else 0.8
             if pred.char_probs is not None:
                 por_char = " ".join(f"{c:.2f}" for c in pred.char_probs)
-                log.info("fast-plate-ocr: %r conf=%.2f [%s]", texto, conf, por_char)
+                log.debug("fast-plate-ocr: %r conf=%.2f [%s]", texto, conf, por_char)
             else:
-                log.info("fast-plate-ocr: %r conf=%.2f", texto, conf)
+                log.debug("fast-plate-ocr: %r conf=%.2f", texto, conf)
             return texto, conf
         except Exception as e:
             log.error("Erro fast-plate-ocr: %s", e)
