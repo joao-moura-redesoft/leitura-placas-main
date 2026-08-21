@@ -100,6 +100,25 @@ def frame_ao_vivo(camera_id: int):
     return _obter
 
 
+def montar_fontes(fontes_db: list[dict], cfg: dict) -> list[leitura.FonteLeitura]:
+    """Traduz as câmeras do bico (vindas de `banco.cameras_do_bico`) em fontes de leitura.
+
+    Ponto único onde a camada web liga cadastro e visão: cada câmera ganha sua
+    especificação de conexão, seu ROI e seu provedor de frame ao vivo. Os dois chamadores
+    de `ler_placa` (GET do roteador e botão de teste) passam por aqui para não divergirem.
+    """
+    fontes = []
+    for f in fontes_db:
+        fontes.append(leitura.FonteLeitura(
+            camera_id=f["camera_id"],
+            papel=f["papel"],
+            especificacao=leitura.EspecificacaoCamera.de_camera_db(f["camera"], cfg),
+            roi=json.loads(f["roi"]) if f.get("roi") else None,
+            provider=frame_ao_vivo(f["camera_id"]),
+        ))
+    return fontes
+
+
 # Limites do endpoint reativo — ele é PÚBLICO por design (rede interna do sidecar Java,
 # ver app/servidor.py), então isto não é controle de acesso, é só um freio contra
 # varredura/abuso (cnpj/automacao/bico errados de propósito, tentando descobrir cadastro
@@ -216,12 +235,10 @@ def leitura_reativa(
                     entidade, ent["nome"], cnpj_norm)
 
     cfg = config.carregar()
-    especificacao = leitura.EspecificacaoCamera.de_camera_db(reg, cfg)
-    roi = json.loads(reg["roi"]) if reg.get("roi") else None
     try:
         resultado = leitura.ler_placa(
-            camera_id=reg["camera_id"], especificacao=especificacao, roi=roi, cfg=cfg,
-            pipeline_frame_provider=frame_ao_vivo(reg["camera_id"]),
+            fontes=montar_fontes(reg["cameras"], cfg), cfg=cfg,
+            avisos=reg.get("avisos"),
             preview_nome=f"preview_bico_{reg['bico_id']}", bico_id=reg["bico_id"],
             origem="roteador",
         )
@@ -230,6 +247,14 @@ def leitura_reativa(
         raise HTTPException(e.status, e.mensagem)
 
     status_chamada, motivo_chamada = _status_da_leitura(resultado)
+    # Leitura degradada (uma das câmeras fora) que MESMO ASSIM devolveu placa boa continua
+    # 'ok': ela produziu o resultado que o posto precisa, e rebaixá-la falsearia a taxa de
+    # sucesso do painel. O aviso vai no motivo, que é onde o painel agrupa o que houve —
+    # assim a câmera caída aparece para quem cuida da infraestrutura sem virar incidente
+    # de leitura para quem cuida da cobrança.
+    avisos = resultado.get("avisos") or []
+    if avisos:
+        motivo_chamada = "; ".join([motivo_chamada, *avisos]) if motivo_chamada else "; ".join(avisos)
     _registrar(
         status_chamada, motivo_chamada,
         placa=resultado.get("placa"),

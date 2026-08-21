@@ -87,6 +87,43 @@ vez de fixar um corte próprio no lado do roteador.
 Os demais campos (`votos_ocr`, `detalhes_ocr`, etc.) são detalhe interno de diagnóstico;
 não é necessário processá-los.
 
+### Bico com duas câmeras
+
+Um bico pode ser configurado no servidor com **duas câmeras** (uma vendo a traseira,
+outra a frente do veículo), para os casos em que a placa de um lado fica encoberta —
+estepe na traseira, carro colado, ângulo ruim. **Isso é configuração do servidor: a
+chamada do roteador não muda em nada** — mesma URL, mesmos parâmetros, mesmo tempo de
+resposta (as duas câmeras dividem o mesmo orçamento de tempo, não somam).
+
+Os campos que você já usa mantêm exatamente o significado:
+
+| Campo | Com duas câmeras |
+|---|---|
+| `placa`, `confirmada`, `acordo` | idênticos — o consenso considera as fotos das duas |
+| `frame_url` | o quadro de onde saiu a placa lida |
+| `camera_id` | a câmera que **leu** a placa (antes: a única do bico) |
+
+E aparecem dois campos novos, **puramente informativos** (pode ignorá-los):
+
+```json
+{
+  "n_cameras_votando": 2,
+  "fontes": [
+    {"camera_id": 3, "papel": "traseira", "estado": "abandonada",
+     "motivo": "sem detecção em 2 rodadas (2 foto(s))", "tentativas": 2, "bboxes": 0,
+     "candidatos": 0, "frame_url": "/api/bicos/2/preview.jpg?camera_id=3"},
+    {"camera_id": 4, "papel": "frente", "estado": "usada", "motivo": "",
+     "tentativas": 9, "bboxes": 7, "candidatos": 5,
+     "frame_url": "/api/bicos/2/preview.jpg?camera_id=4"}
+  ],
+  "avisos": []
+}
+```
+
+`avisos` lista problemas que a leitura contornou (ex.: uma das câmeras fora do ar). Uma
+leitura com aviso **e** com `confirmada: true` é uma leitura boa — o aviso é para quem
+cuida da infraestrutura do posto, não motivo para recusar a placa.
+
 ### Sucesso na chamada, mas nenhuma placa encontrada
 
 ```json
@@ -129,6 +166,10 @@ desativado no cadastro também bloqueia a leitura, não só o bico individualmen
 Toda chamada que cai aqui fica registrada no painel **Integração** do servidor,
 mostrando o valor exato recebido.
 
+Num bico de **duas câmeras**, uma câmera desativada ou fora do ar **não** cai aqui: a
+leitura segue com a que funciona e devolve `200` com a placa, registrando o problema em
+`avisos`. O `404` só acontece quando **nenhuma** das câmeras do bico está utilizável.
+
 ### Câmera não respondeu
 
 ```json
@@ -163,3 +204,5 @@ protege o painel administrativo, não `/api/leitura`.
 Cada posto tem, na tela dele (`/posto/{id}`), um botão **"Testar como o roteador"** —
 ele monta e dispara essa mesma chamada com os dados já cadastrados e mostra a URL
 usada. Serve para validar a integração sem precisar simular um abastecimento real.
+Em bico de duas câmeras, o resultado mostra o quadro de cada uma, marcando qual leu a
+placa e qual não detectou nada — é por ali que se ajusta o enquadramento.

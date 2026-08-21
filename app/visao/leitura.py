@@ -13,9 +13,11 @@ fizer sentido no seu contexto.
 from __future__ import annotations
 import logging
 import re
+import sqlite3
 import threading
 import time
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,12 +32,50 @@ from app.visao import contexto_log
 from app.visao.camera import Camera
 # Alias com underscore: `confirmada` é o nome da variável local em `ler_placa`.
 from app.visao.consenso import confirmada as _confirmada
+from app.visao.detector import deslocar, origem_de_bbox
 from app.visao.pipeline import _expandir_bbox
 from app.visao.validador import parecidas, validar
 
 log = logging.getLogger(__name__)
 
 SNAPSHOT_DIR = Path("app/web/static/snapshots")
+
+# Fora de app/web/static/ DE PROPÓSITO — não é servido por StaticFiles nem cai no bypass
+# de autenticação de `/static/` (app/servidor.py:_AuthMiddleware). O preview de um bico
+# só sai pela rota autenticada GET /api/bicos/{bico_id}/preview.jpg (app/web/api.py), que
+# checa `deps.checar_acesso_empresa` antes de devolver o arquivo.
+#
+# Motivo: `bico_id` é um inteiro sequencial pequeno COMPARTILHADO entre TODOS os clientes
+# do servidor (não há particionamento por tenant no nome do arquivo). Enquanto o preview
+# morava em app/web/static/snapshots/preview_bico_{id}.jpg, bastava iterar `_1.jpg`,
+# `_2.jpg`, `_3.jpg`... sem autenticação nenhuma para ver a foto (com placa) mais recente
+# de qualquer bomba de qualquer posto — vazamento encontrado em 13/08/2026.
+#
+# Os demais arquivos gravados em SNAPSHOT_DIR (`{ts}_{PLACA}.jpg`, `{ts}_{PLACA}_frame.jpg`,
+# gravados mais abaixo, e os do pipeline contínuo em app/visao/pipeline.py) CONTINUAM em
+# app/web/static/snapshots/ — mover esses também exigiria trocar o esquema de URL gravado
+# em `deteccoes.snapshot`/`.frame` (consumido pelo histórico) e o que `app/visao/pipeline.py`
+# grava (fora do escopo desta correção); exigem timestamp+placa para adivinhar, bem menos
+# trivial que iterar um inteiro pequeno. Risco residual, registrado conscientemente.
+PREVIEW_DIR = Path("app/web/dados_privados/snapshots")
+
+
+def caminho_preview_bico(bico_id: int, camera_db_id: int | None = None) -> Path:
+    """Caminho do preview mais recente deste bico (sobrescrito a cada leitura).
+
+    Nome segue exatamente o `preview_nome` que os dois chamadores de `ler_placa`
+    (app/web/leitura.py e app/web/cadastro.py) sempre passam: `f"preview_bico_{bico_id}"`.
+    Usado pela rota autenticada em app/web/api.py para servir o arquivo com controle de
+    acesso — ver o comentário de `PREVIEW_DIR` acima.
+
+    Sem `camera_db_id`: o preview CANÔNICO, o quadro de onde saiu a placa eleita — é o que
+    `frame_url` aponta e o que o roteador sempre recebeu. Com `camera_db_id`: o quadro
+    daquela câmera específica, que só existe em bico de duas câmeras e serve para o
+    operador conferir o enquadramento das duas de uma vez.
+    """
+    if camera_db_id is None:
+        return PREVIEW_DIR / f"preview_bico_{bico_id}.jpg"
+    return PREVIEW_DIR / f"preview_bico_{bico_id}_cam{camera_db_id}.jpg"
 
 
 @dataclass
@@ -72,6 +112,54 @@ class LeituraError(Exception):
         super().__init__(mensagem)
         self.status = status
         self.mensagem = mensagem
+
+
+class BancoIndisponivelError(LeituraError):
+    """`sqlite3.OperationalError` ("database is locked") que sobreviveu a `_com_retry_lock`.
+
+    Subclasse de `LeituraError` DE PROPÓSITO: o `except leitura.LeituraError` que já
+    existe em `app/web/leitura.py:leitura_reativa` passa a cobrir este caso também, sem
+    precisar de um segundo bloco `except` — a tentativa continua sendo registrada em
+    `chamadas` (auditoria) antes do erro HTTP ser devolvido ao roteador, exatamente como
+    já acontece hoje para falha de câmera/OCR. Sem essa subclasse, o `OperationalError`
+    cru subia direto do `_ler_placa`, pulava o único `except` da rota, e a tentativa
+    nunca virava linha na tabela `chamadas` — falha silenciosa no fluxo de cobrança.
+    """
+
+
+# Backoff entre tentativas de escrita quando o banco está com lock passageiro (a purga
+# diária de retenção, app/operacao/retencao.py, pode segurar uma transação de escrita
+# além do busy_timeout de 10s — app/core/banco/_base.py). Curto de propósito: é só para
+# o caso comum de a transação concorrente liberar o lock enquanto esperamos — não é uma
+# tentativa de esperar o `busy_timeout` (10s) inteiro de novo em loop.
+_RETRY_BACKOFF_SEG: tuple[float, ...] = (0.2, 0.5, 1.0)
+
+
+def _com_retry_lock(operacao: Callable[[], object], contexto: str) -> object:
+    """Executa uma escrita de banco tolerando "database is locked" passageiro.
+
+    Só absorve ESSE erro específico (mensagem contém "locked", case-insensitive) — até
+    `len(_RETRY_BACKOFF_SEG)` tentativas extras, além da primeira. Qualquer outra
+    exceção (inclusive outro `sqlite3.OperationalError`, ex.: "no such table") sobe na
+    hora, sem mascarar bug nenhum. Se todas as tentativas se esgotarem, levanta
+    `BancoIndisponivelError` — nunca finge sucesso.
+    """
+    ultimo_erro: sqlite3.OperationalError | None = None
+    total_tentativas = 1 + len(_RETRY_BACKOFF_SEG)
+    for tentativa, espera in enumerate((0.0, *_RETRY_BACKOFF_SEG), start=1):
+        if espera:
+            time.sleep(espera)
+        try:
+            return operacao()
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e).lower():
+                raise
+            ultimo_erro = e
+            log.warning("Banco travado ao %s (tentativa %d/%d): %s",
+                        contexto, tentativa, total_tentativas, e)
+    raise BancoIndisponivelError(
+        503, f"Banco de dados indisponível ao {contexto} — tente novamente em instantes.",
+    ) from ultimo_erro
 
 
 # Posições esperadas por formato (L=letra, D=dígito). Mercosul: pos-5 é LETRA.
@@ -189,13 +277,26 @@ def _mesclar_com_anterior(melhor: dict, anterior: dict) -> dict:
     if v:
         fundido["padrao"] = v[1]
     fundido["confianca"] = round(max(melhor["confianca"], anterior["confianca"]), 3)
+    # Herda o BLOCO inteiro (tipo + sinal cru) quando esta leitura não conseguiu estimar.
+    # A leitura reativa recorta pela ROI do bico, então o estágio de veículo às vezes vê só
+    # um pedaço do carro e devolve None, enquanto a linha absorvida — vinda do pipeline,
+    # que viu o quadro inteiro — costuma ter o tipo. Mesmo raciocínio do CASE WHEN de
+    # `atualizar_deteccao`, aplicado ao caminho que APAGA a linha anterior em vez de
+    # atualizá-la: os quatro campos se movem juntos, nunca um sem os outros três — senão
+    # `tipo_veiculo` herdaria do anterior enquanto `veiculo_classe` ficaria da leitura
+    # atual, tipo de um veículo com sinal cru de outro.
+    if fundido.get("tipo_veiculo") is None:
+        fundido["tipo_veiculo"] = anterior.get("tipo_veiculo")
+        fundido["veiculo_classe"] = anterior.get("veiculo_classe")
+        fundido["veiculo_conf"] = anterior.get("veiculo_conf")
+        fundido["tipo_veiculo_fonte"] = anterior.get("tipo_veiculo_fonte")
     return fundido
 
 
 def _mesclar_com_historico(
     melhor: dict,
     bico_id: int,
-    camera_id: int,
+    camera_ids: list[int],
     origem: str,
     cooldown_seg: float,
 ) -> tuple[dict, int | None]:
@@ -227,15 +328,25 @@ def _mesclar_com_historico(
     if anterior and parecidas(anterior["placa"], melhor["placa"], max_diff=3):
         return _mesclar_com_anterior(melhor, anterior), anterior["id"]
 
-    # Sem match no mesmo bico: cruza com o 'pipeline' (monitoramento contínuo da MESMA
-    # câmera física, sem bico_id) — o mesmo veículo é comum aparecer nos dois quase ao
+    # Sem match no mesmo bico: cruza com o 'pipeline' (monitoramento contínuo das MESMAS
+    # câmeras físicas, sem bico_id) — o mesmo veículo é comum aparecer nos dois quase ao
     # mesmo tempo. A leitura reativa é o evento com significado de negócio (ligada ao
     # bico), então ABSORVE o 'pipeline' em vez do contrário: some com aquela linha e
     # grava só a reativa.
-    pipeline_anterior = banco.ultima_deteccao_camera(camera_id, desde, origem="pipeline")
-    if pipeline_anterior and parecidas(pipeline_anterior["placa"], melhor["placa"], max_diff=3):
-        melhor = _mesclar_com_anterior(melhor, pipeline_anterior)
-        banco.remover_deteccao(pipeline_anterior["id"])
+    #
+    # Varre TODAS as câmeras do bico: com duas, o mesmo carro gera uma detecção contínua
+    # em cada uma. Absorver só a de uma câmera deixaria a outra órfã no histórico — o
+    # mesmo veículo apareceria duas vezes, que é exatamente o que esta regra existe para
+    # impedir.
+    for cid in camera_ids:
+        pipeline_anterior = banco.ultima_deteccao_camera(cid, desde, origem="pipeline")
+        if pipeline_anterior and parecidas(pipeline_anterior["placa"], melhor["placa"], max_diff=3):
+            melhor = _mesclar_com_anterior(melhor, pipeline_anterior)
+            # `_id=` amarra o valor AGORA: sem o argumento padrão, todas as lambdas do
+            # laço compartilhariam o mesmo `pipeline_anterior` e apagariam a última linha
+            # várias vezes em vez de uma linha por câmera.
+            _com_retry_lock(lambda _id=pipeline_anterior["id"]: banco.remover_deteccao(_id),
+                            "remover detecção anterior absorvida")
     return melhor, None
 
 
@@ -250,7 +361,9 @@ def _detectar(det_inst, frame, roi: dict | None, lock: threading.Lock):
             return []
         with lock:
             bboxes_roi = det_inst.detectar(frame_det)
-        return [(x + rx, y + ry, w, h, c) for x, y, w, h, c in bboxes_roi]
+        # `deslocar` e não uma comprehension crua: remontar a tupla descartaria o
+        # `tipo_veiculo` que o 2 estágios anexou à bbox.
+        return [deslocar(b, rx, ry) for b in bboxes_roi]
     with lock:
         return det_inst.detectar(frame)
 
@@ -267,6 +380,14 @@ def _detectar(det_inst, frame, roi: dict | None, lock: threading.Lock):
 # Com o padrão de 28s isso estoura a tolerância de ~25-30s do roteador. Mitigações se
 # isso aparecer em campo: baixar `leitura_timeout_seg`, ou dar um timeout de aquisição
 # ao lock e responder 503 rápido em vez de enfileirar.
+#
+# ORDEM DE AQUISIÇÃO: um bico com duas câmeras pega DOIS locks, e aí a ordem passa a
+# importar. Dois bicos cadastrados com o mesmo par de câmeras em ordens opostas
+# (bico A = [3, 4], bico B = [4, 3]) travariam um ao outro para sempre se cada um
+# pegasse na ordem da própria lista. `_adquirir_locks` sempre ordena por `camera_id`
+# crescente — ordem total sobre o recurso, que é o que elimina o ciclo. Os outros
+# detentores destes locks (pipeline.iniciar/reconexão, snapshot do editor de áreas,
+# captura de dataset) pegam exatamente UM lock cada e não podem fechar ciclo.
 _locks_camera: dict[int, threading.Lock] = {}
 _locks_camera_guarda = threading.Lock()
 
@@ -286,39 +407,335 @@ def lock_camera(camera_id: int) -> threading.Lock:
     return _obter_lock_camera(camera_id)
 
 
+# ── Fontes de imagem de um bico ──────────────────────────────────────────────
+# Um bico enxerga o veículo por 1 ou 2 câmeras (traseira/frente). A segunda existe porque
+# a câmera fica elevada: com estepe/roda na traseira, a placa traseira não aparece em
+# pixel nenhum, e nenhum ajuste de OCR resolve isso — só outro ângulo.
+#
+# As duas alimentam UM pool de candidatos e UM orçamento de tempo, não duas leituras: o
+# consenso (`_eleger_placa`) é agnóstico a de qual câmera veio cada voto, e dois ângulos
+# diferentes são evidência mais independente que dois frames seguidos da mesma câmera.
+# Duas chamadas separadas custariam 2x `leitura_timeout_seg` (estourando a tolerância do
+# roteador) e ainda disputariam a gravação no histórico, duplicando o veículo.
+
+# Rodadas do round-robin antes de poder abandonar uma câmera improdutiva. Duas dá a cada
+# câmera pelo menos 2 fotos — o bastante para não descartar uma por causa de um único
+# frame borrado, e barato perto do orçamento total.
+RODADAS_MINIMAS = 2
+
+
+@dataclass
+class FonteLeitura:
+    """Uma câmera do bico, com tudo que o laço precisa para tirar foto dela."""
+
+    camera_id: int
+    papel: str                                  # 'traseira' | 'frente' — rótulo, não regra
+    especificacao: EspecificacaoCamera
+    roi: dict | None                            # em coordenadas do frame DESTA câmera
+    provider: Callable[[], np.ndarray | None] | None = None
+
+    # Preenchidos na abertura (`_abrir_fontes`: sonda o pipeline, pega o lock, conecta)
+    usar_pipeline: bool = False
+    camera_direta: Camera | None = None
+    ajustador: object | None = None
+    lock: threading.Lock | None = None
+    lock_adquirido: bool = False
+    frame_inicial: np.ndarray | None = None
+    erro: str | None = None
+
+    # Estado do laço
+    ativa: bool = True
+    motivo_inativa: str = ""
+    tentativas: int = 0
+    bboxes: int = 0
+    candidatos: int = 0
+    ultimo_ts: float = 0.0
+    frame_principal: np.ndarray | None = None
+    nitidez_principal: float = -1.0
+
+    @property
+    def rotulo(self) -> str:
+        return f"cam{self.camera_id} ({self.papel})"
+
+    def estado(self) -> str:
+        if self.erro is not None:
+            return "indisponivel"
+        return "abandonada" if not self.ativa else "usada"
+
+
+def _adquirir_locks(fontes: list[FonteLeitura], espera_seg: float) -> None:
+    """Adquire o lock das fontes que abrem conexão direta, em ordem de `camera_id`.
+
+    Com UMA fonte a espera é bloqueante, exatamente como sempre foi. Com duas, esperar
+    indefinidamente pelos dois locks faria um bico de duas câmeras travar um bico vizinho
+    que só compartilha a SECUNDÁRIA — a feature pioraria quem não a usa. Então cada lock
+    tem um teto de espera e, estourando, aquela fonte sai da leitura (a outra resolve).
+    Se nenhuma for adquirida, volta ao comportamento bloqueante de sempre em vez de
+    desistir: uma leitura lenta ainda é melhor que erro.
+    """
+    diretas = sorted([f for f in fontes if f.lock is not None], key=lambda f: f.camera_id)
+    if not diretas:
+        return
+    if len(diretas) == 1:
+        diretas[0].lock.acquire()
+        diretas[0].lock_adquirido = True
+        return
+
+    for f in diretas:
+        if f.lock.acquire(timeout=espera_seg):
+            f.lock_adquirido = True
+        else:
+            f.ativa = False
+            f.erro = "câmera ocupada por outra leitura em andamento"
+            log.warning("%s: lock não adquirido em %.1fs — fonte fora desta leitura",
+                        f.rotulo, espera_seg)
+
+    if not any(f.lock_adquirido for f in diretas):
+        primeira = diretas[0]
+        primeira.lock.acquire()
+        primeira.lock_adquirido = True
+        primeira.ativa = True
+        primeira.erro = None
+
+
+def _sondar_pipeline(f: FonteLeitura, cfg: dict) -> None:
+    """FASE 1 da abertura: descobre se esta fonte pode reusar o frame do pipeline contínuo.
+
+    Roda ANTES de qualquer lock ser adquirido, e é de propósito: só depois de chamar o
+    provider se sabe se a fonte vai abrir conexão RTSP própria (o pipeline pode estar
+    reconectando e devolver None, caindo para conexão direta). Decidir o lock antes desta
+    sondagem deixaria a conexão direta desse caso SEM serialização — e a câmera Intelbras
+    aceita uma conexão só, então uma segunda tentativa simplesmente falha.
+
+    NUNCA levanta: o provider é código de rede e um erro dele apenas significa "sem frame
+    do pipeline", que tem tratamento (cair para conexão direta).
+    """
+    deteccao_auto = cfg.get("deteccao_automatica", "sim").lower() in ("sim", "true", "1")
+    f.usar_pipeline = f.provider is not None and deteccao_auto
+    if not f.usar_pipeline:
+        return
+    try:
+        f.frame_inicial = f.provider()
+    except Exception as e:
+        log.warning("%s: provider do pipeline falhou (%s) — usando conexão direta",
+                    f.rotulo, e)
+        f.frame_inicial = None
+    if f.frame_inicial is None:
+        f.usar_pipeline = False      # daqui em diante esta fonte PRECISA de lock
+
+
+def _abrir_uma(f: FonteLeitura, cfg: dict) -> None:
+    """FASE 2 da abertura: abre a conexão RTSP direta desta fonte. NUNCA levanta.
+
+    Só é chamada para fontes que a sondagem marcou como `usar_pipeline = False`, e sempre
+    com o lock daquela câmera já adquirido.
+
+    Falha vira `f.erro` + `f.ativa = False`, porque quem decide se a leitura inteira
+    fracassou é o orquestrador — com duas câmeras, perder uma é degradação, não erro.
+    """
+    try:
+        if f.usar_pipeline:
+            return
+
+        # O pipeline contínuo já aplica AjustadorAmbiente antes de publicar o frame
+        # "limpo"; a conexão DIRETA não passava por ajuste nenhum, e é justamente nesses
+        # momentos de instabilidade que robustez a iluminação mais importaria.
+        from app.visao.ambiente import AjustadorAmbiente
+        f.ajustador = AjustadorAmbiente(cfg, camera_db_id=f.camera_id)
+
+        intelbras = {
+            "host": f.especificacao.intelbras_host,
+            "porta": f.especificacao.intelbras_porta,
+            "usuario": f.especificacao.intelbras_usuario,
+            "senha": f.especificacao.intelbras_senha,
+            "canal": f.especificacao.intelbras_canal,
+            "subtype": f.especificacao.intelbras_subtype,
+            "formato": f.especificacao.intelbras_formato,
+            "rtsp_transporte": cfg.get("rtsp_transporte", "tcp"),
+        }
+        if f.especificacao.rtsp_url_custom:
+            intelbras["host"] = ""
+        try:
+            f.camera_direta = Camera(
+                tipo=f.especificacao.camera_tipo,
+                indice=f.especificacao.rtsp_url_custom or f.especificacao.camera_indice,
+                largura=int(cfg.get("camera_largura", "1280")),
+                altura=int(cfg.get("camera_altura", "720")),
+                fps=int(cfg.get("camera_fps", "15")),
+                intelbras=intelbras,
+            )
+            f.camera_direta.abrir()
+        except Exception as e:
+            log.warning("ler-placa %s: %s", f.rotulo, e)
+            host = f.especificacao.intelbras_host or f.especificacao.rtsp_url_custom
+            # Remove credenciais de URLs RTSP antes de expor na mensagem de erro
+            host_safe = re.sub(r"(rtsp?://)[^@]+@", r"\1***:***@", host)
+            detalhe = f" ({host_safe})" if host_safe else ""
+            f.erro = (f"não foi possível conectar via RTSP{detalhe} — verifique IP/host, "
+                      "porta, usuário e senha")
+            f.ativa = False
+            return
+
+        # Aguarda o primeiro frame válido (até 15s)
+        for _ in range(150):
+            f.frame_inicial = f.camera_direta.ler()
+            if f.frame_inicial is not None:
+                break
+            time.sleep(0.1)
+        if f.frame_inicial is None:
+            f.camera_direta.fechar()
+            f.camera_direta = None
+            f.erro = "câmera conectou mas não enviou frames"
+            f.ativa = False
+            return
+        if f.ajustador is not None and f.ajustador.ativo:
+            f.frame_inicial = f.ajustador.processar(f.frame_inicial)
+    except Exception as e:                       # rede/driver imprevisível: degrada, não derruba
+        log.warning("ler-placa %s: falha inesperada ao abrir: %s", f.rotulo, e)
+        f.erro = f"falha ao abrir a câmera: {e}"
+        f.ativa = False
+
+
+def _em_paralelo(fontes: list[FonteLeitura], etapa, cfg: dict) -> None:
+    """Roda `etapa(fonte, cfg)` em todas as fontes; com mais de uma, EM PARALELO.
+
+    Não é otimização, é requisito de orçamento: em série, o `provider` de cada fonte pode
+    esperar até 20s pelo primeiro frame de um pipeline aquecendo (e uma conexão RTSP nova
+    custa 2-3s). Duas fontes em série já estouram sozinhas os 28s da chamada, sem ter
+    analisado uma única foto. É espera de I/O pura — a inferência continua serializada
+    pelos locks globais de detector/OCR, e nada aqui os toca.
+    """
+    if not fontes:
+        return
+    if len(fontes) == 1:
+        etapa(fontes[0], cfg)          # inline: sem thread, rastro de pilha igual ao de sempre
+        return
+
+    # `contexto_log` vive em threading.local e NÃO é herdado por thread nova — sem
+    # capturar/herdar, tudo que a abertura logar sai sem dono no arquivo compartilhado
+    # com os pipelines contínuos.
+    ctx = contexto_log.capturar()
+
+    def _com_contexto(f: FonteLeitura) -> None:
+        with contexto_log.herdar(ctx), contexto_log.usar(camera=f.camera_id):
+            etapa(f, cfg)
+
+    with ThreadPoolExecutor(max_workers=len(fontes)) as executor:
+        # As etapas não levantam, mas o `.result()` de todos é obrigatório: uma thread
+        # abandonada terminaria depois com uma conexão RTSP aberta e um lock preso para
+        # sempre. Os tetos de tempo moram DENTRO de cada worker, nunca neste join.
+        for fut in [executor.submit(_com_contexto, f) for f in fontes]:
+            fut.result()
+
+
+def _abrir_fontes(fontes: list[FonteLeitura], cfg: dict, espera_lock: float) -> None:
+    """Prepara todas as fontes para o laço, em duas fases separadas pelo lock.
+
+    A ordem importa e é a razão de existirem duas fases: só depois de sondar o pipeline se
+    sabe QUAIS fontes vão abrir conexão RTSP própria, e o lock dessas tem de ser adquirido
+    ANTES da abertura. Fontes servidas pelo pipeline não abrem conexão e não tomam lock —
+    tomá-lo faria um bico prender a câmera por toda a leitura (até 28s) e travar o coletor
+    de dataset e o snapshot do editor de áreas sem necessidade.
+    """
+    _em_paralelo(fontes, _sondar_pipeline, cfg)
+
+    for f in fontes:
+        if not f.usar_pipeline:
+            f.lock = _obter_lock_camera(f.camera_id)
+    _adquirir_locks(fontes, espera_seg=espera_lock)
+
+    _em_paralelo([f for f in fontes if f.ativa and not f.usar_pipeline], _abrir_uma, cfg)
+
+
+def _liberar_fontes(fontes: list[FonteLeitura]) -> None:
+    """Fecha conexões e solta locks de TODAS as fontes, inclusive as abandonadas.
+
+    Percorre por `lock_adquirido`, não por `ativa`: uma fonte descartada pela regra
+    adaptativa continua segurando a conexão RTSP e o lock até o fim da leitura, e é
+    exatamente ela que ficaria vazando se o critério fosse "ainda está ativa".
+    """
+    for f in fontes:
+        if f.camera_direta is not None:
+            try:
+                f.camera_direta.fechar()
+            except Exception as e:
+                log.warning("%s: falha ao fechar câmera: %s", f.rotulo, e)
+            f.camera_direta = None
+        if f.lock is not None and f.lock_adquirido:
+            f.lock.release()
+            f.lock_adquirido = False
+
+
+def _revisar_fontes(fontes: list[FonteLeitura], rodada: int) -> None:
+    """Abandona a câmera que não está enxergando placa nenhuma, liberando o orçamento.
+
+    É o que transforma a segunda câmera em ganho líquido. Sem isto, um bico de duas
+    câmeras divide o tempo meio a meio — e no caso que motivou a feature (traseira
+    bloqueada pelo estepe) metade do orçamento iria para uma câmera que nunca devolveria
+    nada, deixando a leitura PIOR que com uma câmera só.
+
+    "Produtiva" é `bboxes > 0`, não `candidatos > 0`: o sinal certo para decidir onde
+    gastar tempo é "o enquadramento contém uma placa", que é o que o detector responde.
+    Um recorte que o OCR recusou ainda indica que a placa está ali e que vale insistir —
+    é resolução/nitidez, problema diferente de enquadramento.
+
+    Função pura sobre a lista de propósito: é a regra que decide a leitura inteira e dá
+    para testá-la sem câmera, sem modelo e sem frame.
+    """
+    if rodada < RODADAS_MINIMAS:
+        return
+    ativas = [f for f in fontes if f.ativa]
+    if len(ativas) < 2:
+        return                                   # nunca abandona a última fonte
+    if not any(f.bboxes > 0 for f in ativas):
+        return                                   # todas em zero: não há como discriminar
+    for f in ativas:
+        if f.bboxes == 0:
+            f.ativa = False
+            f.motivo_inativa = (f"sem detecção em {rodada} rodadas "
+                                f"({f.tentativas} foto(s))")
+            log.info("%s: abandonada — %s", f.rotulo, f.motivo_inativa)
+
+
 def ler_placa(**kw) -> dict:
     """Rotula com a câmera de origem tudo que a leitura logar, inclusive o que sai do
     fundo do OCR — sem isso as linhas da leitura reativa entram sem dono no mesmo arquivo
     dos pipelines contínuos. Ver app/visao/contexto_log.py. Envelope fino de propósito:
     o corpo é keyword-only, então não há assinatura para duplicar aqui."""
-    with contexto_log.usar(camera=kw.get("camera_id")):
+    fontes = kw.get("fontes") or []
+    rotulo = "+".join(str(f.camera_id) for f in fontes) or None
+    with contexto_log.usar(camera=rotulo):
         return _ler_placa(**kw)
 
 
 def _ler_placa(
     *,
-    camera_id: int,
-    especificacao: EspecificacaoCamera,
-    roi: dict | None,
+    fontes: list[FonteLeitura],
     cfg: dict,
-    pipeline_frame_provider: Callable[[], np.ndarray | None] | None = None,
     preview_nome: str,
     bico_id: int | None = None,
     origem: str = "roteador",
+    avisos: list[str] | None = None,
 ) -> dict:
     """Loop de leitura por confiança ("reject-retry", padrão de mercado ALPR): tira fotos
     incrementalmente e para assim que o consenso entre as leituras ficar forte o bastante
     (ou ao atingir o máximo de tentativas/timeout) — em vez de um número fixo de fotos.
 
-    `pipeline_frame_provider`: quando fornecido, tenta reusar o frame LIMPO de um pipeline
-    contínuo já ativo para essa câmera (sem abrir segunda conexão RTSP); cai para conexão
-    direta se `None` ou se o pipeline ainda não tiver frame. O modo reativo multi-tenant
-    passa sempre `None` — a foto tem que ser fresca, tirada agora, nunca reaproveitada.
+    `fontes` são as câmeras do bico (1 ou 2). Elas se REVEZAM no mesmo laço e alimentam um
+    pool único de candidatos, dentro de um único orçamento de tempo — ver o comentário de
+    `FonteLeitura`. Cada fonte traz seu próprio ROI e decide sozinha entre reusar o frame
+    do pipeline contínuo (quando há um ativo naquela câmera) ou abrir conexão RTSP direta.
+
+    `avisos` traz o que já se sabia antes de começar (ex.: uma das câmeras desativada no
+    cadastro); o que falhar durante a abertura é acrescentado aqui dentro.
     """
     from app.visao.detector import obter_detector_leitura, detector_leitura_lock
     from app.visao.ocr import obter_ocr_leitura, ocr_leitura_lock
 
-    deteccao_auto = cfg.get("deteccao_automatica", "sim").lower() in ("sim", "true", "1")
+    if not fontes:
+        raise LeituraError(503, "Nenhuma câmera configurada para este bico.")
+
+    avisos = list(avisos or [])
     n_min = max(1, int(cfg.get("snapshots_votacao", "3")))
     n_max = max(n_min, int(cfg.get("leitura_max_tentativas", "12")))
     timeout_seg = float(cfg.get("leitura_timeout_seg", "6"))
@@ -332,26 +749,21 @@ def _ler_placa(
     # ponta pode passar bem além do configurado sem o laço perceber.
     inicio_absoluto = time.time()
 
-    usar_pipeline = pipeline_frame_provider is not None and deteccao_auto
-    frame_inicial = pipeline_frame_provider() if usar_pipeline else None
-    if usar_pipeline and frame_inicial is None:
-        usar_pipeline = False
+    _abrir_fontes(fontes, cfg, espera_lock=min(5.0, timeout_seg / 4))
 
-    cam_lock = None if usar_pipeline else _obter_lock_camera(camera_id)
-    if cam_lock is not None:
-        cam_lock.acquire()
+    for f in fontes:
+        if f.erro:
+            avisos.append(f"{f.rotulo}: {f.erro}")
+    ativas_iniciais = [f for f in fontes if f.ativa]
+    if not ativas_iniciais:
+        # Só agora é erro de verdade: com duas câmeras, perder uma é degradação — perder
+        # as duas é que deixa a leitura sem nenhuma imagem para analisar.
+        detalhe = "; ".join(f"{f.rotulo}: {f.erro}" for f in fontes if f.erro)
+        _liberar_fontes(fontes)
+        raise LeituraError(503, f"Nenhuma câmera do bico respondeu — {detalhe}")
+    if avisos:
+        log.warning("ler-placa bico_id=%s: seguindo degradado — %s", bico_id, "; ".join(avisos))
 
-    # O pipeline contínuo já aplica AjustadorAmbiente antes de publicar o frame "limpo"
-    # que `pipeline_frame_provider` devolve — mas a conexão DIRETA (usada sempre que o
-    # pipeline não está disponível: câmera reconectando, deteccao_automatica=nao, etc.)
-    # não passava por nenhum ajuste. É justamente nesses momentos de instabilidade que a
-    # robustez a iluminação mais importaria, então instanciamos aqui também.
-    ajustador_ambiente = None
-    if not usar_pipeline:
-        from app.visao.ambiente import AjustadorAmbiente
-        ajustador_ambiente = AjustadorAmbiente(cfg, camera_db_id=camera_id)
-
-    camera_direta: Camera | None = None
     candidatos: list[dict] = []
     # Quantos recortes o DETECTOR entregou ao longo do loop, mesmo os que o OCR recusou.
     # Sem isso, "detector não viu placa nenhuma" e "viu, mas o OCR não leu" chegavam ao
@@ -365,56 +777,6 @@ def _ler_placa(
     inicio = inicio_absoluto
 
     try:
-        if not usar_pipeline:
-            intelbras = {
-                "host": especificacao.intelbras_host,
-                "porta": especificacao.intelbras_porta,
-                "usuario": especificacao.intelbras_usuario,
-                "senha": especificacao.intelbras_senha,
-                "canal": especificacao.intelbras_canal,
-                "subtype": especificacao.intelbras_subtype,
-                "formato": especificacao.intelbras_formato,
-                "rtsp_transporte": cfg.get("rtsp_transporte", "tcp"),
-            }
-            if especificacao.rtsp_url_custom:
-                intelbras["host"] = ""
-            try:
-                camera_direta = Camera(
-                    tipo=especificacao.camera_tipo,
-                    indice=especificacao.rtsp_url_custom or especificacao.camera_indice,
-                    largura=int(cfg.get("camera_largura", "1280")),
-                    altura=int(cfg.get("camera_altura", "720")),
-                    fps=int(cfg.get("camera_fps", "15")),
-                    intelbras=intelbras,
-                )
-                camera_direta.abrir()
-            except Exception as e:
-                log.warning("ler-placa camera_id=%d bico_id=%s: %s", camera_id, bico_id, e)
-                tipo_cam = especificacao.camera_tipo
-                host = especificacao.intelbras_host or especificacao.rtsp_url_custom
-                # Remove credenciais de URLs RTSP antes de expor na mensagem de erro
-                host_safe = re.sub(r"(rtsp?://)[^@]+@", r"\1***:***@", host)
-                if tipo_cam in ("rtsp", "intelbras") or host:
-                    detalhe = f" ({host_safe})" if host_safe else ""
-                    raise LeituraError(
-                        503,
-                        f"Não foi possível conectar à câmera via RTSP{detalhe}. "
-                        "Verifique o IP/host, porta, usuário e senha.",
-                    )
-                raise LeituraError(503, "Falha ao abrir câmera.")
-
-            # Aguarda o primeiro frame válido (até 15s)
-            for _ in range(150):
-                frame_inicial = camera_direta.ler()
-                if frame_inicial is not None:
-                    break
-                time.sleep(0.1)
-            if frame_inicial is None:
-                camera_direta.fechar()
-                raise LeituraError(503, "Câmera conectou mas não enviou frames — verifique a conexão")
-            if ajustador_ambiente is not None and ajustador_ambiente.ativo:
-                frame_inicial = ajustador_ambiente.processar(frame_inicial)
-
         # ── Detector e OCR ────────────────────────────────────────────────────
         # Leitura sob demanda usa componentes de ALTA PRECISÃO, independentes do stream ao
         # vivo: detecção 2 estágios veículo→placa (obter_detector_leitura) + OCR com reforço
@@ -430,88 +792,144 @@ def _ler_placa(
         # (pipeline/lock/conexão) continua contando — ver comentário em `inicio_absoluto`.
         inicio = inicio_absoluto + tempo_carga_modelo
 
-        # ── Loop de leitura: acumula candidatos até o consenso ficar forte ──────
+        # ── Loop de leitura: as fontes se revezam até o consenso ficar forte ────
+        # `tentativas`, `n_max` e `n_min` são GLOBAIS (soma das fontes), não por câmera:
+        # `tentativas` é o tamanho do pool de evidência que `_eleger_placa` vota e o
+        # denominador de `total_snapshots` no contrato. Torná-los por fonte daria 24 fotos
+        # a um bico de duas câmeras e estouraria a tolerância de ~25-30s do roteador de um
+        # jeito invisível no código.
+        cursor = 0
+        rodada = 0
         while tentativas < n_max:
             if time.time() - inicio > timeout_seg:
                 parada_motivo = "timeout"
                 break
 
-            if tentativas == 0:
-                frame = frame_inicial
-            elif usar_pipeline:
-                frame = pipeline_frame_provider()
-            else:
-                frame = camera_direta.ler()
-                if frame is not None and ajustador_ambiente is not None and ajustador_ambiente.ativo:
-                    frame = ajustador_ambiente.processar(frame)
+            ativas = [f for f in fontes if f.ativa]
+            if not ativas:
+                break
+            # Só na virada da rodada é que a lista de ativas é reavaliada — reavaliar a
+            # cada turno mudaria os índices no meio da volta e faria uma fonte perder a vez.
+            if cursor >= len(ativas):
+                cursor = 0
+                rodada += 1
+                _revisar_fontes(fontes, rodada)
+                ativas = [f for f in fontes if f.ativa]
+                if not ativas:
+                    break
+            f = ativas[cursor]
+            cursor += 1
 
+            # Cadência POR FONTE, não por tentativa: o sleep existe para dar tempo de
+            # ESTA câmera publicar um frame novo. Global, com duas fontes cada câmera
+            # seria revisitada com o dobro do intervalo e o total de fotos cairia à toa.
+            # Com uma fonte só, é exatamente o comportamento de sempre.
+            intervalo = 0.15 if f.usar_pipeline else 0.5
+            if f.tentativas:
+                espera = intervalo - (time.time() - f.ultimo_ts)
+                if espera > 0:
+                    time.sleep(espera)
+
+            if f.tentativas == 0 and f.frame_inicial is not None:
+                frame = f.frame_inicial
+            elif f.usar_pipeline:
+                frame = f.provider()
+            else:
+                frame = f.camera_direta.ler() if f.camera_direta is not None else None
+                if frame is not None and f.ajustador is not None and f.ajustador.ativo:
+                    frame = f.ajustador.processar(frame)
+
+            f.ultimo_ts = time.time()
             if frame is None:
-                time.sleep(0.1)
+                # Frame ausente não conta como tentativa nem como voto (o provider do
+                # pipeline devolve None quando ainda não há frame NOVO). Com várias fontes
+                # não dá para dormir aqui: isso pararia o laço inteiro por causa de uma.
+                if len(ativas) == 1:
+                    time.sleep(0.1)
                 continue
             tentativas += 1
+            f.tentativas += 1
 
             # Melhor frame p/ preview = o mais nítido entre os capturados (Laplaciano).
+            # Por FONTE, porque cada câmera tem o seu próprio preview a apresentar.
             cinza = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             nitidez = cv2.Laplacian(cinza, cv2.CV_64F).var()
-            if nitidez > nitidez_principal:
-                nitidez_principal = nitidez
-                frame_principal = frame
+            if nitidez > f.nitidez_principal:
+                f.nitidez_principal = nitidez
+                f.frame_principal = frame
 
             # Locks: det_inst/ocr_inst são instâncias CACHEADAS compartilhadas entre
             # requests concorrentes (2+ bicos podem "Ler Placa" ao mesmo tempo). Em
             # CUDAExecutionProvider (GPU), chamadas concorrentes na mesma sessão onnxruntime
             # podem travar/crashar — o lock serializa só a chamada individual, não o loop
             # inteiro, pra não bloquear um bico pela duração toda da leitura do outro.
-            bboxes = _detectar(det_inst, frame, roi, detector_leitura_lock)
-            bboxes_total += len(bboxes)
-            f_h, f_w = frame.shape[:2]
-            for x, y, w, h, conf_det in bboxes:
-                x, y, w, h = _expandir_bbox(x, y, w, h, f_w, f_h)
-                crop = frame[y: y + h, x: x + w]
-                if crop.size == 0:
-                    continue
-
-                if hasattr(ocr_inst, "ler_detalhado"):
-                    with ocr_leitura_lock:
-                        ocr_res = ocr_inst.ler_detalhado(crop)
-                    if not ocr_res["placa"]:
+            with contexto_log.usar(camera=f.camera_id):
+                bboxes = _detectar(det_inst, frame, f.roi, detector_leitura_lock)
+                bboxes_total += len(bboxes)
+                f.bboxes += len(bboxes)
+                f_h, f_w = frame.shape[:2]
+                for bb in bboxes:
+                    x, y, w, h, conf_det = bb
+                    # Antes de `_expandir_bbox`, que devolve tupla crua e perderia a origem.
+                    origem_tipo = origem_de_bbox(bb)
+                    x, y, w, h = _expandir_bbox(x, y, w, h, f_w, f_h)
+                    crop = frame[y: y + h, x: x + w]
+                    if crop.size == 0:
                         continue
-                    placa      = ocr_res["placa"]
-                    padrao     = ocr_res["padrao"]
-                    conf_ocr   = ocr_res["confianca"]
-                    votos_ocr  = ocr_res["votos"]
-                    total_eng  = ocr_res["total_engines"]
-                    det_ocr    = ocr_res["detalhes"]
-                else:
-                    with ocr_leitura_lock:
-                        texto, conf_ocr = ocr_inst.ler(crop)
-                    resultado = validar(texto)
-                    if not resultado:
-                        continue
-                    placa, padrao = resultado
-                    votos_ocr = 1
-                    total_eng = 1
-                    det_ocr   = [{"engine": getattr(ocr_inst, "engine", "?"), "placa": placa,
-                                   "padrao": padrao, "confianca": round(conf_ocr, 3)}]
 
-                candidatos.append({
-                    "placa":         placa,
-                    "padrao":        padrao,
-                    "confianca":     round((conf_det + conf_ocr) / 2, 3),
-                    "votos_ocr":     votos_ocr,
-                    "total_engines": total_eng,
-                    "detalhes_ocr":  det_ocr,
-                    "crop":          crop,
-                    "bbox":          {"x": x, "y": y, "w": w, "h": h},
-                    "frame":         frame,
-                    "snapshot_idx":  tentativas - 1,
-                    # Estimativa moto/carro do AutoOCR deste crop (None = engine único,
-                    # que não calcula, ou sem header para decidir). Vem por candidato e
-                    # não da última chamada ao OCR porque `_eleger_placa` pode eleger um
-                    # candidato que não é o último analisado — ler o atributo depois do
-                    # laço gravaria o tipo do crop errado.
-                    "tipo_veiculo":  getattr(ocr_inst, "_ultimo_tipo_veiculo", None),
-                })
+                    if hasattr(ocr_inst, "ler_detalhado"):
+                        with ocr_leitura_lock:
+                            ocr_res = ocr_inst.ler_detalhado(crop)
+                        if not ocr_res["placa"]:
+                            continue
+                        placa      = ocr_res["placa"]
+                        padrao     = ocr_res["padrao"]
+                        conf_ocr   = ocr_res["confianca"]
+                        votos_ocr  = ocr_res["votos"]
+                        total_eng  = ocr_res["total_engines"]
+                        det_ocr    = ocr_res["detalhes"]
+                    else:
+                        with ocr_leitura_lock:
+                            texto, conf_ocr = ocr_inst.ler(crop)
+                        resultado = validar(texto)
+                        if not resultado:
+                            continue
+                        placa, padrao = resultado
+                        votos_ocr = 1
+                        total_eng = 1
+                        det_ocr   = [{"engine": getattr(ocr_inst, "engine", "?"), "placa": placa,
+                                       "padrao": padrao, "confianca": round(conf_ocr, 3)}]
+
+                    f.candidatos += 1
+                    candidatos.append({
+                        "placa":         placa,
+                        "padrao":        padrao,
+                        "confianca":     round((conf_det + conf_ocr) / 2, 3),
+                        "votos_ocr":     votos_ocr,
+                        "total_engines": total_eng,
+                        "detalhes_ocr":  det_ocr,
+                        "crop":          crop,
+                        "bbox":          {"x": x, "y": y, "w": w, "h": h},
+                        "frame":         frame,
+                        # De QUAL câmera este voto veio. Sem isto não dá para gravar em
+                        # `deteccoes.camera_db_id` o ângulo que de fato leu a placa, e o
+                        # histórico atribuiria a leitura à câmera errada — que é o que a
+                        # próxima chamada usa para cruzar com o pipeline.
+                        "camera_db_id":  f.camera_id,
+                        "papel":         f.papel,
+                        # Origem do tipo de veículo (classe do YOLOX + sinal cru) desta
+                        # bbox. `tipo_veiculo` é None quando o 2 estágios não rodou, não
+                        # achou veículo, ou a placa veio da varredura em janelas — nunca um
+                        # chute. Vem por candidato e não de um atributo lido depois do laço
+                        # porque `_eleger_placa` pode eleger um candidato que não é o
+                        # último analisado, e aí o tipo gravado seria o de outro recorte (e
+                        # possivelmente outro veículo). Os quatro campos vêm juntos da
+                        # mesma `OrigemTipo` — nunca gravar um sem os outros três.
+                        "tipo_veiculo":        origem_tipo.tipo,
+                        "veiculo_classe":      origem_tipo.classe,
+                        "veiculo_conf":        origem_tipo.conf,
+                        "tipo_veiculo_fonte":  origem_tipo.fonte,
+                    })
 
             # Parada antecipada: só depois do mínimo de fotos, e só se o consenso for forte
             # o bastante (evita parar num acerto isolado de sorte na 1ª foto).
@@ -531,14 +949,17 @@ def _ler_placa(
                         and eleito_parcial["n_votos_snap"] >= 2):
                     parada_motivo = "acordo"
                     break
-
-            if tentativas < n_max:
-                time.sleep(0.15 if usar_pipeline else 0.5)
     finally:
-        if camera_direta is not None:
-            camera_direta.fechar()
-        if cam_lock is not None:
-            cam_lock.release()
+        _liberar_fontes(fontes)
+
+    # Melhor frame entre TODAS as fontes — só para o caso sem placa, onde não há candidato
+    # eleito que aponte um quadro. Guarda também a FONTE dele: o ROI a desenhar é o
+    # daquela câmera, e não o da primeira — pintar o retângulo da traseira no quadro da
+    # frente enganaria exatamente quem está olhando o preview para achar o erro de
+    # enquadramento.
+    com_frame = [f for f in fontes if f.frame_principal is not None]
+    fonte_nitida = max(com_frame, key=lambda f: f.nitidez_principal) if com_frame else None
+    frame_principal = fonte_nitida.frame_principal if fonte_nitida is not None else None
 
     if frame_principal is None:
         # Distingue "a câmera não entregou imagem" de "o tempo acabou antes de tentar" —
@@ -556,34 +977,79 @@ def _ler_placa(
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     melhor = _eleger_placa(candidatos) if candidatos else None
 
+    # Câmera do candidato ELEITO — é ela que vai para o histórico. `.get` com fallback
+    # porque `_mesclar_com_anterior` remonta o dict a partir da leitura anterior e pode
+    # não trazer a chave; gravar None quebraria o cruzamento com o pipeline na chamada
+    # seguinte.
+    camera_eleita = (melhor or {}).get("camera_db_id") or fontes[0].camera_id
+    fonte_eleita = next((f for f in fontes if f.camera_id == camera_eleita), fontes[0])
+
     anterior_id: int | None = None
     if melhor is not None and bico_id is not None:
         melhor, anterior_id = _mesclar_com_historico(
-            melhor, bico_id=bico_id, camera_id=camera_id, origem=origem,
+            melhor, bico_id=bico_id, camera_ids=[f.camera_id for f in fontes], origem=origem,
             cooldown_seg=float(cfg.get("cooldown_seg", "120")),
         )
 
-    # Preview: quando houve leitura, mostra o FRAME DE ONDE a placa vencedora saiu, com a
-    # caixa exata que o OCR usou. Antes rodava uma segunda detecção sobre o frame mais
-    # nítido — custava uma passada inteira do detector e podia desenhar caixa diferente
-    # (ou nenhuma) da que foi realmente lida, o que atrapalha auditar uma leitura errada.
-    if melhor is not None:
-        frame_preview = melhor["frame"].copy()
-        bb = melhor["bbox"]
-        cv2.rectangle(frame_preview, (bb["x"], bb["y"]),
-                      (bb["x"] + bb["w"], bb["y"] + bb["h"]), (0, 200, 255), 2)
-        cv2.putText(frame_preview, melhor["placa"], (bb["x"], max(bb["y"] - 8, 14)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
-    else:
-        frame_preview = frame_principal.copy()
-    # Marca a área do bico, para dar para conferir o enquadramento junto com o resultado
-    if roi:
-        cv2.rectangle(frame_preview, (roi["x"], roi["y"]),
-                      (roi["x"] + roi["w"], roi["y"] + roi["h"]), (120, 120, 120), 1)
+    def _desenhar(frame, roi_fonte, bbox=None, placa=None):
+        """Quadro anotado: caixa do OCR (quando a placa saiu deste frame) + área do bico."""
+        img = frame.copy()
+        if bbox is not None:
+            cv2.rectangle(img, (bbox["x"], bbox["y"]),
+                          (bbox["x"] + bbox["w"], bbox["y"] + bbox["h"]), (0, 200, 255), 2)
+            cv2.putText(img, placa, (bbox["x"], max(bbox["y"] - 8, 14)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
+        # Marca a área do bico, para conferir o enquadramento junto com o resultado
+        if roi_fonte:
+            cv2.rectangle(img, (roi_fonte["x"], roi_fonte["y"]),
+                          (roi_fonte["x"] + roi_fonte["w"], roi_fonte["y"] + roi_fonte["h"]),
+                          (120, 120, 120), 1)
+        return img
 
-    cv2.imwrite(str(SNAPSHOT_DIR / f"{preview_nome}.jpg"), frame_preview,
+    # Preview canônico: quando houve leitura, mostra o FRAME DE ONDE a placa vencedora
+    # saiu, com a caixa exata que o OCR usou. Antes rodava uma segunda detecção sobre o
+    # frame mais nítido — custava uma passada inteira do detector e podia desenhar caixa
+    # diferente (ou nenhuma) da que foi realmente lida, atrapalhando auditar um erro.
+    PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    if melhor is not None:
+        frame_preview = _desenhar(melhor["frame"], fonte_eleita.roi,
+                                  melhor["bbox"], melhor["placa"])
+    else:
+        frame_preview = _desenhar(frame_principal, fonte_nitida.roi)
+    cv2.imwrite(str(PREVIEW_DIR / f"{preview_nome}.jpg"), frame_preview,
                 [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-    frame_url = f"/static/snapshots/{preview_nome}.jpg"
+
+    # Preview POR CÂMERA: com duas, o operador precisa conferir o enquadramento das duas
+    # de uma vez — inclusive (principalmente) o da que não achou nada, que é onde está o
+    # problema a corrigir. Só é gravado quando há mais de uma fonte: com uma, o canônico
+    # acima já é esse quadro e um segundo arquivo idêntico seria só lixo em disco.
+    if len(fontes) > 1:
+        for f in fontes:
+            if f.frame_principal is None:
+                continue
+            usa_bbox = melhor is not None and f.camera_id == camera_eleita
+            img = _desenhar(melhor["frame"] if usa_bbox else f.frame_principal, f.roi,
+                            melhor["bbox"] if usa_bbox else None,
+                            melhor["placa"] if usa_bbox else None)
+            cv2.imwrite(str(caminho_preview_bico(bico_id, f.camera_id)), img,
+                        [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+
+    # Rota autenticada, não URL estática direta — ver o comentário de `PREVIEW_DIR`.
+    # `bico_id` é None só em teoria (os dois chamadores de `ler_placa` sempre o passam,
+    # sincronizado com `preview_nome`); sem ele não há como montar a rota, então o
+    # preview some do payload em vez de apontar para um caminho que não existe mais.
+    frame_url = f"/api/bicos/{bico_id}/preview.jpg" if bico_id is not None else None
+
+    def _resumo_fontes() -> list[dict]:
+        """O que cada câmera contribuiu — é o diagnóstico que a tela do posto e o editor
+        de áreas mostram, e o único jeito de medir em campo se a segunda câmera vale."""
+        return [{
+            "camera_id": f.camera_id, "papel": f.papel, "estado": f.estado(),
+            "motivo": f.erro or f.motivo_inativa or "",
+            "tentativas": f.tentativas, "bboxes": f.bboxes, "candidatos": f.candidatos,
+            "frame_url": (f"/api/bicos/{bico_id}/preview.jpg?camera_id={f.camera_id}"
+                          if bico_id is not None and len(fontes) > 1 else frame_url),
+        } for f in fontes]
 
     # `melhor` só é None quando `candidatos` está vazio (_eleger_placa sempre elege algo a
     # partir de um candidato), então os dois casos de falha se separam por `bboxes_total`:
@@ -595,8 +1061,12 @@ def _ler_placa(
         else:
             mensagem = ("Nenhuma placa detectada nos frames — verifique o enquadramento da "
                         "área do bico e se o veículo aparece dentro dela")
+        # A câmera do quadro que `frame_url` mostra — reportar outra faria o painel
+        # atribuir o preview à câmera errada justamente no caso em que alguém está
+        # olhando para descobrir qual das duas está mal enquadrada.
         return {"placa": None, "mensagem": mensagem, "frame_url": frame_url,
-                "camera_id": camera_id, "bico_id": bico_id, "bboxes_detectadas": bboxes_total,
+                "camera_id": fonte_nitida.camera_id, "bico_id": bico_id,
+                "bboxes_detectadas": bboxes_total, "fontes": _resumo_fontes(), "avisos": avisos,
                 "snapshots_analisados": tentativas, "tentativas": tentativas, "parada_motivo": parada_motivo}
 
     n_votos_snap = melhor.pop("n_votos_snap")
@@ -604,10 +1074,16 @@ def _ler_placa(
 
     confirmada = _confirmada(acordo_final, n_votos_snap, acordo_min, n_min)
 
-    # Tipo estimado do candidato ELEITO (`_eleger_placa` devolve uma cópia dele, então a
-    # chave vem junto). `.get` e não indexação: `_mesclar_com_anterior`/`_mesclar_com_
-    # historico` remontam o dict a partir da leitura anterior e podem não trazer a chave.
+    # Tipo estimado do candidato ELEITO, e o sinal cru por trás dele (`_eleger_placa`
+    # devolve uma cópia do candidato, então as chaves vêm juntas). `.get` e não indexação:
+    # `_mesclar_com_anterior`/`_mesclar_com_historico` remontam o dict a partir da leitura
+    # anterior e podem não trazer as chaves. Os quatro vêm sempre juntos — nunca gravar
+    # `tipo_veiculo` sem o `veiculo_classe`/`veiculo_conf`/`tipo_veiculo_fonte` que o
+    # explicam.
     tipo_veiculo = melhor.get("tipo_veiculo")
+    veiculo_classe = melhor.get("veiculo_classe")
+    veiculo_conf = melhor.get("veiculo_conf")
+    tipo_veiculo_fonte = melhor.get("tipo_veiculo_fonte")
 
     # ── Quadro inteiro desta detecção ─────────────────────────────────────────
     # O preview acima é sobrescrito a cada leitura; aqui guardamos uma cópia com nome
@@ -634,19 +1110,27 @@ def _ler_placa(
     # Se mesclou com a detecção anterior do mesmo bico, ATUALIZA aquela linha em vez de
     # inserir uma nova — o histórico mostra um evento por veículo, não um por chamada.
     if anterior_id is not None:
-        banco.atualizar_deteccao(
+        _com_retry_lock(lambda: banco.atualizar_deteccao(
             anterior_id, placa=melhor["placa"], padrao=melhor["padrao"],
             confianca=melhor["confianca"], snapshot=snapshot_rel, frame=frame_rel,
             acordo=acordo_final, confirmada=confirmada, tipo_veiculo=tipo_veiculo,
-        )
+            veiculo_classe=veiculo_classe, veiculo_conf=veiculo_conf,
+            tipo_veiculo_fonte=tipo_veiculo_fonte,
+        ), "atualizar detecção")
         det_id = anterior_id
     else:
-        det_id = banco.registrar_deteccao(
+        # Câmera da FONTE ELEITA, não da primária: com duas câmeras, gravar a errada faz
+        # a próxima chamada cruzar o pipeline pela câmera errada e duplicar o veículo no
+        # histórico — além de atribuir a leitura ao ângulo que não a produziu.
+        det_id = _com_retry_lock(lambda: banco.registrar_deteccao(
             placa=melhor["placa"], padrao=melhor["padrao"], confianca=melhor["confianca"],
-            snapshot=snapshot_rel, camera_id=especificacao.camera_tipo, bbox=melhor["bbox"],
-            bico_id=bico_id, frame=frame_rel, origem=origem, camera_db_id=camera_id,
+            snapshot=snapshot_rel, camera_id=fonte_eleita.especificacao.camera_tipo,
+            bbox=melhor["bbox"],
+            bico_id=bico_id, frame=frame_rel, origem=origem, camera_db_id=camera_eleita,
             acordo=acordo_final, confirmada=confirmada, tipo_veiculo=tipo_veiculo,
-        )
+            veiculo_classe=veiculo_classe, veiculo_conf=veiculo_conf,
+            tipo_veiculo_fonte=tipo_veiculo_fonte,
+        ), "registrar detecção")
     estado.adicionar_deteccao({
         "id": det_id, "placa": melhor["placa"], "padrao": melhor["padrao"],
         "confianca": melhor["confianca"], "snapshot": snapshot_rel,
@@ -656,15 +1140,26 @@ def _ler_placa(
         "acordo": acordo_final, "confirmada": confirmada,
         "tipo_veiculo": tipo_veiculo,
     })
-    log.info("Ler-placa: %s (%s, conf=%.2f, acordo=%.2f%s, tentativas=%d/%d, parada=%s, ocr=%d/%d, "
-             "camera_id=%d, bico_id=%s)",
+    # Quantas CÂMERAS distintas votaram na placa eleita. Não entra em `_confirmada` de
+    # propósito: mudar política de consenso sem amostra medida é o erro que o AutoOCR já
+    # documenta ter cometido. Fica exposto para dar como medir, em campo, se dois ângulos
+    # concordando valem mais que dois frames do mesmo ângulo — e só depois decidir.
+    n_cameras_votando = len({c["camera_db_id"] for c in candidatos
+                             if c["placa"] == melhor["placa"] and c.get("camera_db_id")})
+
+    log.info("Ler-placa: %s (%s, conf=%.2f, acordo=%.2f%s, tipo=%s, tentativas=%d/%d, parada=%s, "
+             "ocr=%d/%d, camera_id=%d, bico_id=%s, fontes=[%s])",
              melhor["placa"], melhor["padrao"], melhor["confianca"], acordo_final,
              "" if confirmada else " NAO-CONFIRMADA",
+             tipo_veiculo or "nao-estimado",
              tentativas, n_max, parada_motivo, melhor["votos_ocr"], melhor["total_engines"],
-             camera_id, bico_id)
+             camera_eleita, bico_id,
+             ", ".join(f"{f.rotulo} {f.tentativas}f/{f.bboxes}bb/{f.candidatos}c"
+                       f"{'' if f.ativa else ' ABANDONADA'}" for f in fontes))
 
     return {
-        "camera_id":           camera_id,
+        # A câmera de onde saiu a placa eleita — com uma fonte é a de sempre.
+        "camera_id":           camera_eleita,
         "bico_id":             bico_id,
         "placa":               melhor["placa"],
         "padrao":              melhor["padrao"],
@@ -681,4 +1176,7 @@ def _ler_placa(
         "confirmada":          confirmada,
         "parada_motivo":       parada_motivo,
         "tipo_veiculo":        tipo_veiculo,
+        "n_cameras_votando":   n_cameras_votando,
+        "fontes":              _resumo_fontes(),
+        "avisos":              avisos,
     }

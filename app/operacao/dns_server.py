@@ -17,6 +17,7 @@ Permissão no Linux (porta 53 exige privilégio):
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import socket
 import struct
@@ -37,6 +38,21 @@ def _ip_local() -> str:
         return "127.0.0.1"
     finally:
         s.close()
+
+
+def _origem_confiavel(ip: str) -> bool:
+    """True se `ip` pertence a uma faixa privada/local (RFC 1918, loopback, link-local).
+
+    Este servidor faz bind em 0.0.0.0:53 e encaminha queries desconhecidas para o
+    upstream — sem essa checagem, um pacote UDP de origem forjada vindo da internet
+    (porta 53 exposta por erro de firewall) transformaria o processo num open resolver,
+    o desenho clássico usado em ataques de amplificação/reflexão DNS contra terceiros.
+    `is_private` do stdlib já cobre 10/8, 172.16/12, 192.168/16, 127/8 e 169.254/16.
+    """
+    try:
+        return ipaddress.ip_address(ip).is_private
+    except ValueError:
+        return False
 
 
 # ── Parsing de pacotes DNS ────────────────────────────────────────────────────
@@ -149,6 +165,14 @@ class DNSServer:
     """
     Servidor DNS UDP leve que resolve o hostname do ALPR para o IP local
     e encaminha todo o restante para o DNS upstream.
+
+    Sem rate-limit por IP (decisão deliberada, não esquecimento): o filtro de origem
+    privada em `_origem_confiavel` já reduz a superfície de abuso a hosts dentro da
+    própria rede local/VPN — não a internet aberta, onde rate-limit por IP importaria
+    para conter um cliente malicioso específico. Dentro da rede confiável, um vizinho
+    malicioso já teria vetores mais diretos que abusar deste resolver; adicionar
+    rate-limit aqui teria custo de código/estado sem reduzir risco real. Se este
+    servidor um dia passar a aceitar origem pública, revisar esta decisão.
     """
 
     def __init__(self) -> None:
@@ -213,6 +237,13 @@ class DNSServer:
             except Exception:
                 break
 
+            if not _origem_confiavel(addr[0]):
+                # Descarta em silêncio — nem NXDOMAIN, nem log fora do nível debug.
+                # Responder qualquer coisa a uma origem não confiável (mesmo um erro)
+                # dá a um atacante externo um oráculo de "a porta 53 está aberta".
+                log.debug("DNS: pacote de origem não privada ignorado: %s", addr[0])
+                continue
+
             try:
                 qname, _ = _parse_qname(data, 12)
                 qname_lower = qname.lower().rstrip(".")
@@ -223,8 +254,17 @@ class DNSServer:
                     log.debug("DNS: %s → %s (cliente: %s)", qname, self._ip, addr[0])
                 else:
                     resp = _encaminhar(data, self._upstream)
-                    if resp:
+                    # Confere que a resposta do upstream tem o mesmo transaction ID
+                    # (primeiros 2 bytes do header, RFC 1035 §4.1.1) do query enviado —
+                    # sem isso, uma resposta forjada/injetada endereçada ao socket
+                    # efêmero usado em `_encaminhar` seria repassada ao cliente como se
+                    # fosse legítima (cache poisoning).
+                    if resp and len(resp) >= 2 and resp[:2] == data[:2]:
                         sock.sendto(resp, addr)
+                    elif resp:
+                        log.warning(
+                            "DNS: resposta do upstream com transaction ID divergente — descartada")
+                        sock.sendto(_build_nxdomain(data), addr)
                     else:
                         sock.sendto(_build_nxdomain(data), addr)
 

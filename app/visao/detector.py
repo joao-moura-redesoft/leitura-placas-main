@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -19,6 +20,105 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 INPUT_SIZE = 640
+
+
+@dataclass(frozen=True, slots=True)
+class OrigemTipo:
+    """De onde veio (ou por que NÃO veio) o tipo do veículo desta placa.
+
+    `deteccoes.tipo_veiculo` é só o veredito ('moto'/'carro'/None); este objeto carrega
+    junto o sinal CRU que o produziu — mesmo precedente de `acordo` (medida) +
+    `confirmada` (veredito congelado) em `app/core/banco/_esquema.py`. Sem o sinal cru,
+    "subir `veiculo_conf` custaria o quê?" e "quanto do NULL é falta de veículo vs. 2
+    estágios desligado?" só têm resposta por palpite.
+
+    `fonte` é o vocabulário gravado em `deteccoes.tipo_veiculo_fonte` — cresce (o replay
+    de `testes/recalcula_tipo_veiculo.py` usa o prefixo `replay:`), por isso é validado em
+    Python (`banco/_deteccoes.py`), não por CHECK de coluna: um CHECK não dá para crescer
+    sem recriar a tabela.
+
+        'veiculo'             classificado a partir de veículo detectado (tipo preenchido)
+        'classe-nao-mapeada'  veículo detectado, classe fora de TIPO_POR_CLASSE (tipo None)
+        'sem-veiculo'         2 estágios rodou, nenhum veículo no quadro (tipo None)
+        'tiles'               placa veio da varredura em janelas — não roda o estágio de
+                              veículo (tipo None)
+        'sem-2-estagios'      detector de 1 estágio (tipo None) — é o default quando a bbox
+                              não carrega o atributo (ver `origem_de_bbox`)
+    """
+    fonte: str
+    tipo: str | None = None
+    classe: int | None = None
+    conf: float | None = None
+
+    @classmethod
+    def de_classe(cls, classe: int, conf: float) -> "OrigemTipo":
+        """A partir da classe COCO crua de um veículo detectado."""
+        tipo = VehicleDetector.TIPO_POR_CLASSE.get(classe)
+        fonte = "veiculo" if tipo is not None else "classe-nao-mapeada"
+        return cls(fonte=fonte, tipo=tipo, classe=classe, conf=conf)
+
+
+# Singletons dos casos sem veículo — frozen, então seguros para reusar em toda detecção.
+SEM_VEICULO = OrigemTipo(fonte="sem-veiculo")
+TILES = OrigemTipo(fonte="tiles")
+SEM_2_ESTAGIOS = OrigemTipo(fonte="sem-2-estagios")
+
+
+class BBoxPlaca(tuple):
+    """Bbox de placa `(x, y, w, h, conf)` que carrega, à parte, a origem do tipo do veículo.
+
+    Subclasse de `tuple` de tamanho 5 DE PROPÓSITO, e não uma 6-tupla: todo consumidor
+    desempacota cinco posicionalmente (`pipeline._processar_classico`, `leitura._ler_placa`,
+    `Tracker.update`, o harness de acurácia, os dublês de teste) e alguns comparam o
+    resultado com tupla crua por igualdade. Assim a origem viaja POR PLACA sem que nada
+    disso mude.
+
+    Por que por placa, e não num atributo do detector: um quadro de posto tem 2 a 4
+    veículos, então `self._ultima_origem` responderia sempre pelo último do laço. E o
+    detector de leitura é um singleton cacheado cujo lock é solto antes de quem chamou ler
+    o atributo — com duas câmeras, uma leria o valor da outra.
+
+    `origem` é `None` em toda bbox que NÃO saiu de dentro de um veículo detectado
+    (fallback do 2 estágios, varredura em janelas, detector de 1 estágio) — use
+    `origem_de_bbox()`/`tipo_de_bbox()`, que tratam essa ausência como `SEM_2_ESTAGIOS`.
+    Nunca 'carro' por omissão.
+
+    Reconstruir a tupla DESCARTA o atributo (`tuple(bb)`, `(bb[0] + dx, ...)`); use
+    `deslocar()`. O modo de falha é degradar para "não estimado", nunca inventar tipo.
+
+    `__slots__` não é possível aqui: `nonempty __slots__ not supported for subtype of
+    'tuple'`. O `__dict__` custa 16 bytes por bbox.
+    """
+
+    def __new__(cls, x, y, w, h, conf, origem: OrigemTipo | None = None):
+        obj = super().__new__(cls, (int(x), int(y), int(w), int(h), float(conf)))
+        obj.origem = origem
+        return obj
+
+
+def origem_de_bbox(bb) -> OrigemTipo:
+    """Origem do tipo de veículo desta bbox — nunca None.
+
+    `getattr` e não atributo direto porque tupla crua é entrada legítima: detector de 1
+    estágio, busca em janelas e dublês de teste devolvem tuplas comuns, e a ausência do
+    atributo (ou o valor `None` explícito) significa honestamente `SEM_2_ESTAGIOS`.
+    """
+    return getattr(bb, "origem", None) or SEM_2_ESTAGIOS
+
+
+def tipo_de_bbox(bb) -> str | None:
+    """Tipo do veículo de uma bbox, ou None. Atalho sobre `origem_de_bbox(bb).tipo`."""
+    return origem_de_bbox(bb).tipo
+
+
+def deslocar(bb, dx: int, dy: int) -> BBoxPlaca:
+    """Bbox transladada PRESERVANDO a origem do tipo.
+
+    O recorte por ROI acontece em dois caminhos (`Pipeline._processar_frame` e
+    `leitura._detectar`) e a comprehension crua que existia nos dois — `[(x + rx, y + ry,
+    w, h, c) for ...]` — descartava o atributo em silêncio.
+    """
+    return BBoxPlaca(bb[0] + dx, bb[1] + dy, bb[2], bb[3], bb[4], getattr(bb, "origem", None))
 
 
 class Detector:
@@ -276,6 +376,18 @@ class VehicleDetector:
         2: "car", 3: "motorcycle", 5: "bus", 7: "truck",
     }
 
+    # Classe COCO → `deteccoes.tipo_veiculo`. A pergunta num posto é duas rodas vs quatro
+    # (o bico, o abastecimento, o layout da placa), então ônibus e caminhão entram como
+    # 'carro' em vez de virarem categoria própria: o YOLOX chama picape de `truck`, e
+    # criar 'caminhao' com 4,2% de amostra medida seria calibrar sem medida. Se um dia
+    # houver demanda, é uma linha aqui MAIS quatro pontos que precisam mudar juntos:
+    # validação em `banco/_deteccoes.py` (registrar/atualizar), o filtro SQL do mesmo
+    # arquivo, o `Literal` de `web/api.py` e o <select>+ternário de `historico.html`.
+    #
+    # `.get()` e não indexação: `veiculo_classes` é configurável, e uma classe fora do
+    # mapa (ex.: 1=bicycle) tem que virar None — não estourar dentro do laço de detecção.
+    TIPO_POR_CLASSE = {2: "carro", 3: "moto", 5: "carro", 7: "carro"}
+
     def __init__(self, modelo_path: str, conf: float = 0.4, nms: float = 0.5,
                  classes: frozenset[int] | None = None):
         self.modelo_path = Path(modelo_path)
@@ -318,8 +430,14 @@ class VehicleDetector:
             log.error("Falha ao carregar VehicleDetector (%s) — 2 estágios desativado", e)
             self.sess = None
 
-    def detectar(self, frame) -> list[tuple[int, int, int, int, float]]:
-        """Retorna bboxes de veículo (x,y,w,h,conf) em coordenadas do frame original."""
+    def detectar(self, frame) -> list[tuple[int, int, int, int, float, int]]:
+        """Retorna bboxes de veículo (x,y,w,h,conf,classe_coco) em coords do frame original.
+
+        A classe vem junto porque é o único lugar do sistema que SABE se o veículo é moto
+        ou carro — ela já era calculada aqui (o argmax do modelo) e descartada na saída,
+        e o tipo acabava sendo readivinhado depois pelo aspecto do recorte da placa, que
+        mede a folga do detector e não a diagramação da placa.
+        """
         if self.sess is None or frame is None or frame.size == 0:
             return []
         try:
@@ -328,7 +446,7 @@ class VehicleDetector:
             log.warning("VehicleDetector: falha na inferência (%s)", e)
             return []
 
-    def _inferir(self, frame) -> list[tuple[int, int, int, int, float]]:
+    def _inferir(self, frame) -> list[tuple[int, int, int, int, float, int]]:
         h0, w0 = frame.shape[:2]
         S = self.INPUT_SIZE
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -370,7 +488,7 @@ class VehicleDetector:
             x0, y0 = max(0, int(x0)), max(0, int(y0))
             x1, y1 = min(w0, int(x1)), min(h0, int(y1))
             if x1 > x0 and y1 > y0:
-                resultado.append((x0, y0, x1 - x0, y1 - y0, float(s[i])))
+                resultado.append((x0, y0, x1 - x0, y1 - y0, float(s[i]), int(c[i])))
         return resultado
 
 
@@ -414,14 +532,25 @@ class DetectorDoisEstagios:
         if not veiculos:
             if self.obrigatorio:
                 return []
-            return self.detector_placa.detectar(frame)   # fallback seguro: frame inteiro
+            # Fallback: não houve veículo, logo não há classe para afirmar — `SEM_VEICULO`
+            # é a resposta honesta, e não a ausência silenciosa de atributo (essa
+            # significaria "nem passou pelo 2 estágios", que é uma causa DIFERENTE de
+            # NULL — ver `SEM_2_ESTAGIOS`).
+            return [BBoxPlaca(*b, SEM_VEICULO)
+                    for b in self.detector_placa.detectar(frame)]   # fallback: frame inteiro
 
         if len(veiculos) > self.max_veiculos:
             veiculos = sorted(veiculos, key=lambda v: v[2] * v[3], reverse=True)[: self.max_veiculos]
 
         f_h, f_w = frame.shape[:2]
         placas: list[tuple[int, int, int, int, float]] = []
-        for vx, vy, vw, vh, _vconf in veiculos:
+        for vx, vy, vw, vh, vconf, vcls in veiculos:
+            # A associação placa→tipo é ESTRUTURAL: esta placa foi encontrada dentro do
+            # recorte DESTE veículo. Não é uma contenção geométrica redescoberta depois,
+            # que erraria com veículos sobrepostos.
+            origem = OrigemTipo.de_classe(vcls, vconf)
+            log.debug("Veículo %s (classe %d, conf=%.2f) → tipo_veiculo=%s",
+                      VehicleDetector.CLASSES_COCO.get(vcls, "?"), vcls, vconf, origem.tipo)
             dx, dy = int(vw * self.padding), int(vh * self.padding)
             x0, y0 = max(0, vx - dx), max(0, vy - dy)
             x1, y1 = min(f_w, vx + vw + dx), min(f_h, vy + vh + dy)
@@ -429,7 +558,7 @@ class DetectorDoisEstagios:
             if crop.size == 0:
                 continue
             for px, py, pw, ph, pconf in self.detector_placa.detectar(crop):
-                placas.append((px + x0, py + y0, pw, ph, pconf))
+                placas.append(BBoxPlaca(px + x0, py + y0, pw, ph, pconf, origem))
 
         if len(veiculos) > 1 and len(placas) > 1:
             placas = self._dedup(placas)
@@ -437,7 +566,13 @@ class DetectorDoisEstagios:
 
     @staticmethod
     def _dedup(placas: list[tuple[int, int, int, int, float]]) -> list[tuple[int, int, int, int, float]]:
-        """Remove placas duplicadas de veículos sobrepostos (mantém a de maior confiança)."""
+        """Remove placas duplicadas de veículos sobrepostos (mantém a de maior confiança).
+
+        INVARIANTE: só filtra e ordena, nunca RECONSTRÓI a tupla — é o que preserva o
+        `tipo_veiculo` das `BBoxPlaca`. Trocar isto por uma comprehension que remonte
+        `(x, y, w, h, conf)` derrubaria o tipo em silêncio, e o sintoma apareceria longe
+        daqui: histórico inteiro em "Não estimado".
+        """
         placas = sorted(placas, key=lambda p: -p[4])
         mantidas: list[tuple[int, int, int, int, float]] = []
         for p in placas:
@@ -511,8 +646,15 @@ class BuscaEmTiles:
             return []
         achados = self.detector.detectar(frame)
         if achados:
+            # Caminho normal: repassa intacto o que o 2 estágios devolveu, `BBoxPlaca`
+            # com tipo inclusive. Não remontar as tuplas aqui.
             return achados
 
+        # Daqui para baixo o tipo do veículo é sempre None, de propósito: as janelas rodam
+        # SÓ o estágio de placa (ver o docstring da classe — o estágio de veículo não é
+        # varrido por janela porque, se ele fosse achar o veículo, a passada normal já
+        # teria achado). `TILES`, e não `SEM_VEICULO`: são causas diferentes de NULL — aqui
+        # o estágio de veículo nem chegou a rodar.
         janelas = self._janelas(frame.shape[1], frame.shape[0])
         if not janelas:
             return []
@@ -521,7 +663,7 @@ class BuscaEmTiles:
             if tile.size == 0:
                 continue
             for px, py, pw, ph, pconf in self.detector_tiles.detectar(tile):
-                achados.append((px + x0, py + y0, pw, ph, pconf))
+                achados.append(BBoxPlaca(px + x0, py + y0, pw, ph, pconf, TILES))
 
         if achados:
             log.info("BuscaEmTiles: %d placa(s) recuperada(s) em %d janela(s) — a passada "

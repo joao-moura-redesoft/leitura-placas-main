@@ -7,7 +7,7 @@ import time
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 from app.core import banco
 from app.core import config
@@ -56,9 +56,10 @@ def listar_deteccoes(
     'teste' (só eles) ou 'todas'. `incluir_testes` é o parâmetro antigo equivalente a
     'todas'; continua aceito, mas `origem` tem precedência quando os dois vêm.
 
-    `tipo_veiculo` filtra moto/carro. É a ESTIMATIVA do AutoOCR gravada na leitura, não
-    um cadastro: 'desconhecido' traz as leituras sem estimativa (anteriores à coluna,
-    engine único, ou sem header para decidir) e o default traz todas."""
+    `tipo_veiculo` filtra moto/carro. É a ESTIMATIVA do detector de veículo gravada na
+    leitura, não um cadastro: 'desconhecido' traz as leituras sem estimativa (2 estágios
+    desligado, nenhum veículo detectado no quadro, ou anteriores à troca de fonte) e o
+    default traz todas."""
     empresa_id = _empresa_efetiva(request, empresa_id)
     return banco.listar_deteccoes(placa=placa, desde=desde, ate=ate, limit=limit,
                                   offset=offset, empresa_id=empresa_id, bico_id=bico_id,
@@ -230,7 +231,7 @@ def healthz():
 CHAVES_CONFIG = set(config.PADROES.keys())
 
 # Campos sensíveis — mascarados ao retornar (mas permitidos no POST).
-CHAVES_SENSIVEIS = {"intelbras_senha", "smtp_senha"}
+CHAVES_SENSIVEIS = {"intelbras_senha", "smtp_senha", "api_key"}
 
 
 @router.get("/config", dependencies=[Depends(deps.exigir_admin)])
@@ -370,8 +371,29 @@ def cameras_detalhe(id_: int, request: Request):
     ent = banco.entidades_obter(emp["entidade_id"]) if emp else None
 
     automacoes = {a["id"]: a for a in banco.automacoes_listar()}
-    bicos = [{**b, "automacao_codigo": (automacoes.get(b["automacao_id"]) or {}).get("codigo", "?")}
-             for b in banco.bicos_listar(camera_id=id_)]
+    bicos = []
+    for b in banco.bicos_listar(camera_id=id_):
+        # Um bico de 2 câmeras aparece nos editores das DUAS, e cada editor precisa gravar
+        # no slot certo. Quem resolve isso é o servidor, não o JS: o retângulo está em
+        # coordenadas do frame desta câmera, e deixar o cliente escolher o slot faria a
+        # área ir para a câmera errada sem erro nenhum na hora.
+        segunda = b.get("camera2_id")
+        aqui_e_slot2 = bool(segunda) and segunda == id_
+        outra_id = b["camera_id"] if aqui_e_slot2 else segunda
+        outra = banco.cameras_obter(outra_id) if outra_id else None
+        bicos.append({
+            **b,
+            "automacao_codigo": (automacoes.get(b["automacao_id"]) or {}).get("codigo", "?"),
+            "slot": 2 if aqui_e_slot2 else 1,
+            "roi_nesta_camera": b.get("roi2") if aqui_e_slot2 else b.get("roi"),
+            "papel_nesta_camera": (b.get("papel_camera2") if aqui_e_slot2
+                                   else b.get("papel_camera")) or "traseira",
+            "outra_camera_id": outra_id,
+            "outra_camera_nome": (outra.get("local") or outra.get("nome")) if outra else "",
+            "outra_papel": (b.get("papel_camera") if aqui_e_slot2
+                            else b.get("papel_camera2")) if outra_id else "",
+            "outra_tem_roi": bool(b.get("roi") if aqui_e_slot2 else b.get("roi2")),
+        })
 
     # "ao vivo" é ter IMAGEM saindo, não ter um objeto Pipeline registrado — ver
     # `pipeline.estado_stream`. A tela usava `id in _instancias` e, com
@@ -576,6 +598,43 @@ def debug_ocr_crop():
         _, buf = cv2.imencode(".jpg", ph)
         jpg = buf.tobytes()
     return Response(content=jpg, media_type="image/jpeg")
+
+
+@router.get("/bicos/{bico_id}/preview.jpg")
+def bicos_preview(bico_id: int, request: Request, camera_id: int | None = None):
+    """Última foto de preview (recorte + caixa) da leitura mais recente deste bico —
+    o que a tela do posto e o editor de ROI mostram como "foi isto que a câmera viu".
+
+    Sobrescrita a cada `/api/leitura`/teste manual; não é registro histórico (esse é
+    `snapshot`/`frame` em `deteccoes`, servido por `/static/snapshots`). Fica atrás de
+    autenticação porque `bico_id` é um inteiro sequencial pequeno COMPARTILHADO entre
+    todos os clientes — sem este gate, bastava iterar `/static/snapshots/preview_bico_1.
+    jpg`, `_2.jpg`... para ver a placa mais recente de qualquer posto sem login (por isso
+    o arquivo não mora mais dentro de `app/web/static/` — ver `app/visao/leitura.py:
+    PREVIEW_DIR`).
+
+    Sem `camera_id`: o quadro de onde saiu a placa eleita (o que o roteador sempre
+    recebeu). Com `camera_id`: o quadro daquela câmera do bico, para conferir as duas
+    quando o bico tem duas.
+    """
+    bico = banco.bicos_obter(bico_id)
+    if not bico:
+        raise HTTPException(404, "Não encontrado")
+    automacao = banco.automacoes_obter(bico["automacao_id"])
+    deps.checar_acesso_empresa(request, automacao["empresa_id"] if automacao else None)
+
+    if camera_id is not None and camera_id not in (bico["camera_id"], bico.get("camera2_id")):
+        # Sem esta checagem o parâmetro viraria um seletor de caminho de arquivo dentro de
+        # `dados_privados/` — a mesma classe de falha que motivou tirar o preview de
+        # `static/`: qualquer sessão autenticada leria o preview de qualquer bico.
+        raise HTTPException(404, "Câmera não é deste bico")
+    caminho = leitura.caminho_preview_bico(bico_id, camera_id)
+    if not caminho.exists():
+        raise HTTPException(404, "Sem preview para este bico ainda")
+    # no-store: o arquivo é sobrescrito a cada leitura, e o mesmo nome nunca deve ser
+    # servido do cache (do navegador ou de um proxy) depois que o conteúdo já mudou.
+    return FileResponse(caminho, media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
 
 
 @router.post("/config", dependencies=[Depends(deps.exigir_admin)])

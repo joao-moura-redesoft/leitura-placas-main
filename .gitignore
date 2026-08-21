@@ -25,6 +25,10 @@ models/*.pt
 app/web/static/snapshots/*
 !app/web/static/snapshots/.gitkeep
 
+# Preview de bico (fora de static/ de propósito, ver app/visao/leitura.py:PREVIEW_DIR) —
+# mesma foto de placa, mesmo motivo de não versionar.
+app/web/dados_privados/
+
 # IDE
 .vscode/
 .idea/
@@ -48,6 +52,8 @@ config.txt.*
 testes/resultados/
 testes/log*.txt
 scratch/
+scratch_*.pkl
+out[0-9]*.txt
 
 # Rótulos das cenas reais (avalia_cenas_reais.py): referenciam frames de câmera
 # com pessoas e placas de clientes — ficam só na máquina, como os snapshots.

@@ -312,8 +312,12 @@ def bicos_listar(automacao_id: int | None = None, camera_id: int | None = None) 
         sql += " AND automacao_id=?"
         params.append(automacao_id)
     if camera_id is not None:
-        sql += " AND camera_id=?"
-        params.append(camera_id)
+        # Casa os DOIS slots: um bico usa esta câmera tanto como principal quanto como
+        # segunda. Quem consulta por câmera quer saber "quem depende dela" — o editor de
+        # áreas (para listar os bicos a desenhar) e o guard que impede apagar câmera em
+        # uso. Olhar só `camera_id` deixaria apagar uma câmera usada como secundária.
+        sql += " AND (camera_id=? OR camera2_id=?)"
+        params.extend([camera_id, camera_id])
     sql += " ORDER BY bomba, lado, codigo"
     with cursor() as c:
         return [dict(r) for r in c.execute(sql, params).fetchall()]
@@ -342,14 +346,23 @@ def _bico_bomba_lado(dados: dict) -> tuple[int | None, int | None]:
             int(lado) if lado not in (None, "") else None)
 
 
+def _bico_camera2(dados: dict) -> int | None:
+    """Segunda câmera é opcional: ausente, vazia ou nula significam "bico de uma câmera"."""
+    valor = dados.get("camera2_id")
+    return int(valor) if valor not in (None, "", 0) else None
+
+
 def bicos_inserir(dados: dict) -> int:
     bomba, lado = _bico_bomba_lado(dados)
     with cursor() as c:
         cur = c.execute(
-            """INSERT INTO bicos (automacao_id, codigo, nome, bomba, lado, camera_id, ativo, criado_em)
-               VALUES (?,?,?,?,?,?,?,?)""",
+            """INSERT INTO bicos (automacao_id, codigo, nome, bomba, lado, camera_id,
+                                  papel_camera, camera2_id, papel_camera2, ativo, criado_em)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (int(dados["automacao_id"]), _normalizar_codigo(dados["codigo"]), dados.get("nome", ""),
              bomba, lado, int(dados["camera_id"]),
+             dados.get("papel_camera") or "traseira",
+             _bico_camera2(dados), dados.get("papel_camera2") or "frente",
              1 if dados.get("ativo", True) else 0, _agora()),
         )
         return cur.lastrowid
@@ -357,12 +370,31 @@ def bicos_inserir(dados: dict) -> int:
 
 def bicos_atualizar(id_: int, dados: dict) -> bool:
     bomba, lado = _bico_bomba_lado(dados)
+    camera_id = int(dados["camera_id"])
+    camera2_id = _bico_camera2(dados)
+    # `roi`/`roi2` ficam fora do UPDATE (só os endpoints próprios escrevem neles) com UMA
+    # exceção: trocar (ou remover) a câmera de um slot invalida o retângulo daquele slot,
+    # que está em coordenadas do frame da câmera ANTIGA. Mantê-lo não dá erro nenhum — a
+    # leitura passa a recortar o pedaço errado da imagem nova e o sintoma só aparece
+    # depois, como queda na taxa de acerto daquele bico. Limpar aqui, na mesma transação,
+    # é o que impede um cadastro editado de ficar silenciosamente pior do que estava.
+    atual = bicos_obter(id_)
+    limpar = []
+    if atual is not None:
+        if atual["camera_id"] != camera_id:
+            limpar.append("roi=NULL")
+        if atual.get("camera2_id") != camera2_id:
+            limpar.append("roi2=NULL")
     with cursor() as c:
         cur = c.execute(
-            """UPDATE bicos SET automacao_id=?, codigo=?, nome=?, bomba=?, lado=?, camera_id=?, ativo=?
+            f"""UPDATE bicos SET automacao_id=?, codigo=?, nome=?, bomba=?, lado=?, camera_id=?,
+                                 papel_camera=?, camera2_id=?, papel_camera2=?,
+                                 ativo=?{"".join(", " + s for s in limpar)}
                WHERE id=?""",
             (int(dados["automacao_id"]), _normalizar_codigo(dados["codigo"]), dados.get("nome", ""),
-             bomba, lado, int(dados["camera_id"]),
+             bomba, lado, camera_id,
+             dados.get("papel_camera") or "traseira",
+             camera2_id, dados.get("papel_camera2") or "frente",
              1 if dados.get("ativo", True) else 0, id_),
         )
         return cur.rowcount > 0
@@ -374,14 +406,72 @@ def bicos_remover(id_: int) -> bool:
         return cur.rowcount > 0
 
 
-def bico_salvar_roi(id_: int, roi: dict) -> None:
-    with cursor() as c:
-        c.execute("UPDATE bicos SET roi=? WHERE id=?", (json.dumps(roi), id_))
+# Mapa fechado slot → coluna. O slot chega da requisição HTTP: interpolar o nome da
+# coluna direto no SQL deixaria o cliente escolher onde escrever.
+_COLUNA_ROI = {1: "roi", 2: "roi2"}
 
 
-def bico_limpar_roi(id_: int) -> None:
+def bico_salvar_roi(id_: int, roi: dict, slot: int = 1) -> None:
+    coluna = _COLUNA_ROI[slot]
     with cursor() as c:
-        c.execute("UPDATE bicos SET roi=NULL WHERE id=?", (id_,))
+        c.execute(f"UPDATE bicos SET {coluna}=? WHERE id=?", (json.dumps(roi), id_))
+
+
+def bico_limpar_roi(id_: int, slot: int = 1) -> None:
+    coluna = _COLUNA_ROI[slot]
+    with cursor() as c:
+        c.execute(f"UPDATE bicos SET {coluna}=NULL WHERE id=?", (id_,))
+
+
+def cameras_do_bico(bico: dict) -> tuple[list[dict], list[str], str | None]:
+    """Resolve as câmeras utilizáveis de um bico (1 ou 2), em ordem de slot.
+
+    Devolve `(fontes, avisos, motivo_falha)`:
+
+    - `fontes`: lista de `{"camera", "camera_id", "papel", "roi", "slot"}` — só as câmeras
+      que existem E estão ativas. `camera` é a linha crua da tabela, do jeito que
+      `EspecificacaoCamera.de_camera_db` consome.
+    - `avisos`: texto por câmera descartada, para log e para a resposta do endpoint.
+    - `motivo_falha`: None enquanto sobrar ao menos UMA câmera utilizável.
+
+    DEGRADA em vez de falhar: um bico com duas câmeras que perde uma continua lendo pela
+    outra. A segunda câmera existe para ser rede de segurança — se a ausência dela
+    derrubasse a leitura, ela viraria um ponto de falha novo, o oposto do que motivou
+    a feature. Para bico de UMA câmera nada muda: perder a única é falha total, com os
+    mesmos motivos de sempre.
+
+    Regra única de propósito: `resolver_bico` (fluxo do roteador) e `bico_verificar_ativo`
+    (botão de teste do painel) chamam esta função em vez de repetir a checagem — foi
+    justamente a duplicação dessa regra que deixou o botão de teste driblando o gate de
+    `ativo` no passado.
+    """
+    slots = [(1, bico["camera_id"], bico.get("roi"), bico.get("papel_camera") or "traseira")]
+    if bico.get("camera2_id"):
+        slots.append((2, bico["camera2_id"], bico.get("roi2"),
+                      bico.get("papel_camera2") or "frente"))
+
+    fontes: list[dict] = []
+    avisos: list[str] = []
+    algum_inativo = False
+    for slot, camera_id, roi, papel in slots:
+        camera = cameras_obter(camera_id)
+        if camera is None:
+            avisos.append(f"câmera {camera_id} ({papel}) não existe mais no cadastro")
+            continue
+        if not camera["ativo"]:
+            algum_inativo = True
+            avisos.append(f"câmera '{camera['nome']}' ({papel}) está desativada no cadastro")
+            continue
+        fontes.append({"camera": camera, "camera_id": camera_id,
+                       "papel": papel, "roi": roi, "slot": slot})
+
+    if fontes:
+        return fontes, avisos, None
+    # Sem nenhuma câmera utilizável: "existe mas desativada" e "não existe" pedem
+    # correções opostas (reativar vs. recadastrar), então continuam separadas. O motivo
+    # "bico" para câmera inexistente espelha o comportamento anterior — um bico apontando
+    # para câmera que sumiu é bico quebrado, não câmera desativada.
+    return [], avisos, ("camera_inativa" if algum_inativo else "bico")
 
 
 def resolver_bico(cnpj: str, automacao_codigo: str, bico_codigo: str) -> tuple[dict | None, str | None]:
@@ -422,18 +512,24 @@ def resolver_bico(cnpj: str, automacao_codigo: str, bico_codigo: str) -> tuple[d
     if not bico["ativo"]:
         return None, "bico_inativo"
 
-    camera = cameras_obter(bico["camera_id"])
-    if camera is None:
-        return None, "bico"
-    if not camera["ativo"]:
-        return None, "camera_inativa"
+    fontes, avisos, falha = cameras_do_bico(bico)
+    if falha is not None:
+        return None, falha
 
+    # Os campos achatados (conexão da câmera na raiz, `camera_id`, `roi`) descrevem a
+    # PRIMEIRA câmera utilizável — não necessariamente o slot 1. Assim quem lê o formato
+    # antigo (`EspecificacaoCamera.de_camera_db(reg, cfg)`) recebe sempre uma câmera que
+    # de fato funciona, mesmo quando a do slot 1 caiu. As duas câmeras completas ficam em
+    # `reg["cameras"]`, que é o que o laço de leitura consome.
+    principal = fontes[0]
     reg = {
-        **camera,
-        "camera_id": bico["camera_id"],
+        **principal["camera"],
+        "camera_id": principal["camera_id"],
         "bico_id": bico["id"],
         "bico_codigo": bico["codigo"],
-        "roi": bico["roi"],
+        "roi": principal["roi"],
+        "cameras": fontes,
+        "avisos": avisos,
         "automacao_id": automacao["id"],
         "empresa_id": empresa["id"],
         "entidade_id": empresa["entidade_id"],
@@ -473,10 +569,8 @@ def bico_verificar_ativo(bico_id: int) -> tuple[dict | None, str | None]:
     if entidade is not None and not entidade["ativo"]:
         return None, "entidade_inativa"
 
-    camera = cameras_obter(bico["camera_id"])
-    if camera is None:
-        return None, "bico"
-    if not camera["ativo"]:
-        return None, "camera_inativa"
+    _fontes, _avisos, falha = cameras_do_bico(bico)
+    if falha is not None:
+        return None, falha
 
     return bico, None

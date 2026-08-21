@@ -40,6 +40,22 @@
         <select id="f-camera" required style="width:100%;margin-top:4px"></select>
         <small id="aviso-camera" style="color:#94a3b8;font-weight:normal"></small>
       </label>
+      <label style="display:block;margin-bottom:4px">Papel
+        <select id="f-papel" style="width:100%;margin-top:4px">
+          <option value="traseira">traseira</option><option value="frente">frente</option>
+        </select>
+      </label>
+      <label style="display:block;margin-bottom:4px">Segunda câmera
+        <small style="color:#94a3b8;font-weight:normal"> — opcional, o outro ângulo do veículo</small>
+        <select id="f-camera2" style="width:100%;margin-top:4px"></select>
+      </label>
+      <label style="display:block;margin-bottom:12px">Papel da segunda
+        <select id="f-papel2" style="width:100%;margin-top:4px">
+          <option value="frente">frente</option><option value="traseira">traseira</option>
+        </select>
+        <small style="color:#94a3b8;font-weight:normal">
+          Cada câmera tem a sua própria área de captura — desenhe as duas.</small>
+      </label>
       <label style="display:block;margin-bottom:12px">Código
         <small style="color:#94a3b8;font-weight:normal"> — valor enviado pelo roteador no GET</small>
         <input id="f-codigo" type="text" required style="width:100%;box-sizing:border-box;margin-top:4px">
@@ -106,13 +122,18 @@ async function carregarListas() {
 
 // Só oferece câmeras do MESMO posto da automação escolhida — o servidor rejeita
 // combinações de empresas diferentes, então filtrar aqui evita o erro em vez de explicá-lo.
-function filtrarCameras(camIdSelecionada = null) {
+function filtrarCameras(camIdSelecionada = null, cam2IdSelecionada = null) {
   const autoId = parseInt(document.getElementById('f-automacao').value);
   const auto = _automacoes.find(a => a.id === autoId);
   const doPosto = auto ? _cameras.filter(c => c.empresa_id === auto.empresa_id) : [];
   const sel = document.getElementById('f-camera');
-  sel.innerHTML = doPosto.map(c =>
+  const sel2 = document.getElementById('f-camera2');
+  const opcoes = doPosto.map(c =>
     `<option value="${c.id}">${esc(c.local ? c.local + ' — ' : '')}${esc(c.nome)}</option>`).join('');
+  sel.innerHTML = opcoes;
+  // A segunda é opcional, então ganha a opção vazia — e o mesmo filtro por posto, que é
+  // o que impede apontar o bico de um cliente para a câmera de outro.
+  sel2.innerHTML = '<option value="">— sem segunda câmera —</option>' + opcoes;
   const aviso = document.getElementById('aviso-camera');
   if (!doPosto.length) {
     sel.innerHTML = '<option value="">— nenhuma câmera neste posto —</option>';
@@ -122,6 +143,7 @@ function filtrarCameras(camIdSelecionada = null) {
   } else {
     aviso.textContent = '';
     if (camIdSelecionada) sel.value = camIdSelecionada;
+    sel2.value = cam2IdSelecionada || '';
   }
 }
 
@@ -155,7 +177,10 @@ function renderTabela() {
       <td>${it.lado ?? '—'}</td>
       <td style="font-family:monospace">${esc(it.codigo)}</td>
       <td>${esc(it.nome || '—')}</td>
-      <td>${esc(nomeCamera(it.camera_id))}</td>
+      <td>${esc(nomeCamera(it.camera_id))}
+          <span style="color:#94a3b8;font-size:12px">(${esc(it.papel_camera || 'traseira')})</span>
+          ${it.camera2_id ? `<div>${esc(nomeCamera(it.camera2_id))}
+            <span style="color:#94a3b8;font-size:12px">(${esc(it.papel_camera2 || 'frente')})</span></div>` : ''}</td>
       <td>${ativo}</td>
       <td>
         <a href="/roi-bico/${it.id}" style="display:inline-flex;align-items:center;padding:8px 12px;
@@ -173,7 +198,9 @@ function abrirModal(it = null) {
   document.getElementById('modal-titulo').textContent = it ? 'Editar Bico' : 'Novo Bico';
   document.getElementById('f-id').value = it ? it.id : '';
   document.getElementById('f-automacao').value = it ? it.automacao_id : (FILTRO_AUTOMACAO || '');
-  filtrarCameras(it ? it.camera_id : FILTRO_CAMERA);
+  filtrarCameras(it ? it.camera_id : FILTRO_CAMERA, it ? it.camera2_id : null);
+  document.getElementById('f-papel').value = (it && it.papel_camera) || 'traseira';
+  document.getElementById('f-papel2').value = (it && it.papel_camera2) || 'frente';
   document.getElementById('f-codigo').value = it ? it.codigo : '';
   document.getElementById('f-nome').value = it ? it.nome : '';
   document.getElementById('f-bomba').value = it && it.bomba != null ? it.bomba : '';
@@ -191,9 +218,13 @@ function editar(id) {
 
 async function salvar(e) {
   e.preventDefault();
+  const cam2 = document.getElementById('f-camera2').value;
   const payload = {
     automacao_id: parseInt(document.getElementById('f-automacao').value),
     camera_id: parseInt(document.getElementById('f-camera').value),
+    papel_camera: document.getElementById('f-papel').value,
+    camera2_id: cam2 ? parseInt(cam2) : null,
+    papel_camera2: document.getElementById('f-papel2').value,
     codigo: document.getElementById('f-codigo').value.trim(),
     nome: document.getElementById('f-nome').value.trim(),
     bomba: document.getElementById('f-bomba').value || null,

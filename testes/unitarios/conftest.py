@@ -12,6 +12,7 @@ startup de que os testes dependem.
 from __future__ import annotations
 from pathlib import Path
 
+import cv2
 import pytest
 from fastapi.testclient import TestClient
 
@@ -19,6 +20,20 @@ from app.core import banco, config
 from app.seguranca import limitador
 from app.seguranca import sessao as auth_mod
 from app.seguranca import tentativas
+
+# OpenCV determinístico na suíte, aplicado no import do conftest (antes de qualquer teste
+# tocar em imagem). Sem isto, um módulo que exercita o ajuste de ambiente (CLAHE,
+# bilateralFilter) deixa o pool interno do OpenCV num estado em que a PRÓXIMA chamada de
+# `cv2.cvtColor`, noutro módulo, estoura com "Unknown C++ exception from OpenCV code" —
+# no Windows, e só quando os módulos rodam na mesma sessão, o que fazia o teste passar
+# sozinho e falhar na suíte. Desligar o threading interno e o OpenCL elimina a interação
+# e ainda evita oversubscription de CPU entre os testes. Não muda resultado numérico
+# nenhum: é a mesma implementação, sem paralelismo interno.
+cv2.setNumThreads(0)
+try:
+    cv2.ocl.setUseOpenCL(False)
+except Exception:      # build de OpenCV sem OpenCL — nada a desligar
+    pass
 
 
 @pytest.fixture(autouse=True)
@@ -102,6 +117,27 @@ def posto(admin):
     assert bico.status_code == 200, bico.text
     return {"entidade_id": ent, "empresa_id": emp, "automacao_id": auto,
             "camera_id": cam, "bico_id": bico.json()["id"], "cnpj": "11222333000181"}
+
+
+@pytest.fixture
+def posto_2cam(admin, posto):
+    """O bico da fixture `posto` com uma SEGUNDA câmera (papel 'frente').
+
+    Construída em cima de `posto` em vez de substituí-la: a fixture de uma câmera precisa
+    continuar existindo intacta, porque é ela que prova, no resto da suíte, que o caminho
+    de sempre não mudou quando a segunda câmera entrou no modelo.
+    """
+    cam2 = admin.post("/api/cameras", json={
+        "nome": "Cam 2", "empresa_id": posto["empresa_id"],
+        "camera_tipo": "rtsp", "rtsp_url_custom": "rtsp://x/2",
+    }).json()["id"]
+    r = admin.put(f"/api/bicos/{posto['bico_id']}", json={
+        "automacao_id": posto["automacao_id"], "codigo": "3",
+        "camera_id": posto["camera_id"], "papel_camera": "traseira",
+        "camera2_id": cam2, "papel_camera2": "frente",
+    })
+    assert r.status_code == 200, r.text
+    return {**posto, "camera2_id": cam2}
 
 
 @pytest.fixture

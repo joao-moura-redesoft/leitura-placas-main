@@ -56,6 +56,7 @@ from ._cadastro import (
     bicos_obter_por_codigo,
     bicos_remover,
     cameras_atualizar,
+    cameras_do_bico,
     cameras_inserir,
     cameras_listar,
     cameras_obter,

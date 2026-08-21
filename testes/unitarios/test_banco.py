@@ -227,3 +227,29 @@ class TestAcordoEConfirmacao:
         linha = self._linha(id_)
         assert linha["confirmada"] == 0
         assert linha["acordo"] == 0.40
+
+
+class TestMigracaoDeEsquema:
+    """`_migrar` roda em TODA inicialização (`banco.inicializar()`), inclusive quando o
+    processo reinicia contra um banco JÁ migrado — não existia, até aqui, nenhum teste
+    cobrindo esse caminho: a suíte só exercita 'banco novo' (a fixture `ambiente` chama
+    `inicializar()` uma vez, num `tmp_path` vazio). Um `ALTER TABLE ADD COLUMN` sem o
+    guarda `if "x" not in cols` quebraria com "duplicate column name" só em produção, na
+    segunda inicialização — nunca na suíte.
+    """
+
+    def test_reinicializar_e_idempotente_e_mantem_as_colunas(self, ambiente):
+        # `ambiente` já rodou `banco.inicializar()` uma vez ao montar o banco de teste.
+        # Rodar de novo, contra o MESMO arquivo já migrado, não pode levantar.
+        banco.inicializar()
+        banco.inicializar()
+
+        import sqlite3
+        from app.core.banco import _base
+        con = sqlite3.connect(_base.caminho())
+        try:
+            cols = {row[1] for row in con.execute("PRAGMA table_info(deteccoes)")}
+        finally:
+            con.close()
+        assert {"tipo_veiculo", "veiculo_classe", "veiculo_conf",
+                "tipo_veiculo_fonte", "acordo", "confirmada"} <= cols

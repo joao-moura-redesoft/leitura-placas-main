@@ -15,10 +15,31 @@ from ._base import cursor
 ORIGENS_FILTRO = ("producao", "teste", "todas")
 
 # Tipos de veículo que o histórico sabe filtrar. 'desconhecido' é um filtro de PRIMEIRA
-# CLASSE, e não um resto: a coluna `tipo_veiculo` só passou a existir agora, então toda
-# leitura anterior a ela é NULL, e sem esse valor não haveria como listar justamente as
-# linhas que ninguém consegue classificar. Fundi-las em 'carro' seria inventar dado.
+# CLASSE, e não um resto: NULL é o valor de toda linha em que o detector de veículo não
+# rodou ou não achou veículo (medido: ~21% dos quadros reais), e sem esse filtro não haveria
+# como listar justamente as linhas que ninguém consegue classificar. Fundi-las em 'carro'
+# seria inventar dado.
 TIPOS_VEICULO_FILTRO = ("moto", "carro", "desconhecido", "todos")
+
+# Vocabulário de `tipo_veiculo_fonte` — o MOTIVO por trás do veredito de `tipo_veiculo`,
+# inclusive quando ele é NULL (ver a nota da coluna em `app/core/banco/_esquema.py`).
+# Cresce (o replay de `testes/recalcula_tipo_veiculo.py` usa o prefixo `replay:`), por
+# isso é validado aqui em Python, e não por CHECK de coluna: um CHECK não dá para
+# estender sem recriar a tabela.
+TIPOS_VEICULO_FONTE = ("veiculo", "classe-nao-mapeada", "sem-veiculo", "tiles", "sem-2-estagios")
+
+
+def _validar_tipo_veiculo(tipo_veiculo: str | None) -> None:
+    if tipo_veiculo not in (None, "moto", "carro"):
+        raise ValueError(f"tipo_veiculo inválido: {tipo_veiculo!r}")
+
+
+def _validar_tipo_veiculo_fonte(fonte: str | None) -> None:
+    if fonte is None or fonte in TIPOS_VEICULO_FONTE or fonte.startswith("replay:"):
+        return
+    raise ValueError(
+        f"tipo_veiculo_fonte inválido: {fonte!r} "
+        f"(use {', '.join(TIPOS_VEICULO_FONTE)}, ou o prefixo 'replay:')")
 
 
 def _filtro_tipo_veiculo(tipo: str | None) -> str:
@@ -80,6 +101,9 @@ def registrar_deteccao(
     acordo: float | None = None,
     confirmada: bool | None = None,
     tipo_veiculo: str | None = None,
+    veiculo_classe: int | None = None,
+    veiculo_conf: float | None = None,
+    tipo_veiculo_fonte: str | None = None,
 ) -> int:
     """Registra uma detecção.
 
@@ -93,20 +117,26 @@ def registrar_deteccao(
     marcação existir. Desconhecido nunca deve ser lido como confirmado — por isso a
     coluna admite NULL em vez de assumir um padrão.
 
-    `tipo_veiculo` ('moto'/'carro'/None) é a ESTIMATIVA do AutoOCR, não um cadastro —
-    ver a nota da coluna em `app/core/banco/_esquema.py`. None quando não há estimativa,
-    nunca 'carro' por omissão: o histórico distingue "é carro" de "não sei".
+    `tipo_veiculo` ('moto'/'carro'/None) é a ESTIMATIVA do detector de veículo, não um
+    cadastro — ver a nota da coluna em `app/core/banco/_esquema.py`. None quando não há
+    estimativa, nunca 'carro' por omissão: o histórico distingue "é carro" de "não sei".
+
+    `veiculo_classe`/`veiculo_conf`/`tipo_veiculo_fonte` são o SINAL CRU por trás desse
+    veredito — mesmo precedente de `acordo`+`confirmada`. Os quatro vêm sempre juntos de
+    uma única `OrigemTipo` (`app/visao/detector.py`): quem chama não deve montá-los à mão.
     """
-    if tipo_veiculo not in (None, "moto", "carro"):
-        raise ValueError(f"tipo_veiculo inválido: {tipo_veiculo!r}")
+    _validar_tipo_veiculo(tipo_veiculo)
+    _validar_tipo_veiculo_fonte(tipo_veiculo_fonte)
     with cursor() as c:
         cur = c.execute(
             "INSERT INTO deteccoes (placa, padrao, confianca, snapshot, criado_em, camera_id, "
-            "bbox, bico_id, frame, origem, camera_db_id, acordo, confirmada, tipo_veiculo) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "bbox, bico_id, frame, origem, camera_db_id, acordo, confirmada, tipo_veiculo, "
+            "veiculo_classe, veiculo_conf, tipo_veiculo_fonte) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (placa, padrao, confianca, snapshot, _agora(), camera_id,
              json.dumps(bbox) if bbox else None, bico_id, frame, origem, camera_db_id,
-             acordo, None if confirmada is None else int(confirmada), tipo_veiculo),
+             acordo, None if confirmada is None else int(confirmada), tipo_veiculo,
+             veiculo_classe, veiculo_conf, tipo_veiculo_fonte),
         )
         return cur.lastrowid
 
@@ -143,7 +173,10 @@ def atualizar_deteccao(id_: int, *, placa: str, padrao: str, confianca: float,
                         snapshot: str | None = None, frame: str | None = None,
                         acordo: float | None = None,
                         confirmada: bool | None = None,
-                        tipo_veiculo: str | None = None) -> bool:
+                        tipo_veiculo: str | None = None,
+                        veiculo_classe: int | None = None,
+                        veiculo_conf: float | None = None,
+                        tipo_veiculo_fonte: str | None = None) -> bool:
     """Atualiza placa/padrão/confiança de uma detecção existente — usado ao mesclar uma
     leitura nova com a detecção anterior do mesmo bico em vez de criar uma 2ª linha.
 
@@ -152,18 +185,35 @@ def atualizar_deteccao(id_: int, *, placa: str, padrao: str, confianca: float,
     cooldown_seg (ex.: 3 chamadas 70s uma da outra = 140s de ponta a ponta) volta a
     duplicar linha na 3ª chamada mesmo todas sendo o mesmo veículo.
     """
-    if tipo_veiculo not in (None, "moto", "carro"):
-        raise ValueError(f"tipo_veiculo inválido: {tipo_veiculo!r}")
+    _validar_tipo_veiculo(tipo_veiculo)
+    _validar_tipo_veiculo_fonte(tipo_veiculo_fonte)
     with cursor() as c:
         cur = c.execute(
-            "UPDATE deteccoes SET placa=?, padrao=?, confianca=?, criado_em=?, "
-            "snapshot=COALESCE(?, snapshot), frame=COALESCE(?, frame), "
-            "acordo=COALESCE(?, acordo), confirmada=COALESCE(?, confirmada), "
-            # COALESCE, como os demais: a leitura que mescla pode não ter estimativa
-            # (engine único), e sobrescrever com NULL apagaria a que já estava lá.
-            "tipo_veiculo=COALESCE(?, tipo_veiculo) WHERE id=?",
-            (placa, padrao, confianca, _agora(), snapshot, frame, acordo,
-             None if confirmada is None else int(confirmada), tipo_veiculo, id_),
+            "UPDATE deteccoes SET placa=:placa, padrao=:padrao, confianca=:confianca, "
+            "criado_em=:criado_em, "
+            "snapshot=COALESCE(:snapshot, snapshot), frame=COALESCE(:frame, frame), "
+            "acordo=COALESCE(:acordo, acordo), confirmada=COALESCE(:confirmada, confirmada), "
+            # Os quatro campos do tipo de veículo se movem em BLOCO, e não por COALESCE
+            # independente — `:fonte` é o discriminante de presença (nunca None numa
+            # leitura real; todo caminho de `app/visao/detector.py` se rotula). Um COALESCE
+            # por coluna deixaria linha incoerente: `tipo_veiculo` sobrevivendo da leitura
+            # anterior enquanto `veiculo_classe` vem da nova — tipo de um veículo com sinal
+            # cru de outro. Por isso este é o único statement do arquivo com parâmetro
+            # NOMEADO em vez de posicional: é o que permite repetir `:fonte` nas 3 cláusulas.
+            "tipo_veiculo = CASE WHEN :fonte IS NULL THEN tipo_veiculo ELSE :tipo END, "
+            "veiculo_classe = CASE WHEN :fonte IS NULL THEN veiculo_classe ELSE :classe END, "
+            "veiculo_conf = CASE WHEN :fonte IS NULL THEN veiculo_conf ELSE :conf END, "
+            "tipo_veiculo_fonte = COALESCE(:fonte, tipo_veiculo_fonte) "
+            "WHERE id=:id",
+            {
+                "placa": placa, "padrao": padrao, "confianca": confianca,
+                "criado_em": _agora(), "snapshot": snapshot, "frame": frame,
+                "acordo": acordo,
+                "confirmada": None if confirmada is None else int(confirmada),
+                "fonte": tipo_veiculo_fonte, "tipo": tipo_veiculo,
+                "classe": veiculo_classe, "conf": veiculo_conf,
+                "id": id_,
+            },
         )
         return cur.rowcount > 0
 
@@ -222,7 +272,7 @@ def listar_deteccoes(
     (digitar parte da placa), a consulta de uma placa específica quer só ela.
 
     `tipo_veiculo`: 'moto' | 'carro' | 'desconhecido' | 'todos' (ver
-    `TIPOS_VEICULO_FILTRO`). É a estimativa do AutoOCR, não cadastro.
+    `TIPOS_VEICULO_FILTRO`). É a estimativa do detector de veículo, não cadastro.
     """
     sql = """
         SELECT d.*, b.codigo AS bico_codigo, b.nome AS bico_nome,

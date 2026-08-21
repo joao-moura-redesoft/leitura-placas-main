@@ -29,9 +29,9 @@
       <option value="todas">Todas</option>
     </select>
   </label>
-  {# "Não estimado" é opção de verdade, não resto: a estimativa só passou a ser gravada
-     agora, então toda leitura anterior cai aqui — e é justamente a lista que alguém
-     precisa ver para saber o que o filtro ainda não alcança. #}
+  {# "Não estimado" é opção de verdade, não resto: cai aqui toda leitura em que o detector
+     de veículo não rodou ou não achou veículo (~21% dos quadros reais medidos), e é
+     justamente a lista que alguém precisa ver para saber o que o filtro não alcança. #}
   <label style="min-width:170px">Veículo
     <select id="filtro-tipo-veiculo" onchange="carregar()" style="width:100%;margin-top:4px">
       <option value="todos">Todos</option>
@@ -239,15 +239,37 @@ async function carregar() {
           d.acordo != null ? Math.round(d.acordo * 100) + '%' : '?'
         }) — confira a imagem antes de cobrar">a conferir</span>`
       : '';
-    // Tipo ESTIMADO pelo OCR a partir do formato do recorte, não cadastro do veículo —
-    // por isso o tracejado e o tooltip. Apresentar como fato seria pior que não mostrar:
-    // o limiar atual (aspecto ≤ 2,0) classifica alguns carros como moto, e quem filtrar
-    // "Moto" precisa saber que a lista pode conter carro.
+    // Tipo ESTIMADO pelo detector de veículo (a classe do 1º estágio da detecção), não
+    // cadastro do veículo — por isso o tracejado e o tooltip. A CÉLULA continua só
+    // "Moto"/"Carro"/"—" (ônibus e caminhão contam como carro, decisão já tomada); é o
+    // TOOLTIP que mostra o sinal cru por trás — mesmo padrão do selo "a conferir" acima,
+    // que mostra o número em vez de só afirmar a causa. Continua estimativa: o detector
+    // perde moto ocluída (piloto e frentista em volta), e nesse caso a leitura cai em
+    // "não estimado" em vez de ser contada como carro.
+    const NOMES_COCO_VEICULO = { 2: 'carro', 3: 'moto', 5: 'ônibus', 7: 'caminhão' };
+    const MOTIVOS_TIPO_NULO = {
+      'sem-veiculo': 'nenhum veículo detectado no quadro',
+      'classe-nao-mapeada': 'veículo detectado, mas de um tipo não mapeado',
+      'tiles': 'placa recuperada por varredura em janelas — não roda o estágio de veículo',
+      'sem-2-estagios': 'detecção em 2 estágios desligada nesta câmera',
+    };
+    let tituloVeiculo;
+    if (d.tipo_veiculo) {
+      const nomeClasse = NOMES_COCO_VEICULO[d.veiculo_classe] || 'veículo';
+      const conf = d.veiculo_conf != null ? `, confiança ${Math.round(d.veiculo_conf * 100)}%` : '';
+      tituloVeiculo = `Estimado pelo detector de veículo: ${nomeClasse}${conf} — não é cadastro do veículo`;
+    } else {
+      const fonteBase = (d.tipo_veiculo_fonte || '').replace(/^replay:/, '');
+      const motivo = MOTIVOS_TIPO_NULO[fonteBase] || 'leitura anterior a este campo';
+      const nota = d.tipo_veiculo_fonte && d.tipo_veiculo_fonte.startsWith('replay:')
+        ? ' (reconstruído por auditoria a partir do quadro salvo, não medido ao vivo)' : '';
+      tituloVeiculo = `Leitura sem estimativa: ${motivo}${nota}`;
+    }
     const veiculo = d.tipo_veiculo
-      ? `<span title="Estimado pelo OCR a partir do formato da placa — não é cadastro do veículo"
+      ? `<span title="${esc(tituloVeiculo)}"
               style="border-bottom:1px dotted #94a3b8;cursor:help">${
            d.tipo_veiculo === 'moto' ? 'Moto' : 'Carro'}</span>`
-      : '<span style="color:#cbd5e1" title="Leitura sem estimativa: anterior a este campo, engine único, ou sem cabeçalho para decidir">—</span>';
+      : `<span style="color:#cbd5e1" title="${esc(tituloVeiculo)}">—</span>`;
     return `<tr${d.origem === 'teste' ? ' style="opacity:.72"' : ''}>
       <td><strong style="font-family:'Consolas',monospace;letter-spacing:.04em">${esc(d.placa)}</strong>${selo}${conferir}</td>
       <td><span class="badge badge-${esc(d.padrao)}">${esc(d.padrao)}</span></td>

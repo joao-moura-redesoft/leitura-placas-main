@@ -122,6 +122,13 @@ class AutoOCR:
                          deskew_ativo=deskew_ativo, deskew_angulo_max=deskew_angulo_max)
         self.engine = "auto"
         self._ultimo_detalhe: dict = {}
+        # Inicializados aqui porque `AutoOCRPaddle` os lê por `getattr` para arbitrar
+        # (prioridade do Paddle, hint passado a validar()). Sem isto eles nascem
+        # inexistentes e, depois da primeira leitura, ficam permanentemente com o valor do
+        # último crop que chegou até o cálculo — inclusive quando o crop ATUAL foi
+        # descartado antes disso.
+        self._ultimo_e_moto = False
+        self._ultimo_formato_hint = ""
 
     def carregar(self) -> None:
         self._fast.carregar()
@@ -134,6 +141,13 @@ class AutoOCR:
 
     def ler_detalhado(self, crop) -> dict:
         from app.visao.validador import validar
+
+        # Zera o palpite do crop ANTERIOR antes dos descartes abaixo. Sem isto, um recorte
+        # rejeitado por tamanho (38,5% deles, medido) deixava `_ultimo_e_moto` e
+        # `_ultimo_formato_hint` valendo do crop passado, e o `AutoOCRPaddle` arbitrava a
+        # leitura seguinte com estado de outro veículo.
+        self._ultimo_e_moto = False
+        self._ultimo_formato_hint = ""
 
         # Antes de qualquer coisa: recorte sem pixel para sete caracteres não vai a
         # engine nenhum. Medido ANTES do realce de propósito — ver `crop_legivel`.
@@ -176,15 +190,21 @@ class AutoOCR:
         e_moto = tinha_header and aspect <= 2.0
         self._ultimo_e_moto = e_moto
 
-        # Estimativa de tipo de veículo, para o histórico poder filtrar moto/carro (a
-        # coluna `deteccoes.tipo_veiculo`). Três estados, não dois: `e_moto` é False
-        # tanto para "é carro" quanto para "não achei header", e essas são coisas
-        # diferentes. Sem header não dá para afirmar o tipo — uma placa ANTIGA de moto
-        # não tem a faixa azul e cairia como carro se o False fosse tratado como carro.
-        # None (desconhecido) é a resposta honesta ali; quem filtra o histórico vê a
-        # leitura em "Não estimado" em vez de vê-la contada como carro.
-        self._ultimo_tipo_veiculo = ("moto" if e_moto
-                                     else ("carro" if tinha_header else None))
+        # APOSENTADO em 20/08/2026: `e_moto` NÃO alimenta mais `deteccoes.tipo_veiculo`.
+        # Ele decide só estratégia de OCR daqui para baixo. A coluna passou a vir da
+        # classe do detector de veículo (`DetectorDoisEstagios`, em app/visao/detector.py),
+        # que carrega o tipo na própria bbox.
+        #
+        # Medido nas 774 detecções reais do banco: 12 dos 25 rótulos gravados eram 'moto'
+        # — num posto de combustível —, e 11 deles foram refutados rodando o YOLOX nos
+        # quadros salvos. A placa NPX9F15 chegou a receber vereditos opostos no mesmo
+        # veículo com 3 min de diferença (bbox 59×27 → 'carro', 56×28 → 'moto'), porque
+        # 2,000 passa no `<= 2.0` e 2,185 não. Com 32,8% da população abaixo do limiar, a
+        # regra não separava classes: separava ruído de enquadramento.
+        #
+        # Não foi trocada por um limiar melhor de propósito. O aspecto do bbox mede a
+        # FOLGA do detector, não a diagramação da placa: a mesma Mercosul de carro que
+        # tem 3,08 no papel chega com 2,0 a 60 px de largura. Não há limiar que conserte.
 
         # fast_plate_ocr como principal para carros (com cabeçalho, Mercosul ou antigo com tarjeta)
         # Não dependemos da cor (e_mercosul_header) aqui para garantir que funcione de noite (câmeras IR)
@@ -505,6 +525,10 @@ class MultiOCR:
         # Mesmo hint de formato que AutoOCR passa a validar() (ver auto.py:96-106) —
         # sem isso, MultiOCR perdia a correção posicional guiada pelo header Mercosul
         # (ex.: moto FBI0123 → FBI0I23) só por não estar no caminho `ocr_engine=auto`.
+        #
+        # `e_moto` aqui serve SÓ ao `formato_hint`, igual ao AutoOCR. Ele não alimenta
+        # `deteccoes.tipo_veiculo`: essa coluna vem da classe do detector de veículo desde
+        # 20/08/2026 (ver a justificativa medida em `AutoOCR.ler_detalhado`).
         formato_hint = ""
         e_moto = False
         if crop is not None and crop.ndim == 3 and crop.size > 0 and self._ocrs:

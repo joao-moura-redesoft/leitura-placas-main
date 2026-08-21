@@ -155,10 +155,14 @@ function renderAoVivo() {
   document.getElementById('ao-vivo').innerHTML = _d.cameras.map(c => {
     const bs = bicosDaCamera(c.id);
     const botoes = bs.length
-      ? bs.map(b => `<button onclick="lerBico(${b.id}, '${esc(b.codigo)}')" id="btn-bico-${b.id}"
+      ? bs.map(b => {
+          const ok = temRoiNaCamera(b, c.id);
+          const papel = papelNaCamera(b, c.id);
+          return `<button onclick="lerBico(${b.id}, '${esc(b.codigo)}', ${c.id})" id="btn-bico-${b.id}"
              style="background:#0f172a;padding:6px 12px;font-size:13px"
-             ${b.tem_roi ? '' : 'title="Bico sem área — vai analisar o quadro inteiro"'}>
-             Ler bico ${esc(b.codigo)}${b.tem_roi ? '' : ' ⚠'}</button>`).join('')
+             ${ok ? '' : 'title="Bico sem área nesta câmera — vai analisar o quadro inteiro"'}>
+             Ler bico ${esc(b.codigo)}${papel ? ` (${esc(papel)})` : ''}${ok ? '' : ' ⚠'}</button>`;
+        }).join('')
       : '<span style="color:#94a3b8;font-size:13px">Nenhum bico nesta câmera</span>';
     return `
       <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
@@ -262,9 +266,12 @@ async function atualizarAoVivo() {
   if (btn) { btn.disabled = false; btn.textContent = '↻ Atualizar imagens'; }
 }
 
-async function lerBico(bicoId, codigo) {
+async function lerBico(bicoId, codigo, camId) {
   const bico = _d.automacoes.flatMap(a => a.bicos).find(b => b.id === bicoId);
-  const res = document.getElementById(`res-cam-${bico.camera_id}`);
+  // O resultado sai no card de onde o botão foi clicado; com 2 câmeras, `bico.camera_id`
+  // sozinho mandaria a resposta sempre para o card da primeira.
+  const camAlvo = camId ?? bico.camera_id;
+  const res = document.getElementById(`res-cam-${camAlvo}`);
   const btn = document.getElementById(`btn-bico-${bicoId}`);
   const t0 = Date.now();
   btn.disabled = true;
@@ -275,18 +282,38 @@ async function lerBico(bicoId, codigo) {
   try {
     const r = await fetch(`/api/bicos/${bicoId}/ler-placa-teste`, { method: 'POST' });
     const d = await r.json();
+    // Diagnóstico das fontes: qual câmera leu, e se alguma não enxergou nada — é a
+    // informação que diz onde mexer no enquadramento.
+    const fontes = d.fontes || [];
+    const cega = fontes.filter(f => f.estado !== 'usada' || f.bboxes === 0);
+    const nota = fontes.length > 1 && cega.length
+      ? `<div style="color:#a16207;font-size:12px;margin-top:4px">⚠ ${cega.map(f =>
+          `${esc(f.papel)}: ${f.estado === 'indisponivel' ? esc(f.motivo || 'indisponível')
+                                                          : 'não detectou placa'}`).join(' · ')}</div>`
+      : '';
+    const vencedora = fontes.length > 1
+      ? (fontes.find(f => f.camera_id === d.camera_id) || {}).papel : '';
+
     if (!r.ok) res.innerHTML = `<span style="color:#b91c1c">✗ ${esc(d.detail || 'falha')}</span>`;
-    else if (!d.placa) res.innerHTML = `<span style="color:#a16207">Bico ${esc(codigo)}: nenhuma placa na área.</span>`;
+    else if (!d.placa) res.innerHTML =
+      `<span style="color:#a16207">Bico ${esc(codigo)}: nenhuma placa na área.</span>${nota}`;
     else res.innerHTML = `
       <span style="color:#94a3b8">Bico ${esc(codigo)}:</span>
       <strong style="font-family:'Consolas',monospace;letter-spacing:2px;font-size:16px">${esc(d.placa)}</strong>
-      <span style="color:#94a3b8">· ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%</span>`;
-    if (d.frame_url) {
-      const img = document.getElementById(`img-cam-${bico.camera_id}`);
+      <span style="color:#94a3b8">· ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%${
+        vencedora ? ` · leu pela <strong>${esc(vencedora)}</strong>` : ''}</span>${nota}`;
+
+    // Atualiza o quadro de CADA câmera do bico — o operador precisa conferir as duas.
+    const quadros = fontes.length > 1
+      ? fontes.map(f => [f.camera_id, f.frame_url])
+      : [[bico.camera_id, d.frame_url]];
+    for (const [cid, url] of quadros) {
+      if (!url) continue;
+      const img = document.getElementById(`img-cam-${cid}`);
       // Desarma o watchdog do MJPEG antes de trocar o src: senão ele ainda podia
       // disparar depois e substituir o quadro da leitura por uma nova captura.
-      if (_vigias[bico.camera_id]) { _vigias[bico.camera_id](); delete _vigias[bico.camera_id]; }
-      if (img) definirImagem(img, d.frame_url + '?t=' + Date.now());
+      if (_vigias[cid]) { _vigias[cid](); delete _vigias[cid]; }
+      if (img) definirImagem(img, url + (url.includes('?') ? '&' : '?') + 't=' + Date.now());
     }
   } catch (ex) {
     res.innerHTML = `<span style="color:#b91c1c">Erro: ${esc(ex.message)}</span>`;
@@ -296,15 +323,26 @@ async function lerBico(bicoId, codigo) {
   }
 }
 
+// Casa os DOIS slots: um bico de 2 câmeras aparece no card de cada uma delas.
 function bicosDaCamera(camId) {
-  return _d.automacoes.flatMap(a => a.bicos).filter(b => b.camera_id === camId);
+  return _d.automacoes.flatMap(a => a.bicos)
+    .filter(b => b.camera_id === camId || b.camera2_id === camId);
+}
+// Se ESTA câmera do bico já tem área — "tem_roi" sozinho só fala da primeira.
+function temRoiNaCamera(b, camId) {
+  const f = (b.cameras || []).find(c => c.camera_id === camId);
+  return f ? f.tem_roi : !!b.tem_roi;
+}
+function papelNaCamera(b, camId) {
+  const f = (b.cameras || []).find(c => c.camera_id === camId);
+  return f ? f.papel : '';
 }
 
 function renderCameras() {
   document.getElementById('sem-cameras').style.display = _d.cameras.length ? 'none' : '';
   document.getElementById('tb-cameras').innerHTML = _d.cameras.map(c => {
     const bs = bicosDaCamera(c.id);
-    const semArea = bs.filter(b => !b.tem_roi).length;
+    const semArea = bs.filter(b => !temRoiNaCamera(b, c.id)).length;
     return `<tr>
       <td>${esc(c.local || '—')}</td>
       <td>${esc(c.nome)}</td>
@@ -341,12 +379,21 @@ function renderAutomacoes() {
             <td><strong style="font-family:monospace">${esc(b.codigo)}</strong>
                 ${b.nome ? `<span style="color:#94a3b8"> ${esc(b.nome)}</span>` : ''}</td>
             <td>${b.bomba ?? '—'} / ${b.lado ?? '—'}</td>
-            <td>${esc(b.camera_local ? b.camera_local + ' — ' : '')}${esc(b.camera_nome)}</td>
-            <td>${b.tem_roi ? '<span class="badge badge-ok">definida</span>'
-                            : '<span class="badge badge-warn">sem área</span>'}</td>
+            <td>${(b.cameras || []).map(f =>
+                  `<div>${esc(f.local ? f.local + ' — ' : '')}${esc(f.nome)}
+                     <span style="color:#94a3b8;font-size:12px">(${esc(f.papel)})</span></div>`).join('')
+                 || esc(b.camera_nome)}</td>
+            <td>${(() => {
+                  const fs = b.cameras || [];
+                  const ok = fs.filter(f => f.tem_roi).length;
+                  if (!fs.length) return '';
+                  if (ok === fs.length) return `<span class="badge badge-ok">${fs.length > 1 ? `${ok}/${fs.length} ` : ''}definida${fs.length > 1 ? 's' : ''}</span>`;
+                  return `<span class="badge badge-warn">${ok}/${fs.length} definida(s)</span>`;
+                })()}</td>
             <td style="white-space:nowrap">
-              <a href="/roi-camera/${b.camera_id}?bico=${b.id}"
-                 style="color:#16a34a;text-decoration:none;margin-right:10px">área</a>
+              ${(b.cameras || []).map(f =>
+                `<a href="/roi-camera/${f.camera_id}?bico=${b.id}"
+                    style="color:#16a34a;text-decoration:none;margin-right:10px">área ${esc(f.papel)}</a>`).join('')}
               <button onclick='modalBico(${JSON.stringify(b)}, ${a.id})'
                       style="padding:5px 11px;font-size:13px;background:#16a34a">editar</button>
             </td>
@@ -363,8 +410,12 @@ function renderChecklist() {
   if (_d.automacoes.length && !bicos.length) itens.push('Cadastrar os <strong>bicos</strong>');
 
   // Agrupa por câmera: as áreas são desenhadas de uma vez por câmera, não bico a bico.
+  // Um bico de 2 câmeras entra na lista de CADA câmera que ainda não tem área — sem isso
+  // a pendência da segunda ficava invisível e o posto parecia pronto pela metade.
   const porCam = {};
-  bicos.filter(b => !b.tem_roi).forEach(b => { (porCam[b.camera_id] ??= []).push(b.codigo); });
+  bicos.forEach(b => (b.cameras || []).forEach(f => {
+    if (!f.tem_roi) (porCam[f.camera_id] ??= []).push(b.codigo);
+  }));
   Object.entries(porCam).forEach(([camId, cods]) => {
     const cam = _d.cameras.find(c => c.id === Number(camId));
     itens.push(`Definir as <a href="/roi-camera/${camId}" style="color:#16a34a">áreas de captura</a>
@@ -466,14 +517,33 @@ function modalAutomacao(a = null) {
 
 function modalBico(b = null, automacaoId = null) {
   if (!_d.cameras.length) { msg(false, 'Cadastre uma câmera antes de criar bicos.'); return; }
-  const opcoes = _d.cameras.map(c =>
-    `<option value="${c.id}"${b?.camera_id === c.id ? ' selected' : ''}>${esc(c.local ? c.local + ' — ' : '')}${esc(c.nome)}</option>`).join('');
+  const opcoes = (sel, vazia) => (vazia ? `<option value="">— sem segunda câmera —</option>` : '')
+    + _d.cameras.map(c =>
+        `<option value="${c.id}"${sel === c.id ? ' selected' : ''}>${esc(c.local ? c.local + ' — ' : '')}${esc(c.nome)}</option>`).join('');
+  const papel = (id, atual, padrao) => `
+    <label>Papel<select id="${id}">
+      <option value="traseira"${(atual || padrao) === 'traseira' ? ' selected' : ''}>traseira</option>
+      <option value="frente"${(atual || padrao) === 'frente' ? ' selected' : ''}>frente</option>
+    </select></label>`;
   abrirModal(b ? 'Editar bico' : 'Novo bico', `
     <label>Código
       <small style="color:#94a3b8;font-weight:400"> — exatamente o valor que o roteador envia</small>
       <input id="m-codigo" value="${esc(b?.codigo || '')}" required></label>
     <label>Nome<input id="m-nome" value="${esc(b?.nome || '')}" placeholder="opcional"></label>
-    <label>Câmera<select id="m-camera">${opcoes}</select></label>
+    <div class="linha-2">
+      <label>Câmera<select id="m-camera">${opcoes(b?.camera_id, false)}</select></label>
+      ${papel('m-papel', b?.papel_camera, 'traseira')}
+    </div>
+    <div class="linha-2">
+      <label>Segunda câmera <small style="color:#94a3b8;font-weight:400">(opcional)</small>
+        <select id="m-camera2">${opcoes(b?.camera2_id, true)}</select></label>
+      ${papel('m-papel2', b?.papel_camera2, 'frente')}
+    </div>
+    <p style="color:#94a3b8;font-size:12px;margin:-4px 0 12px">
+      Duas câmeras cobrem o veículo por dois ângulos: quando a placa de um lado está
+      encoberta (estepe, carona colada), a do outro resolve. Cada câmera tem a
+      <strong>sua própria área</strong> — desenhe as duas.
+    </p>
     <div class="linha-2">
       <label>Bomba <small style="color:#94a3b8;font-weight:400">(opcional)</small>
         <input id="m-bomba" type="number" min="1" value="${b?.bomba ?? ''}"></label>
@@ -483,13 +553,24 @@ function modalBico(b = null, automacaoId = null) {
     <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
       <input type="checkbox" id="m-ativo" ${!b || b.ativo ? 'checked' : ''} style="width:auto;margin:0">
       Bico ativo</label>`,
-    async () => api(b ? 'PUT' : 'POST', b ? `/api/bicos/${b.id}` : '/api/bicos', {
-      automacao_id: b ? b.automacao_id : automacaoId,
-      codigo: val('m-codigo'), nome: val('m-nome'),
-      camera_id: parseInt(val('m-camera')),
-      bomba: val('m-bomba') || null, lado: val('m-lado') || null,
-      ativo: document.getElementById('m-ativo').checked,
-    }));
+    async () => {
+      const cam1 = parseInt(val('m-camera'));
+      const cam2 = val('m-camera2') ? parseInt(val('m-camera2')) : null;
+      if (cam2 === cam1) throw new Error('A segunda câmera precisa ser diferente da primeira.');
+      // A área da câmera trocada/removida é apagada no servidor (ela está em coordenadas
+      // do frame antigo) — avisar antes evita a surpresa de reabrir o editor e achar vazio.
+      if (b && cam2 !== (b.camera2_id ?? null) && b.cameras?.some(f => f.slot === 2 && f.tem_roi)
+          && !confirm('A área já desenhada para a segunda câmera será apagada. Continuar?'))
+        throw new Error('cancelado');
+      await api(b ? 'PUT' : 'POST', b ? `/api/bicos/${b.id}` : '/api/bicos', {
+        automacao_id: b ? b.automacao_id : automacaoId,
+        codigo: val('m-codigo'), nome: val('m-nome'),
+        camera_id: cam1, papel_camera: val('m-papel'),
+        camera2_id: cam2, papel_camera2: val('m-papel2'),
+        bomba: val('m-bomba') || null, lado: val('m-lado') || null,
+        ativo: document.getElementById('m-ativo').checked,
+      });
+    });
 }
 
 document.getElementById('overlay').addEventListener('click', e => {
@@ -516,8 +597,38 @@ function paramsTeste() {
 }
 function mostrarUrl() {
   const q = paramsTeste();
-  document.getElementById('teste-url').textContent = q ? `GET /api/leitura?${q}` : '';
+  const chave = _d.empresa.api_key
+    ? ' (com cabeçalho X-API-Key — este posto tem chave própria)' : '';
+  document.getElementById('teste-url').textContent = q ? `GET /api/leitura?${q}${chave}` : '';
 }
+// Um quadro por câmera do bico, cada um rotulado com o papel e o que ela contribuiu.
+// Com bico de 2 câmeras é este painel que mostra QUAL ângulo está mal enquadrado — sem
+// ele o operador vê só "não leu" e não tem onde mexer.
+function quadrosDoTeste(d) {
+  const fontes = d.fontes || [];
+  const t = Date.now();
+  if (fontes.length < 2) {
+    return d.frame_url
+      ? `<img src="${esc(d.frame_url)}?t=${t}" style="margin-top:10px;max-width:100%;border-radius:6px">` : '';
+  }
+  return `<div style="display:grid;gap:10px;margin-top:10px;
+       grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+    ${fontes.map(f => {
+      const venceu = f.camera_id === d.camera_id && d.placa;
+      const cor = venceu ? '#16a34a' : (f.estado === 'usada' && f.bboxes ? '#e2e8f0' : '#f59e0b');
+      return `<div style="border:2px solid ${cor};border-radius:8px;overflow:hidden">
+        <div style="padding:6px 10px;background:#f8fafc;font-size:12px">
+          <strong>${esc(f.papel)}</strong>
+          ${venceu ? '<span class="badge badge-ok" style="font-size:10px">leu a placa</span>' : ''}
+          <span style="color:#94a3b8"> · ${f.tentativas} foto(s), ${f.bboxes} detecção(ões)</span>
+          ${f.motivo ? `<div style="color:#a16207">${esc(f.motivo)}</div>` : ''}
+        </div>
+        ${f.frame_url ? `<img src="${esc(f.frame_url)}${f.frame_url.includes('?') ? '&' : '?'}t=${t}"
+             style="width:100%;display:block">` : ''}
+      </div>`;
+    }).join('')}</div>`;
+}
+
 async function testarLeitura() {
   const q = paramsTeste();
   if (!q) return;
@@ -533,19 +644,24 @@ async function testarLeitura() {
     res.innerHTML = `<span style="color:#94a3b8">Conectando à câmera e analisando (${s}s de até ~30s)…</span>`;
   }, 250);
   try {
-    const r = await fetch('/api/leitura?' + q);
+    // Postos com chave própria (empresa.api_key) exigem X-API-Key em /api/leitura —
+    // ver app/web/leitura.py:leitura_reativa. Sem isso este teste cai sempre no 404
+    // "Cadastro não encontrado no nível 'empresa'", mesmo com o cadastro certo.
+    const headers = _d.empresa.api_key ? { 'X-API-Key': _d.empresa.api_key } : {};
+    const r = await fetch('/api/leitura?' + q, { headers });
     const d = await r.json();
     if (!r.ok) res.innerHTML = `<span style="color:#b91c1c">✗ ${esc(d.detail || 'falha')}</span>`;
     else if (!d.placa) res.innerHTML = `<span style="color:#a16207">Nenhuma placa detectada.</span>
         <span style="color:#94a3b8">${esc(d.mensagem || '')} (${d.tentativas} tentativa(s))</span>
-        ${d.frame_url ? `<br><img src="${esc(d.frame_url)}?t=${Date.now()}" style="margin-top:10px;max-width:100%;border-radius:6px">` : ''}`;
+        ${quadrosDoTeste(d)}`;
     else res.innerHTML = `
         <div style="font-size:28px;font-weight:700;letter-spacing:5px;color:#0f172a;font-family:'Consolas',monospace">${esc(d.placa)}</div>
         <div style="margin-top:6px;font-size:12px;color:#94a3b8">
           <span class="badge badge-${esc(d.padrao)}">${esc(d.padrao)}</span>
           &nbsp;${Math.round((d.confianca||0)*100)}% confiança · acordo ${Math.round((d.acordo||0)*100)}% · ${d.tentativas} foto(s)
+          ${(d.fontes || []).length > 1 ? ` · ${d.n_cameras_votando} de ${d.fontes.length} câmeras concordaram` : ''}
         </div>
-        ${d.frame_url ? `<img src="${esc(d.frame_url)}?t=${Date.now()}" style="margin-top:10px;max-width:100%;border-radius:6px">` : ''}`;
+        ${quadrosDoTeste(d)}`;
   } catch (ex) {
     res.innerHTML = `<span style="color:#b91c1c">Erro de rede: ${esc(ex.message)}</span>`;
   } finally {

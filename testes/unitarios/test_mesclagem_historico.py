@@ -13,6 +13,7 @@ from app.core import banco
 from app.visao.leitura import _mesclar_com_historico
 
 BICO, CAMERA = 1, 7
+CAMERA2 = 8        # segunda câmera do mesmo bico (traseira + frente)
 
 
 def _envelhecer(det_id: int, segundos: float) -> None:
@@ -31,8 +32,8 @@ def _leitura(placa="ABC1D23", confianca=0.9):
     return {"placa": placa, "padrao": "mercosul", "confianca": confianca}
 
 
-def _mesclar(placa="ABC1D23", origem="roteador", cooldown=120.0):
-    return _mesclar_com_historico(_leitura(placa), bico_id=BICO, camera_id=CAMERA,
+def _mesclar(placa="ABC1D23", origem="roteador", cooldown=120.0, cameras=(CAMERA,)):
+    return _mesclar_com_historico(_leitura(placa), bico_id=BICO, camera_ids=list(cameras),
                                   origem=origem, cooldown_seg=cooldown)
 
 
@@ -65,6 +66,29 @@ class TestLeituraDoRoteador:
         assert banco.listar_deteccoes(origem="todas") == []   # ...e a do pipeline sumiu
         assert melhor["confianca"] == 0.9
         assert banco.remover_deteccao(pipe) is False
+
+    def test_absorve_o_pipeline_das_DUAS_cameras_do_bico(self, ambiente):
+        """Bico de duas câmeras: o mesmo carro gera uma detecção contínua em CADA uma.
+
+        Absorver só a de uma câmera deixava a outra órfã — o mesmo veículo aparecia duas
+        vezes no histórico, que é exatamente o que esta regra existe para impedir.
+        """
+        banco.registrar_deteccao("ABC1D23", "mercosul", 0.7, origem="pipeline",
+                                 camera_db_id=CAMERA)
+        banco.registrar_deteccao("ABC1D23", "mercosul", 0.6, origem="pipeline",
+                                 camera_db_id=CAMERA2)
+        _melhor, anterior_id = _mesclar("ABC1D23", cameras=(CAMERA, CAMERA2))
+        assert anterior_id is None
+        assert banco.listar_deteccoes(origem="todas") == []   # as DUAS sumiram
+
+    def test_absorve_so_a_camera_que_bate(self, ambiente):
+        """Contrapeso: uma placa diferente na segunda câmera é outro veículo e fica."""
+        banco.registrar_deteccao("ABC1D23", "mercosul", 0.7, origem="pipeline",
+                                 camera_db_id=CAMERA)
+        outra = banco.registrar_deteccao("XYZ9K88", "mercosul", 0.7, origem="pipeline",
+                                         camera_db_id=CAMERA2)
+        _mesclar("ABC1D23", cameras=(CAMERA, CAMERA2))
+        assert [d["id"] for d in banco.listar_deteccoes(origem="todas")] == [outra]
 
 
 class TestTesteManualNaoMescla:

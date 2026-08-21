@@ -70,7 +70,9 @@
     </label>
     <div class="tabela-rolavel">
       <table>
-        <thead><tr><th>Código do bico</th><th>Nome</th><th>Câmera</th><th>Bomba</th><th>Lado</th><th></th></tr></thead>
+        <thead><tr><th>Código do bico</th><th>Nome</th><th>Câmera</th>
+          <th>2ª câmera <span style="font-weight:400;color:#94a3b8">(opcional)</span></th>
+          <th>Bomba</th><th>Lado</th><th></th></tr></thead>
         <tbody id="bicos"></tbody>
       </table>
     </div>
@@ -147,12 +149,15 @@ function listaCameras() {
 // que o assistente antigo não permitia (ele forçava a mesma câmera para todos).
 function syncSelects() {
   const cams = listaCameras();
-  document.querySelectorAll('#bicos select.b-camera').forEach(sel => {
+  const opcoes = cams.map(c =>
+    `<option value="${c.idx}">${esc(c.local || c.nome || `câmera ${c.ordem + 1}`)}</option>`).join('');
+  document.querySelectorAll('#bicos select.b-camera, #bicos select.b-camera2').forEach(sel => {
     const atual = sel.value;
-    sel.innerHTML = cams.length
-      ? cams.map(c => `<option value="${c.idx}">${esc(c.local || c.nome || `câmera ${c.ordem + 1}`)}</option>`).join('')
+    // A segunda câmera é opcional; a primeira, obrigatória.
+    const vazia = sel.classList.contains('b-camera2') ? '<option value="">— nenhuma —</option>' : '';
+    sel.innerHTML = cams.length ? vazia + opcoes
       : '<option value="">— defina uma câmera acima —</option>';
-    if (cams.some(c => c.idx === atual)) sel.value = atual;
+    if (atual === '' || cams.some(c => c.idx === atual)) sel.value = atual;
   });
 }
 
@@ -165,6 +170,7 @@ function addBico() {
     <td><input class="b-codigo" placeholder="ex: 1" style="width:100px"></td>
     <td><input class="b-nome"   placeholder="opcional" style="width:130px"></td>
     <td><select class="b-camera" style="width:150px"></select></td>
+    <td><select class="b-camera2" style="width:150px"></select></td>
     <td><input class="b-bomba" type="number" min="1" style="width:70px"></td>
     <td><input class="b-lado"  type="number" min="1" style="width:70px"></td>
     <td><button onclick="document.getElementById('bico-${id}').remove()"
@@ -194,6 +200,7 @@ async function salvar() {
     codigo: tr.querySelector('.b-codigo').value.trim(),
     nome:   tr.querySelector('.b-nome').value.trim(),
     camIdx: tr.querySelector('.b-camera').value,
+    camIdx2: tr.querySelector('.b-camera2').value,
     bomba:  tr.querySelector('.b-bomba').value || null,
     lado:   tr.querySelector('.b-lado').value || null,
   })).filter(b => b.codigo);
@@ -204,6 +211,8 @@ async function salvar() {
   if (!autoCod)            return erro('Informe o código da automação (passo 3).');
   if (!bicos.length)       return erro('Adicione ao menos um bico com código (passo 3).');
   if (bicos.some(b => !b.camIdx)) return erro('Todo bico precisa de uma câmera (passo 3).');
+  if (bicos.some(b => b.camIdx2 && b.camIdx2 === b.camIdx))
+    return erro('A segunda câmera de um bico precisa ser diferente da primeira (passo 3).');
 
   btn.disabled = true; btn.textContent = 'Criando…';
   try {
@@ -241,9 +250,11 @@ async function salvar() {
     for (const b of bicos) {
       await api('POST', '/api/bicos', {
         automacao_id: autoId, camera_id: mapaCam[b.camIdx],
+        camera2_id: b.camIdx2 ? mapaCam[b.camIdx2] : null,
+        papel_camera: 'traseira', papel_camera2: 'frente',
         codigo: b.codigo, nome: b.nome, bomba: b.bomba, lado: b.lado,
       });
-      passo(`Bico "${b.codigo}" criado`);
+      passo(`Bico "${b.codigo}" criado${b.camIdx2 ? ' (2 câmeras)' : ''}`);
     }
 
     passo('Pronto — abrindo o posto para desenhar as áreas');

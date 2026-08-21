@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import re
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,16 @@ _FOTOS_TESTE = Path("testes/fotos")
 # lista elas voltariam para a fila de classificação a cada carga da tela, e a fila
 # nunca chegaria ao fim — hoje são centenas de snapshots contra poucas dezenas úteis.
 _DESCARTADOS = Path("testes/descartados.json")
+
+# Rotas síncronas (`def`) rodam em threads do threadpool do Starlette — duas
+# classificações concorrentes (dois admins, ou um duplo-clique) podem cair em threads
+# diferentes ao mesmo tempo. Sem lock, a leitura-modificação-escrita do JSON perde
+# silenciosamente a rotulagem de uma das duas: a segunda escrita sobrescreve o arquivo
+# a partir de uma leitura feita ANTES da primeira escrita. Um lock por arquivo (e não um
+# só) porque dataset e descartados são independentes — travar um não precisa bloquear o
+# outro.
+_lock_dataset = threading.Lock()
+_lock_descartados = threading.Lock()
 
 
 def _ler_descartados() -> set[str]:
@@ -136,8 +147,10 @@ def listar_candidatos():
     o dataset medir o OCR contra ele mesmo: a acurácia iria a ~100% sem significar nada.
     Quem classifica precisa conferir contra a imagem.
     """
-    no_dataset = {f["arquivo"] for f in _ler_dataset()["fotos"]}
-    descartados = _ler_descartados()
+    with _lock_dataset:
+        no_dataset = {f["arquivo"] for f in _ler_dataset()["fotos"]}
+    with _lock_descartados:
+        descartados = _ler_descartados()
     fila = [
         s for s in listar_snapshots()
         if s["arquivo"] not in no_dataset and s["arquivo"] not in descartados
@@ -162,9 +175,10 @@ def descartar_candidato(payload: dict):
     arquivo = (payload.get("arquivo") or "").strip()
     if not arquivo:
         raise HTTPException(400, "arquivo obrigatório")
-    d = _ler_descartados()
-    d.add(arquivo)
-    _salvar_descartados(d)
+    with _lock_descartados:
+        d = _ler_descartados()
+        d.add(arquivo)
+        _salvar_descartados(d)
     return {"ok": True, "descartados": len(d)}
 
 
@@ -172,17 +186,19 @@ def descartar_candidato(payload: dict):
 def restaurar_candidato(payload: dict):
     """Desfaz um descarte — devolve a captura para a fila."""
     arquivo = (payload.get("arquivo") or "").strip()
-    d = _ler_descartados()
-    if arquivo not in d:
-        raise HTTPException(404, "Arquivo não está na lista de descartados")
-    d.discard(arquivo)
-    _salvar_descartados(d)
+    with _lock_descartados:
+        d = _ler_descartados()
+        if arquivo not in d:
+            raise HTTPException(404, "Arquivo não está na lista de descartados")
+        d.discard(arquivo)
+        _salvar_descartados(d)
     return {"ok": True, "descartados": len(d)}
 
 
 @router.get("/dataset")
 def obter_dataset():
-    return _ler_dataset()
+    with _lock_dataset:
+        return _ler_dataset()
 
 
 def _upsert_foto(ds: dict, arquivo: str, placa: str, formato: str, tipo: str,
@@ -249,45 +265,49 @@ def adicionar_foto(payload: dict):
     if not arquivo or not placa:
         raise HTTPException(400, "arquivo e placa_correta são obrigatórios")
 
-    ds = _ler_dataset()
-    # Atualiza se já existe, senão insere
-    # Origem (bico/posto) fica gravada para dar para saber de onde veio cada foto e,
-    # depois, medir acurácia por posto — o dataset agora mistura vários clientes.
-    origem = {k: payload[k] for k in ("bico_id", "origem") if payload.get(k)}
+    # Todo o ciclo leitura-modificação-escrita precisa ficar atrás do lock, senão duas
+    # classificações concorrentes leem o mesmo estado antigo e a segunda escrita apaga a
+    # primeira em silêncio (ver comentário perto de `_lock_dataset`).
+    with _lock_dataset:
+        ds = _ler_dataset()
+        # Atualiza se já existe, senão insere
+        # Origem (bico/posto) fica gravada para dar para saber de onde veio cada foto e,
+        # depois, medir acurácia por posto — o dataset agora mistura vários clientes.
+        origem = {k: payload[k] for k in ("bico_id", "origem") if payload.get(k)}
 
-    # `layout` é campo próprio, e não texto em `obs`. Moto e carro são problemas
-    # diferentes de OCR (a placa de moto é empilhada em duas linhas e chega com bem
-    # menos pixels), mas `formato` só distingue mercosul/antigo — então o relatório
-    # não conseguia mostrar a taxa de moto, que é justamente a que está em questão.
-    layout = (payload.get("layout") or "").strip().lower()
-    if layout and layout not in ("carro", "moto"):
-        raise HTTPException(400, "layout deve ser 'carro' ou 'moto'")
-    if layout:
-        origem["layout"] = layout
+        # `layout` é campo próprio, e não texto em `obs`. Moto e carro são problemas
+        # diferentes de OCR (a placa de moto é empilhada em duas linhas e chega com bem
+        # menos pixels), mas `formato` só distingue mercosul/antigo — então o relatório
+        # não conseguia mostrar a taxa de moto, que é justamente a que está em questão.
+        layout = (payload.get("layout") or "").strip().lower()
+        if layout and layout not in ("carro", "moto"):
+            raise HTTPException(400, "layout deve ser 'carro' ou 'moto'")
+        if layout:
+            origem["layout"] = layout
 
-    formato = payload.get("formato") or ""
-    _upsert_foto(ds, arquivo, placa, formato, payload.get("tipo", "crop"),
-                 payload.get("obs", ""), origem)
+        formato = payload.get("formato") or ""
+        _upsert_foto(ds, arquivo, placa, formato, payload.get("tipo", "crop"),
+                     payload.get("obs", ""), origem)
 
-    # Propaga para o irmão do par recorte/quadro: mesma detecção, mesma placa.
-    propagado = None
-    par = _irmao_do_par(arquivo)
-    if par:
-        irmao, tipo_irmao = par
-        ja_rotulado = any(f["arquivo"] == irmao for f in ds["fotos"])
-        # Um irmão já rotulado carrega o julgamento explícito de um humano, e um irmão
-        # descartado carrega a recusa explícita dele (quadro ilegível, veículo saindo).
-        # Sobrescrever qualquer um dos dois seria a máquina desfazendo a decisão de quem
-        # olhou a imagem — exatamente o que a fila existe para evitar.
-        if not ja_rotulado and irmao not in _ler_descartados():
-            # `obs` registra que NINGUÉM olhou este arquivo específico: a placa veio do
-            # irmão. Sem essa marca não daria para separar, numa medição estranha, o que
-            # foi conferido do que foi herdado.
-            _upsert_foto(ds, irmao, placa, formato, tipo_irmao,
-                         f"propagado do par ({Path(arquivo).name})", origem)
-            propagado = irmao
+        # Propaga para o irmão do par recorte/quadro: mesma detecção, mesma placa.
+        propagado = None
+        par = _irmao_do_par(arquivo)
+        if par:
+            irmao, tipo_irmao = par
+            ja_rotulado = any(f["arquivo"] == irmao for f in ds["fotos"])
+            # Um irmão já rotulado carrega o julgamento explícito de um humano, e um irmão
+            # descartado carrega a recusa explícita dele (quadro ilegível, veículo saindo).
+            # Sobrescrever qualquer um dos dois seria a máquina desfazendo a decisão de quem
+            # olhou a imagem — exatamente o que a fila existe para evitar.
+            if not ja_rotulado and irmao not in _ler_descartados():
+                # `obs` registra que NINGUÉM olhou este arquivo específico: a placa veio do
+                # irmão. Sem essa marca não daria para separar, numa medição estranha, o que
+                # foi conferido do que foi herdado.
+                _upsert_foto(ds, irmao, placa, formato, tipo_irmao,
+                             f"propagado do par ({Path(arquivo).name})", origem)
+                propagado = irmao
 
-    _salvar_dataset(ds)
+        _salvar_dataset(ds)
     return {"ok": True, "total": len(ds["fotos"]), "propagado": propagado}
 
 
@@ -296,12 +316,13 @@ def remover_foto(payload: dict):
     arquivo = (payload.get("arquivo") or "").strip()
     if not arquivo:
         raise HTTPException(400, "arquivo obrigatório")
-    ds = _ler_dataset()
-    antes = len(ds["fotos"])
-    ds["fotos"] = [f for f in ds["fotos"] if f["arquivo"] != arquivo]
-    if len(ds["fotos"]) == antes:
-        raise HTTPException(404, "Foto não encontrada no dataset")
-    _salvar_dataset(ds)
+    with _lock_dataset:
+        ds = _ler_dataset()
+        antes = len(ds["fotos"])
+        ds["fotos"] = [f for f in ds["fotos"] if f["arquivo"] != arquivo]
+        if len(ds["fotos"]) == antes:
+            raise HTTPException(404, "Foto não encontrada no dataset")
+        _salvar_dataset(ds)
     return {"ok": True, "total": len(ds["fotos"])}
 
 
@@ -346,11 +367,25 @@ def listar_bicos():
         a = automacoes.get(b["automacao_id"])
         emp = empresas.get(a["empresa_id"]) if a else None
         cam = cameras.get(b["camera_id"])
+        # `cameras` descreve os dois slots; os campos avulsos seguem apontando para a
+        # primeira, para a tela de testes atual continuar funcionando sem alteração.
+        fontes = [{"camera_id": b["camera_id"], "papel": b.get("papel_camera") or "traseira",
+                   "camera_nome": cam["nome"] if cam else "?",
+                   "camera_local": cam.get("local", "") if cam else "",
+                   "tem_roi": bool(b["roi"])}]
+        if b.get("camera2_id"):
+            cam2 = cameras.get(b["camera2_id"])
+            fontes.append({"camera_id": b["camera2_id"],
+                           "papel": b.get("papel_camera2") or "frente",
+                           "camera_nome": cam2["nome"] if cam2 else "?",
+                           "camera_local": cam2.get("local", "") if cam2 else "",
+                           "tem_roi": bool(b.get("roi2"))})
         saida.append({
             "id": b["id"],
             "codigo": b["codigo"],
             "nome": b["nome"],
             "tem_roi": bool(b["roi"]),
+            "cameras": fontes,
             "camera_id": b["camera_id"],
             "camera_nome": cam["nome"] if cam else "?",
             "camera_local": cam.get("local", "") if cam else "",
@@ -378,7 +413,14 @@ def capturar_bico(bico_id: int, payload: dict = {}):
     bico = banco.bicos_obter(bico_id)
     if not bico:
         raise HTTPException(404, "Bico não encontrado")
-    cam = banco.cameras_obter(bico["camera_id"])
+    # Bico de 2 câmeras: `camera_id` no payload escolhe qual capturar (ausente = a
+    # primeira). Cada câmera tem a sua própria área, e capturar com o recorte da outra
+    # produziria uma imagem de dataset que não corresponde a nada que a leitura vê.
+    escolhida = payload.get("camera_id") or bico["camera_id"]
+    if escolhida not in (bico["camera_id"], bico.get("camera2_id")):
+        raise HTTPException(400, "Câmera não é deste bico")
+    roi_bruto = bico["roi"] if escolhida == bico["camera_id"] else bico.get("roi2")
+    cam = banco.cameras_obter(escolhida)
     if not cam:
         raise HTTPException(404, "Câmera do bico não encontrada")
 
@@ -409,8 +451,8 @@ def capturar_bico(bico_id: int, payload: dict = {}):
         raise HTTPException(503, "Não foi possível capturar imagem da câmera")
 
     recortado = False
-    if bico["roi"] and payload.get("aplicar_roi", True):
-        r = _json.loads(bico["roi"]) if isinstance(bico["roi"], str) else bico["roi"]
+    if roi_bruto and payload.get("aplicar_roi", True):
+        r = _json.loads(roi_bruto) if isinstance(roi_bruto, str) else roi_bruto
         recorte = frame[r["y"]:r["y"] + r["h"], r["x"]:r["x"] + r["w"]]
         if recorte.size:
             frame, recortado = recorte, True

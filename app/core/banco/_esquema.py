@@ -98,18 +98,53 @@ def _migrar(c: sqlite3.Connection) -> None:
     # da placa (mercosul/antigo) e vale para os dois tipos de veículo — sem coluna própria
     # o histórico não tem como separar moto de carro.
     #
-    # O valor vem do `e_moto` do AutoOCR (app/visao/ocr/auto.py), que é heurístico: hoje é
-    # `tinha_header and aspect <= 2.0`, e o próprio arquivo documenta a medição em que 3 de
-    # 26 carros caíram como moto. Guardar mesmo assim vale mais do que não guardar — é o
-    # único sinal que existe, e tê-lo gravado por linha é o que permite medir e corrigir o
-    # limiar depois. Mas quem lê esta coluna precisa saber que ela é estimativa, não
-    # cadastro; a interface rotula como "estimado".
+    # O valor é a CLASSE do detector de veículo (YOLOX, 1º estágio da detecção em 2
+    # estágios): COCO 3=motorcycle → 'moto'; 2/5/7=car/bus/truck → 'carro'. Ela viaja
+    # carregada na própria bbox da placa, desde `DetectorDoisEstagios`, porque a associação
+    # é estrutural — a placa foi encontrada DENTRO do recorte daquele veículo.
     #
-    # NULL = desconhecido, e são três casos distintos que não se deve fundir com 'carro':
-    # linhas anteriores a esta migração (as ~440 já existentes), leituras por engine único
-    # (que não passam pelo AutoOCR e nunca calculam `e_moto`) e detecções do pipeline.
+    # Continua sendo estimativa, não cadastro, e a interface rotula como "estimado".
+    #
+    # Até 20/08/2026 a fonte era o `e_moto` do AutoOCR (`tinha_header and aspect <= 2.0`).
+    # Aposentada por medição: 32,8% das 774 detecções reais tinham aspecto abaixo do
+    # limiar, 12 dos 25 rótulos gravados eram 'moto' num posto de combustível (11 depois
+    # refutados rodando o YOLOX nos quadros salvos), e o mesmo veículo recebeu vereditos
+    # opostos com 3 min de diferença — bbox 59×27 deu 'carro', 56×28 deu 'moto'. O aspecto
+    # do bbox mede a folga do detector, não a diagramação da placa, então não havia limiar
+    # que consertasse.
+    #
+    # NULL = desconhecido, e nenhum destes casos deve ser fundido com 'carro': linhas
+    # anteriores à troca de fonte, 2 estágios desligado (`veiculo_dois_estagios_*=nao`),
+    # nenhum veículo detectado no quadro, e placa recuperada pela varredura em janelas
+    # (que roda só o estágio de placa).
     if "tipo_veiculo" not in cols_det:
         c.execute("ALTER TABLE deteccoes ADD COLUMN tipo_veiculo TEXT")
+    # O SINAL CRU por trás do veredito acima — mesmo precedente de `acordo`+`confirmada`
+    # (medida crua + veredito congelado), agora aplicado a `tipo_veiculo`. `veiculo_classe`
+    # é a classe COCO bruta (2=car, 3=motorcycle, 5=bus, 7=truck — não só 'carro'/'moto'),
+    # `veiculo_conf` é a confiança do detector de VEÍCULO (não confundir com `confianca`,
+    # que é do OCR). Sem isto, "subir `veiculo_conf` de 0,4 para 0,5 custaria o quê?" só
+    # tinha resposta por palpite — medido: perderia ~14,7% dos veículos vistos.
+    #
+    # `tipo_veiculo_fonte` é o motivo, inclusive quando `tipo_veiculo` é NULL — hoje essa
+    # coluna (acima) já documenta 4 causas de NULL em texto corrido; esta as torna
+    # consultáveis. Vocabulário (cresce; validado em Python em `_deteccoes.py`, não por
+    # CHECK, que não dá para estender sem recriar a tabela):
+    #   'veiculo'             tipo veio de um veículo detectado
+    #   'classe-nao-mapeada'  veículo detectado, classe fora do mapa (ex.: config custom)
+    #   'sem-veiculo'         2 estágios rodou, nenhum veículo no quadro
+    #   'tiles'               placa veio da varredura em janelas (não roda estágio de veículo)
+    #   'sem-2-estagios'      detector de 1 estágio
+    #   'replay:<causa>'      reconstruído a posteriori por `testes/recalcula_tipo_veiculo.py`
+    #                         a partir do quadro salvo — nunca confundir com medida ao vivo
+    # NULL nesta coluna = linha anterior a esta migração (o veredito em `tipo_veiculo`,
+    # se houver, não tem sinal cru correspondente).
+    if "veiculo_classe" not in cols_det:
+        c.execute("ALTER TABLE deteccoes ADD COLUMN veiculo_classe INTEGER")
+    if "veiculo_conf" not in cols_det:
+        c.execute("ALTER TABLE deteccoes ADD COLUMN veiculo_conf REAL")
+    if "tipo_veiculo_fonte" not in cols_det:
+        c.execute("ALTER TABLE deteccoes ADD COLUMN tipo_veiculo_fonte TEXT")
     # `deteccoes` é alimentada por toda leitura reativa de todos os postos — sem
     # índice, listar/filtrar por bico vira table scan conforme a tabela cresce.
     # Fica em `_migrar` (não no CREATE TABLE inicial) porque só depois daqui a
@@ -125,6 +160,39 @@ def _migrar(c: sqlite3.Connection) -> None:
     # Prazo de retenção próprio (LGPD por cliente): NULL = usa o `retencao_dias` global.
     if "retencao_dias_override" not in cols_emp:
         c.execute("ALTER TABLE empresas ADD COLUMN retencao_dias_override INTEGER")
+
+    # ── Segunda câmera por bico (opcional) ───────────────────────────────────────────
+    # A câmera do posto fica elevada: um veículo com estepe/roda na traseira esconde a
+    # placa traseira, e aí NENHUM ajuste de OCR resolve — não há pixel de placa no frame
+    # (é o que a medição de 13/08/2026 mostrou: o gargalo dominante é enquadramento, não
+    # leitura). Uma segunda câmera enxergando o outro lado do carro é a única saída.
+    #
+    # `camera2_id` NULL = bico de uma câmera, comportamento de sempre — a feature é
+    # opcional bico a bico, não uma migração de todo mundo. Nullable também é o que
+    # permite o `ADD COLUMN ... REFERENCES` (o SQLite só aceita a cláusula quando o
+    # default é NULL; mesmo caso de `cameras.empresa_id` e `usuarios.empresa_id` acima).
+    #
+    # `roi2` é coluna própria, e não um segundo campo no mesmo JSON, porque o ROI está em
+    # COORDENADAS DO FRAME de uma câmera específica: o retângulo da traseira não quer
+    # dizer nada na imagem da frente.
+    #
+    # Os papéis são descritivos (rótulo na tela + de qual ângulo saiu a placa no
+    # histórico); nenhuma decisão do laço de leitura depende deles. Linhas existentes
+    # ficam 'traseira' porque é o que as câmeras já instaladas enquadram — o palpite é
+    # certo na esmagadora maioria e corrigível em dois cliques, enquanto um valor
+    # "indefinido" obrigaria o admin a revisitar todos os bicos sem ganhar informação.
+    cols_bic = {row[1] for row in c.execute("PRAGMA table_info(bicos)").fetchall()}
+    if "papel_camera" not in cols_bic:
+        c.execute("ALTER TABLE bicos ADD COLUMN papel_camera TEXT NOT NULL DEFAULT 'traseira'")
+    if "camera2_id" not in cols_bic:
+        c.execute("ALTER TABLE bicos ADD COLUMN camera2_id INTEGER REFERENCES cameras(id) ON DELETE RESTRICT")
+    if "roi2" not in cols_bic:
+        c.execute("ALTER TABLE bicos ADD COLUMN roi2 TEXT")
+    if "papel_camera2" not in cols_bic:
+        c.execute("ALTER TABLE bicos ADD COLUMN papel_camera2 TEXT NOT NULL DEFAULT 'frente'")
+    # Fica aqui (não no CREATE inicial) pelo mesmo motivo de `idx_deteccoes_bico`: só
+    # depois desta migração a coluna existe também nos bancos antigos.
+    c.execute("CREATE INDEX IF NOT EXISTS idx_bicos_camera2 ON bicos(camera2_id)")
 
     # Usuário do painel restrito a UMA empresa ("cliente"): NULL = admin, vê tudo (papel
     # continua sendo o que manda — isto só faz sentido quando papel='cliente').
@@ -237,6 +305,9 @@ def inicializar() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_automacoes_empresa ON automacoes(empresa_id);
 
+        -- Um bico enxerga o veículo por 1 ou 2 câmeras (ver `camera2_id` abaixo). Cada
+        -- câmera tem ROI e papel PRÓPRIOS: o retângulo está em coordenadas do frame
+        -- daquela câmera e não significa nada na outra.
         CREATE TABLE IF NOT EXISTS bicos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             automacao_id INTEGER NOT NULL REFERENCES automacoes(id) ON DELETE CASCADE,
@@ -246,12 +317,21 @@ def inicializar() -> None:
             lado INTEGER,                                  -- opcional, só organização/UI
             camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE RESTRICT,
             roi TEXT,                                      -- {x,y,w,h} — área própria deste bico
+            papel_camera TEXT NOT NULL DEFAULT 'traseira', -- 'traseira' | 'frente'
+            camera2_id INTEGER REFERENCES cameras(id) ON DELETE RESTRICT,   -- NULL = uma câmera só
+            roi2 TEXT,
+            papel_camera2 TEXT NOT NULL DEFAULT 'frente',
             ativo INTEGER NOT NULL DEFAULT 1,
             criado_em TEXT NOT NULL,
             UNIQUE(automacao_id, codigo)
         );
         CREATE INDEX IF NOT EXISTS idx_bicos_automacao ON bicos(automacao_id);
         CREATE INDEX IF NOT EXISTS idx_bicos_camera ON bicos(camera_id);
+        -- `idx_bicos_camera2` NÃO entra aqui: num banco antigo a coluna `camera2_id` só
+        -- existe depois de `_migrar` (que roda no fim de `inicializar`), e o CREATE TABLE
+        -- IF NOT EXISTS acima não altera uma tabela que já existe. Criar o índice neste
+        -- script quebra o boot de toda instalação existente com "no such column". Mesmo
+        -- motivo de `idx_deteccoes_bico` — ver o comentário dele em `_migrar`.
 
         -- Log de TODA chamada do roteador ao endpoint reativo, inclusive as recusadas.
         -- É o que dá visibilidade da integração: sem isso, um cadastro errado do lado do

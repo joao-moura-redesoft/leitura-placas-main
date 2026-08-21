@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from app.visao.consenso import confirmada
-from app.visao.pipeline import Pipeline, _consenso_janela
+from app.visao.pipeline import Pipeline, _consenso_janela, _maxlen_historico
 from app.visao.tracker import Tracker
 
 FRAME = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -51,7 +51,10 @@ def _pipeline_classico(frames_consenso: int = 3, acordo_min: float = 0.80):
     p = Pipeline.__new__(Pipeline)
     p.frames_consenso = frames_consenso
     p.acordo_min = acordo_min
-    p._historico = deque(maxlen=10)
+    # Mesma conta do `__init__` real (`_maxlen_historico`): o deque precisa comportar
+    # PELO MENOS frames_consenso itens, senão `recentes` nunca alcança esse tamanho e
+    # a emissão trava em silêncio — é o bug que TestFramesConsensoAcimaDoPadrao cobre.
+    p._historico = deque(maxlen=_maxlen_historico(frames_consenso))
     p.emitidas = []
     p._emitir = lambda *args, **kw: p.emitidas.append(kw)
     return p
@@ -102,6 +105,40 @@ class TestTentarEmitirClassico:
             p._tentar_emitir("ABC1D23", "mercosul", 0.9, FRAME, (0, 0, 10, 10))
         assert len(p.emitidas) == 1
         assert p.emitidas[0]["acordo"] == 1.0
+
+
+class TestFramesConsensoAcimaDoPadrao:
+    """Regressão: `self._historico` tinha `maxlen=10` fixo em `__init__`, mas a UI de
+    config permite `frames_consenso` de 1 a 20 sem validação server-side. Com
+    `frames_consenso > 10`, `recentes = list(self._historico)[-self.frames_consenso:]`
+    nunca alcançava `len == self.frames_consenso` (o deque descartava o excedente antes
+    disso) — a emissão parava de acontecer, EM SILÊNCIO, embora o bbox verde continuasse
+    sendo desenhado na tela como se estivesse indo pro ar."""
+
+    def test_frames_consenso_15_emite(self):
+        p = _pipeline_classico(frames_consenso=15)
+        for _ in range(15):
+            p._tentar_emitir("ABC1D23", "mercosul", 0.9, FRAME, (0, 0, 10, 10))
+        assert len(p.emitidas) == 1
+        assert p.emitidas[0]["acordo"] == 1.0
+        assert p.emitidas[0]["confirmada"] is True
+        assert (p.emitidas[0]["votos"], p.emitidas[0]["total_leituras"]) == (15, 15)
+
+    def test_frames_consenso_15_nao_emite_antes_de_fechar(self):
+        p = _pipeline_classico(frames_consenso=15)
+        for _ in range(14):
+            p._tentar_emitir("ABC1D23", "mercosul", 0.9, FRAME, (0, 0, 10, 10))
+        assert p.emitidas == []
+
+    @pytest.mark.parametrize("frames_consenso,esperado", [
+        (1, 10), (5, 10), (10, 10),   # piso: comportamento inalterado até 10
+        (11, 11), (15, 15), (20, 20),  # acima de 10: o deque precisa acompanhar
+    ])
+    def test_maxlen_historico_acompanha_frames_consenso_acima_do_piso(self, frames_consenso, esperado):
+        """`_maxlen_historico` é a MESMA conta que `Pipeline.__init__` usa para criar
+        `self._historico` — testar a função exercita a lógica real de produção, não
+        uma cópia dela dentro do teste."""
+        assert _maxlen_historico(frames_consenso) == esperado
 
 
 # ── Modo tracker: votos por veículo rastreado ─────────────────────────────────

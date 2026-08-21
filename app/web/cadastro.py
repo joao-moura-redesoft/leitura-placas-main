@@ -27,6 +27,31 @@ def _normalizar_cnpj(cnpj: str) -> str:
     return re.sub(r"\D", "", cnpj or "")
 
 
+def _camera_id_opcional(valor) -> int | None:
+    """`camera_id` vindo de corpo JSON: ausente/vazio = "não especificado"."""
+    if valor in (None, "", 0):
+        return None
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "camera_id deve ser inteiro")
+
+
+def rois_faltando(bico: dict) -> list[int]:
+    """Ids das câmeras deste bico que ainda não têm área desenhada.
+
+    Um bico de duas câmeras com uma área só não está configurado pela metade em termos de
+    resultado: na câmera sem área a leitura analisa o QUADRO INTEIRO, que é justamente o
+    que o recorte existe para evitar. Por isso o checklist conta pares (bico, câmera).
+    """
+    faltando = []
+    if not bico.get("roi"):
+        faltando.append(bico["camera_id"])
+    if bico.get("camera2_id") and not bico.get("roi2"):
+        faltando.append(bico["camera2_id"])
+    return faltando
+
+
 def _cnpj_valido(cnpj: str) -> bool:
     """Dígito verificador padrão (módulo 11). Sem isso, `banco.py` aceitava qualquer
     sequência de 14 dígitos como CNPJ — inclusive erro de digitação óbvio (transposição
@@ -75,9 +100,12 @@ def postos_listar(request: Request):
             "n_automacoes": len(autos),
             "n_bicos": len(meus_bicos),
             "n_cameras": len(cams),
-            "n_bicos_sem_roi": sum(1 for b in meus_bicos if not b["roi"]),
+            # Conta BICOS com área faltando (é o que a tela lista como pendência), mas a
+            # pendência de um bico de 2 câmeras inclui a área da segunda.
+            "n_bicos_sem_roi": sum(1 for b in meus_bicos if rois_faltando(b)),
             # "pronto" = dá para o roteador chamar e obter leitura útil
-            "pronto": bool(cams and autos and meus_bicos and all(b["roi"] for b in meus_bicos)),
+            "pronto": bool(cams and autos and meus_bicos
+                           and not any(rois_faltando(b) for b in meus_bicos)),
         })
     saida.sort(key=lambda p: (p["entidade_nome"], p["nome"]))
     return saida
@@ -102,9 +130,24 @@ def posto_detalhe(empresa_id: int, request: Request):
         bicos = []
         for b in banco.bicos_listar(automacao_id=a["id"]):
             cam = cams.get(b["camera_id"]) or banco.cameras_obter(b["camera_id"]) or {}
+            faltando = rois_faltando(b)
+            # `cameras` descreve os slots do bico de uma vez; os campos avulsos
+            # (`camera_nome`, `tem_roi`) continuam apontando para a primeira câmera para
+            # as telas que ainda não leem a lista.
+            fontes = [{"camera_id": b["camera_id"], "papel": b.get("papel_camera") or "traseira",
+                       "nome": cam.get("nome", "?"), "local": cam.get("local", ""),
+                       "tem_roi": bool(b["roi"]), "slot": 1}]
+            if b.get("camera2_id"):
+                cam2 = cams.get(b["camera2_id"]) or banco.cameras_obter(b["camera2_id"]) or {}
+                fontes.append({"camera_id": b["camera2_id"],
+                               "papel": b.get("papel_camera2") or "frente",
+                               "nome": cam2.get("nome", "?"), "local": cam2.get("local", ""),
+                               "tem_roi": bool(b.get("roi2")), "slot": 2})
             bicos.append({**b,
                           "camera_nome": cam.get("nome", "?"),
                           "camera_local": cam.get("local", ""),
+                          "cameras": fontes,
+                          "rois_faltando": faltando,
                           "tem_roi": bool(b["roi"])})
         autos.append({**a, "bicos": bicos})
     return {
@@ -368,22 +411,18 @@ def bicos_obter(id_: int, request: Request):
     return bico
 
 
-def _validar_bico(payload: dict) -> None:
-    """Garante que a câmera escolhida pertence ao MESMO posto do bico.
+PAPEIS_CAMERA = ("traseira", "frente")
+
+
+def _validar_camera_do_posto(camera_id: int, automacao: dict) -> dict:
+    """Carrega a câmera e garante que ela pertence ao MESMO posto do bico.
 
     Sem isso, num servidor central seria possível apontar o bico do Posto A para a câmera
     do Posto B — o roteador de um cliente receberia a imagem do pátio de outro.
     """
-    if not payload.get("automacao_id") or not payload.get("camera_id"):
-        raise HTTPException(400, "automacao_id e camera_id são obrigatórios")
-
-    automacao = banco.automacoes_obter(int(payload["automacao_id"]))
-    if not automacao:
-        raise HTTPException(400, "Automação não encontrada")
-    camera = banco.cameras_obter(int(payload["camera_id"]))
+    camera = banco.cameras_obter(camera_id)
     if not camera:
         raise HTTPException(400, "Câmera não encontrada")
-
     if camera.get("empresa_id") != automacao["empresa_id"]:
         emp_cam = banco.empresas_obter(camera["empresa_id"]) if camera.get("empresa_id") else None
         emp_bico = banco.empresas_obter(automacao["empresa_id"])
@@ -393,6 +432,45 @@ def _validar_bico(payload: dict) -> None:
             f"{emp_cam['nome'] if emp_cam else 'nenhuma empresa'} e o bico a "
             f"{emp_bico['nome'] if emp_bico else '?'} — escolha uma câmera do mesmo posto.",
         )
+    return camera
+
+
+def _validar_bico(payload: dict) -> None:
+    """Valida as câmeras do bico (1 obrigatória + 1 opcional) e seus papéis.
+
+    A segunda câmera passa pela MESMA checagem de posto da primeira: ela é uma fonte de
+    imagem como qualquer outra, e deixá-la de fora reabriria por outro campo exatamente
+    o vazamento entre postos que a validação da primeira fecha.
+    """
+    if not payload.get("automacao_id") or not payload.get("camera_id"):
+        raise HTTPException(400, "automacao_id e camera_id são obrigatórios")
+
+    automacao = banco.automacoes_obter(int(payload["automacao_id"]))
+    if not automacao:
+        raise HTTPException(400, "Automação não encontrada")
+
+    camera_id = int(payload["camera_id"])
+    _validar_camera_do_posto(camera_id, automacao)
+
+    # Normaliza os papéis in-place (o payload segue daqui direto para o banco), inclusive
+    # no bico de uma câmera — senão 'TRASEIRA' e 'traseira' viram rótulos diferentes na
+    # tela e nos filtros do histórico.
+    for campo, padrao in (("papel_camera", "traseira"), ("papel_camera2", "frente")):
+        papel = (payload.get(campo) or padrao).strip().lower()
+        if papel not in PAPEIS_CAMERA:
+            raise HTTPException(400, f"{campo} deve ser um de: {', '.join(PAPEIS_CAMERA)}")
+        payload[campo] = papel
+
+    bruto2 = payload.get("camera2_id")
+    if bruto2 in (None, "", 0):
+        return                      # bico de uma câmera — nada mais a validar
+
+    camera2_id = int(bruto2)
+    if camera2_id == camera_id:
+        raise HTTPException(
+            400, "A segunda câmera precisa ser diferente da primeira — o ganho vem de "
+                 "enxergar o veículo por outro ângulo.")
+    _validar_camera_do_posto(camera2_id, automacao)
 
 
 @router.post("/bicos", dependencies=[Depends(deps.exigir_admin)])
@@ -430,10 +508,32 @@ def bicos_remover(id_: int):
     return {"removido": True}
 
 
+def _slot_da_camera(bico: dict, camera_id: int | None) -> int:
+    """Descobre a qual câmera do bico um ROI se refere.
+
+    `camera_id` ausente = slot 1, que é o comportamento de sempre — todo chamador antigo
+    continua correto sem mudar nada. Presente, tem que bater com uma das câmeras do bico:
+    o retângulo só faz sentido nas coordenadas de uma câmera específica, então adivinhar
+    aqui gravaria a área certa no lugar errado, sem erro nenhum na hora.
+    """
+    if camera_id is None:
+        return 1
+    if camera_id == bico["camera_id"]:
+        return 1
+    if bico.get("camera2_id") and camera_id == bico["camera2_id"]:
+        return 2
+    validas = [str(bico["camera_id"])] + ([str(bico["camera2_id"])] if bico.get("camera2_id") else [])
+    raise HTTPException(
+        400, f"A câmera {camera_id} não é deste bico — câmeras válidas: {', '.join(validas)}")
+
+
 @router.put("/bicos/{id_}/roi", dependencies=[Depends(deps.exigir_admin)])
 def bicos_salvar_roi(id_: int, payload: dict):
-    """Salva a área de captura (ROI) do bico. Bicos que compartilham câmera mantêm ROIs
-    independentes — a leitura reativa recorta pela área do bico chamado no GET.
+    """Salva a área de captura (ROI) do bico numa das câmeras dele.
+
+    Bicos que compartilham câmera mantêm ROIs independentes — a leitura reativa recorta
+    pela área do bico chamado no GET. `camera_id` no corpo escolhe a câmera quando o bico
+    tem duas; omitido, vale a primeira.
     """
     try:
         x, y, w, h = int(payload["x"]), int(payload["y"]), int(payload["w"]), int(payload["h"])
@@ -441,18 +541,21 @@ def bicos_salvar_roi(id_: int, payload: dict):
         raise HTTPException(400, "x, y, w, h são obrigatórios e devem ser inteiros")
     if w <= 0 or h <= 0:
         raise HTTPException(400, "w e h devem ser positivos")
-    if not banco.bicos_obter(id_):
+    bico = banco.bicos_obter(id_)
+    if not bico:
         raise HTTPException(404, "Bico não encontrado")
-    banco.bico_salvar_roi(id_, {"x": x, "y": y, "w": w, "h": h})
+    slot = _slot_da_camera(bico, _camera_id_opcional(payload.get("camera_id")))
+    banco.bico_salvar_roi(id_, {"x": x, "y": y, "w": w, "h": h}, slot=slot)
     return {"salvo": True}
 
 
 @router.delete("/bicos/{id_}/roi", dependencies=[Depends(deps.exigir_admin)])
-def bicos_limpar_roi(id_: int):
+def bicos_limpar_roi(id_: int, camera_id: int | None = None):
     """Remove a área de captura — leitura reativa desse bico volta a usar o frame completo."""
-    if not banco.bicos_obter(id_):
+    bico = banco.bicos_obter(id_)
+    if not bico:
         raise HTTPException(404, "Bico não encontrado")
-    banco.bico_limpar_roi(id_)
+    banco.bico_limpar_roi(id_, slot=_slot_da_camera(bico, camera_id))
     return {"limpo": True}
 
 
@@ -474,17 +577,15 @@ def bicos_ler_placa_teste(id_: int, request: Request):
         nivel = motivo.rsplit("_", 1)[0]
         raise HTTPException(409, f"Nível '{nivel}' está desativado no cadastro")
     deps.checar_acesso_empresa(request, _empresa_do_bico(bico))
-    cam = banco.cameras_obter(bico["camera_id"])
-    if not cam:
+    fontes_db, avisos, falha = banco.cameras_do_bico(bico)
+    if falha is not None:
         raise HTTPException(404, "Câmera do bico não encontrada")
 
     cfg = config.carregar()
-    especificacao = leitura.EspecificacaoCamera.de_camera_db(cam, cfg)
-    roi = json.loads(bico["roi"]) if bico.get("roi") else None
     try:
         return leitura.ler_placa(
-            camera_id=bico["camera_id"], especificacao=especificacao, roi=roi, cfg=cfg,
-            pipeline_frame_provider=leitura_rotas.frame_ao_vivo(bico["camera_id"]),
+            fontes=leitura_rotas.montar_fontes(fontes_db, cfg),
+            cfg=cfg, avisos=avisos,
             preview_nome=f"preview_bico_{id_}", bico_id=id_, origem="teste",
         )
     except leitura.LeituraError as e:

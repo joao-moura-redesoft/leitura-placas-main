@@ -87,6 +87,10 @@ class _Encoder:
                         proc.wait(timeout=3)
                     except Exception:
                         proc.kill()
+                        try:
+                            proc.wait(timeout=2)
+                        except Exception:
+                            pass
             if not self._stop.is_set():
                 time.sleep(5)
 

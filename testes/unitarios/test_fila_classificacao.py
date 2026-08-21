@@ -13,6 +13,8 @@ Por isso os testes abaixo fixam, além do vai-e-vem da fila, que o campo se cham
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -148,3 +150,78 @@ def test_sem_layout_nao_inventa_valor(area):
 
     ent = next(f for f in t._ler_dataset()["fotos"] if f["arquivo"] == alvo)
     assert "layout" not in ent
+
+
+class TestConcorrencia:
+    """Duas classificações ao mesmo tempo (dois admins, ou um duplo-clique disparando
+    duas requisições) fazem cada uma sua leitura-modificação-escrita de dataset.json.
+    Sem lock, a que escreve por último venceu a partir de uma leitura feita ANTES da
+    outra escrever — e apaga a rotulagem alheia em silêncio."""
+
+    def test_duas_classificacoes_concorrentes_nao_perdem_rotulo(self, area, monkeypatch):
+        alvos = sorted(_arquivos(t.listar_candidatos()))[:2]
+        assert len(alvos) == 2, "fixture precisa ter pelo menos 2 candidatos distintos"
+
+        original_ler = t._ler_dataset
+
+        def _ler_devagar():
+            ds = original_ler()
+            # Alarga de propósito a janela entre a leitura e a escrita, para que a
+            # corrida aconteça de forma determinística e não dependa de sorte do
+            # agendamento de threads.
+            time.sleep(0.05)
+            return ds
+
+        monkeypatch.setattr(t, "_ler_dataset", _ler_devagar)
+
+        barreira = threading.Barrier(2)
+
+        def _classificar(arquivo, placa):
+            barreira.wait()   # os dois threads chegam ao _ler_dataset juntos
+            t.adicionar_foto({"arquivo": arquivo, "placa_correta": placa})
+
+        threads = [
+            threading.Thread(target=_classificar, args=(alvos[0], "AAA1A11")),
+            threading.Thread(target=_classificar, args=(alvos[1], "BBB2B22")),
+        ]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+
+        ds_final = original_ler()
+        no_dataset = {f["arquivo"]: f["placa_correta"] for f in ds_final["fotos"]}
+        assert no_dataset.get(alvos[0]) == "AAA1A11", "rotulagem da primeira classificação sumiu"
+        assert no_dataset.get(alvos[1]) == "BBB2B22", "rotulagem da segunda classificação sumiu"
+        assert len(ds_final["fotos"]) == 2
+
+    def test_descartes_concorrentes_nao_se_perdem(self, area, monkeypatch):
+        """Mesmo bug, mesmo remédio, mas no arquivo `descartados.json` — que tem lock
+        próprio e independente do dataset."""
+        alvos = sorted(_arquivos(t.listar_candidatos()))[:2]
+        assert len(alvos) == 2
+
+        original_ler = t._ler_descartados
+
+        def _ler_devagar():
+            d = original_ler()
+            time.sleep(0.05)
+            return d
+
+        monkeypatch.setattr(t, "_ler_descartados", _ler_devagar)
+
+        barreira = threading.Barrier(2)
+
+        def _descartar(arquivo):
+            barreira.wait()
+            t.descartar_candidato({"arquivo": arquivo})
+
+        threads = [threading.Thread(target=_descartar, args=(a,)) for a in alvos]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+
+        d_final = original_ler()
+        assert alvos[0] in d_final
+        assert alvos[1] in d_final

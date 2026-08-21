@@ -19,10 +19,23 @@ _INTERVALO_SEG = 24 * 60 * 60  # 1x por dia
 def _arquivo_de_url(rel: str | None) -> Path | None:
     """Converte a URL relativa gravada em `deteccoes` (ex.: "/static/snapshots/x.jpg")
     no caminho de arquivo real. Só aceita o prefixo esperado — nunca segue caminho
-    fora de app/web/static/ mesmo que o valor gravado seja inesperado."""
+    fora de app/web/static/ mesmo que o valor gravado seja inesperado.
+
+    Defesa em profundidade: além do prefixo, resolve o caminho final e confirma que
+    ele continua dentro do diretório base. Hoje `rel` só vem de fontes internas
+    controladas (nunca de entrada de usuário), mas caso algum caminho futuro passe a
+    gravar esses campos com dado menos controlado (ex.: "/static/../../etc/passwd"),
+    a purga não deve apagar nada fora do diretório esperado."""
     if not rel or not rel.startswith("/static/"):
         return None
-    return Path("app/web/static") / rel[len("/static/"):]
+    base = Path("app/web/static").resolve()
+    caminho = (base / rel[len("/static/"):]).resolve()
+    try:
+        caminho.relative_to(base)
+    except ValueError:
+        log.warning("Retenção: caminho fora de app/web/static/ ignorado: %s", rel)
+        return None
+    return caminho
 
 
 class RetentionWorker:

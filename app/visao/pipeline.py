@@ -15,7 +15,7 @@ from app.core import estado
 from app.visao import contexto_log
 from app.visao.camera import Camera
 from app.visao.consenso import confirmada as _confirmada
-from app.visao.detector import Detector
+from app.visao.detector import Detector, MultiDetector, OrigemTipo, deslocar, origem_de_bbox
 from app.visao.ocr import OCR
 from app.visao.ocr.auto import crop_legivel
 from app.visao.validador import parecidas, validar
@@ -48,6 +48,31 @@ def _expandir_bbox(x: int, y: int, w: int, h: int, frame_w: int, frame_h: int,
     return x2, y2, w2, h2
 
 
+# IoU mínimo para dar a uma caixa de track o tipo de uma detecção deste frame. Com o
+# `_IoUTracker` o casamento é exato (IoU 1,0); o piso existe para o ByteTrack, cuja caixa
+# passa pelo filtro de Kalman e sai levemente deslocada da detecção que a alimentou.
+IOU_MIN_TRACK = 0.5
+
+
+def _origem_do_track(bbox_track: tuple, bboxes) -> OrigemTipo | None:
+    """Origem do tipo de veículo (classe + sinal cru) da detecção que melhor casa com
+    esta caixa de track.
+
+    None quando nenhuma detecção deste frame se sobrepõe o bastante — o track pode estar
+    sendo predito sem detecção nova (paciência do tracker), e nesse caso não há veículo
+    observado agora para afirmar o tipo. Devolve o objeto inteiro, e não só o `str` do
+    tipo: os quatro campos (`tipo_veiculo`/`veiculo_classe`/`veiculo_conf`/
+    `tipo_veiculo_fonte`) têm que gravar juntos, e um objeto é o que torna "mover em
+    bloco" o caminho natural.
+    """
+    melhor, melhor_iou = None, 0.0
+    for b in bboxes:
+        iou = MultiDetector._iou(bbox_track, b)
+        if iou > melhor_iou:
+            melhor, melhor_iou = b, iou
+    return origem_de_bbox(melhor) if melhor_iou >= IOU_MIN_TRACK else None
+
+
 def _vale_como_negativo(crop) -> bool:
     """Se este recorte não-lido merece virar imagem na fila de classificação.
 
@@ -61,6 +86,19 @@ def _vale_como_negativo(crop) -> bool:
         return False
     h, w = crop.shape[:2]
     return crop_legivel(w, h)
+
+
+def _maxlen_historico(frames_consenso: int) -> int:
+    """Tamanho mínimo do deque `_historico` para que `frames_consenso` sempre caiba.
+
+    A UI de config permite `frames_consenso` de 1 a 20 sem validação server-side. Um
+    `maxlen` menor que `frames_consenso` faz `_tentar_emitir` descartar leituras
+    ANTES de `recentes` alcançar `frames_consenso` itens — a emissão trava em
+    silêncio (sem log de erro), embora o bbox verde continue sendo desenhado como se
+    a leitura estivesse indo pro ar. 10 é o piso histórico (comportamento inalterado
+    para configs <=10).
+    """
+    return max(frames_consenso, 10)
 
 
 def _consenso_janela(janela: list[str], placa: str) -> tuple[float, int]:
@@ -155,7 +193,7 @@ class Pipeline:
         roi_raw = cfg.get("roi")
         self.roi: dict | None = _json.loads(roi_raw) if roi_raw else None
 
-        self._historico: deque = deque(maxlen=10)
+        self._historico: deque = deque(maxlen=_maxlen_historico(self.frames_consenso))
         self._parar = threading.Event()
         self._thread: threading.Thread | None = None
         # True enquanto `iniciar()` não terminou. A instância é publicada em `_instancias`
@@ -206,14 +244,38 @@ class Pipeline:
         estado.pipeline_rodando = True
         log.info("Pipeline iniciado (modo=%s)", "automático" if self.deteccao_automatica else "manual")
 
-    def parar(self) -> None:
+    def parar(self) -> bool:
+        """Sinaliza a thread do loop para parar e, só depois que ela morrer de
+        verdade, fecha a câmera. Retorna False (SEM fechar a câmera) se a thread
+        não morrer dentro do timeout — o chamador NÃO pode prosseguir para reabrir
+        a câmera nesse caso.
+
+        Fechar a câmera de outra thread enquanto `_loop_camera` ainda está viva não é
+        seguro: a thread do loop pode estar no meio de `self.camera.reconectar()`
+        (que abre uma NOVA conexão RTSP) ou prestes a chamar `self.camera.ler()` logo
+        depois de `fechar()` ter zerado o `cap`. O efeito prático que motivou esta
+        correção é o de `reiniciar_camera`: se ele seguisse em frente mesmo com a
+        thread antiga viva, `iniciar_camera` abriria uma SEGUNDA conexão RTSP
+        concorrente para a mesma câmera física — que a Intelbras (e a maioria das
+        câmeras IP) só aceita uma.
+        """
         self._parar.set()
         if self._thread:
             self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                log.error(
+                    "Câmera %d: thread do pipeline não encerrou em 5s (provável "
+                    "travada em leitura/reconexão de câmera) — NÃO fechando a câmera "
+                    "nem prosseguindo, para não abrir uma segunda conexão RTSP "
+                    "concorrente enquanto a thread antiga ainda está viva",
+                    self.camera_db_id,
+                )
+                return False
         self.camera.fechar()
         estado.pipeline_rodando = False
         estado.camera_conectada = False
         log.info("Pipeline parado")
+        return True
 
     def _loop(self) -> None:
         # Rotula TUDO que esta thread logar com a câmera de origem — inclusive o que sai
@@ -269,7 +331,15 @@ class Pipeline:
                         else:
                             log.warning("Câmera %d: reconexão falhou — nova tentativa em 30s", self.camera_db_id)
                             sem_frame_desde = time.time()
-                            time.sleep(30)
+                            # Fatiado em passos de 1s em vez de um único sleep(30): sem
+                            # isso, `parar()` (Correção 3) podia esperar até 30s pela
+                            # thread notar `_parar` antes de decidir se é seguro fechar
+                            # a câmera. Checar o flag a cada segundo deixa o encerramento
+                            # rápido no caso comum, sem mudar a cadência de retry.
+                            for _ in range(30):
+                                if self._parar.is_set():
+                                    break
+                                time.sleep(1)
                     else:
                         time.sleep(0.1)
                     # A câmera sumiu: nenhuma garantia sobre o próximo frame que vier
@@ -353,7 +423,11 @@ class Pipeline:
             if frame_det.size == 0:
                 return
             bboxes_roi = self.detector.detectar(frame_det)
-            bboxes = [(x + rx, y + ry, w, h, c) for x, y, w, h, c in bboxes_roi]
+            # `deslocar` e não uma comprehension crua: remontar a tupla descartaria o
+            # `tipo_veiculo` que o 2 estágios anexou. Ramo dormente hoje (a tabela
+            # `cameras` não tem coluna `roi`, então `_cfg_para_camera` deixa self.roi
+            # None), mas o dia em que uma ROI de câmera existir o tipo sumiria calado.
+            bboxes = [deslocar(b, rx, ry) for b in bboxes_roi]
         else:
             bboxes = self.detector.detectar(frame)
         # Amostra o quadro INTEIRO, tenha havido detecção ou não. É o único gatilho que
@@ -375,12 +449,20 @@ class Pipeline:
     def _processar_com_tracker(self, frame, bboxes, f_h: int, f_w: int, frame_limpo) -> None:
         tracks = self.tracker.update(bboxes, frame)
         for x, y, w, h, conf_det, track_id in tracks:
+            # O tracker devolve tuplas próprias, então a origem da bbox original não
+            # sobrevive à volta — recupera-se pela caixa de maior IoU. Com o
+            # `_IoUTracker` (o backend em uso quando boxmot não está instalado) a caixa do
+            # track É a da detecção e o casamento é exato; o IoU existe para o ByteTrack,
+            # que suaviza a caixa por Kalman. Sem match suficiente → None, nunca um chute.
+            origem_tipo = _origem_do_track((x, y, w, h), bboxes)
             x, y, w, h = _expandir_bbox(x, y, w, h, f_w, f_h)
             with contexto_log.usar(track=track_id):
-                self._processar_track(frame, frame_limpo, x, y, w, h, conf_det, track_id)
+                self._processar_track(frame, frame_limpo, x, y, w, h, conf_det, track_id,
+                                      origem_tipo=origem_tipo)
 
     def _processar_track(self, frame, frame_limpo, x, y, w, h,
-                         conf_det: float, track_id: int) -> None:
+                         conf_det: float, track_id: int,
+                         origem_tipo: OrigemTipo | None = None) -> None:
         """Um veículo rastreado, num tick. Extraído do laço para que o contexto de log
         (`[camN trkN]`) tenha um bloco onde valer."""
         if self.tracker.precisa_ocr(track_id):
@@ -424,14 +506,18 @@ class Pipeline:
                          acordo=acordo,
                          confirmada=_confirmada(acordo, votos, self.acordo_min,
                                                 self.tracker.votos_minimos),
-                         votos=votos, total_leituras=total)
+                         votos=votos, total_leituras=total,
+                         origem_tipo=origem_tipo)
         else:
             votos = self.tracker.votos_atuais(track_id)
             self._desenhar_bbox_track(frame, x, y, w, h, track_id, conf_det, votos)
 
     def _processar_classico(self, frame, bboxes, f_h: int, f_w: int, frame_limpo) -> None:
         """Comportamento original: OCR em todo bbox detectado, consenso por frames."""
-        for x, y, w, h, conf_det in bboxes:
+        for bb in bboxes:
+            x, y, w, h, conf_det = bb
+            # Antes de `_expandir_bbox`, que devolve tupla crua e perderia a origem.
+            origem_tipo = origem_de_bbox(bb)
             x, y, w, h = _expandir_bbox(x, y, w, h, f_w, f_h)
             crop = frame_limpo[y: y + h, x: x + w]   # mesmo motivo do modo tracker
             if crop.size == 0:
@@ -459,7 +545,8 @@ class Pipeline:
             placa, padrao = resultado
             conf_total = (conf_det + conf_ocr) / 2
             self._desenhar_bbox(frame, x, y, w, h, placa, conf_total)
-            self._tentar_emitir(placa, padrao, conf_total, frame_limpo, (x, y, w, h))
+            self._tentar_emitir(placa, padrao, conf_total, frame_limpo, (x, y, w, h),
+                                origem_tipo=origem_tipo)
 
     def _desenhar_bbox(self, frame, x, y, w, h, placa, conf):
         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
@@ -478,7 +565,8 @@ class Pipeline:
         label = f"ID:{track_id} {conf_det:.2f} [{votos}v]"
         cv2.putText(frame, label, (x, max(y - 8, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
 
-    def _tentar_emitir(self, placa, padrao, conf, frame_limpo, bbox) -> None:
+    def _tentar_emitir(self, placa, padrao, conf, frame_limpo, bbox,
+                       origem_tipo: OrigemTipo | None = None) -> None:
         """Modo clássico: acumula frames_consenso leituras iguais antes de emitir."""
         self._historico.append(placa)
         recentes = list(self._historico)[-self.frames_consenso:]
@@ -492,11 +580,13 @@ class Pipeline:
         self._emitir(placa, padrao, conf, frame_limpo, bbox, acordo=acordo,
                      confirmada=_confirmada(acordo, votos, self.acordo_min,
                                             self.frames_consenso),
-                     votos=votos, total_leituras=total_janela)
+                     votos=votos, total_leituras=total_janela,
+                     origem_tipo=origem_tipo)
 
     def _emitir(self, placa, padrao, conf, frame_limpo, bbox,
                 acordo: float, confirmada: bool,
-                votos: int = 0, total_leituras: int = 0) -> None:
+                votos: int = 0, total_leituras: int = 0,
+                origem_tipo: OrigemTipo | None = None) -> None:
         """Persiste detecção, atualiza estado, broadcast WS e dispara webhooks.
         Respeita cooldown_seg para evitar re-emissão do mesmo veículo parado.
         Usado por ambos os paths: tracker e clássico.
@@ -509,6 +599,14 @@ class Pipeline:
         `votos`/`total_leituras` são só para o log: `acordo=0.10` responde "quão sólida",
         mas `2/20` responde "sólida com base em quê", e é a diferença entre uma placa
         confirmada duas vezes e um veículo que foi lido vinte vezes sem nunca convergir.
+
+        `origem_tipo` carrega o tipo do veículo (vindo da bbox — classe do detector de
+        veículo) E o sinal cru por trás dele: os quatro campos que ele expande
+        (`tipo_veiculo`/`veiculo_classe`/`veiculo_conf`/`tipo_veiculo_fonte`) sempre
+        gravam juntos. Tem default ao contrário de `acordo`/`confirmada`: ausência aqui é
+        um estado legítimo e frequente (2 estágios desligado, nenhum veículo detectado,
+        placa vinda das janelas), e tem que ser barata de expressar. O "esqueci de passar"
+        é pego pelos testes de propagação dos dois modos, não pela assinatura.
         """
         # Cooldown por SIMILARIDADE, não string exata: ruído de OCR de 1-2 caracteres
         # (0/O/D/Q, I/1/J...) fazia o mesmo veículo escapar do cooldown e virar uma
@@ -569,6 +667,13 @@ class Pipeline:
                         [int(cv2.IMWRITE_JPEG_QUALITY), self.snapshot_q])
             frame_rel = f"/static/snapshots/{nome_f}"
 
+        # Desempacota os quatro campos aqui — o único ponto em que `banco` (que não deve
+        # conhecer tipos de `visao`) precisa deles como kwargs soltos.
+        tipo_veiculo = origem_tipo.tipo if origem_tipo else None
+        veiculo_classe = origem_tipo.classe if origem_tipo else None
+        veiculo_conf = origem_tipo.conf if origem_tipo else None
+        tipo_veiculo_fonte = origem_tipo.fonte if origem_tipo else None
+
         deteccao_id = banco.registrar_deteccao(
             placa=placa,
             padrao=padrao,
@@ -581,11 +686,23 @@ class Pipeline:
             camera_db_id=self.camera_db_id,
             acordo=round(acordo, 3),
             confirmada=confirmada,
+            # Classe do detector de veículo (YOLOX), carregada pela própria bbox desde
+            # `DetectorDoisEstagios`. Antes vinha de `self.ocr._ultimo_tipo_veiculo`, que
+            # tinha DOIS defeitos: a fonte era o aspecto do recorte da placa (o limiar
+            # 2,0 cai no percentil 30 de uma população quase toda de carro), e o atributo
+            # é um estado compartilhado lido fora do escopo do crop — num quadro com dois
+            # veículos, ou num tick sem OCR novo, gravava o tipo do veículo errado.
+            tipo_veiculo=tipo_veiculo,
+            veiculo_classe=veiculo_classe, veiculo_conf=veiculo_conf,
+            tipo_veiculo_fonte=tipo_veiculo_fonte,
         )
         criado_em = datetime.now(timezone.utc).isoformat()
         estado.adicionar_deteccao({
             "id": deteccao_id, "placa": placa, "padrao": padrao,
             "confianca": conf, "snapshot": snapshot_rel, "criado_em": criado_em,
+            # Sem isto o painel de recentes e o WS mostravam tipo vazio para tudo que vem
+            # do contínuo, enquanto a leitura reativa já mandava o campo.
+            "tipo_veiculo": tipo_veiculo,
         })
 
         entrada_lista = banco.listas_buscar(placa)
@@ -594,11 +711,12 @@ class Pipeline:
             "tipo": "deteccao", "placa": placa, "padrao": padrao,
             "confianca": round(conf, 3), "snapshot": snapshot_rel,
             "criado_em": criado_em, "bomba": self.bomba, "lado": self.lado,
-            "lista": lista,
+            "lista": lista, "tipo_veiculo": tipo_veiculo,
         })
 
-        log.info("EMITIDA %s (%s, conf=%.2f, acordo=%.2f%s)%s", placa, padrao, conf, acordo,
+        log.info("EMITIDA %s (%s, conf=%.2f, acordo=%.2f%s, tipo=%s)%s", placa, padrao, conf, acordo,
                  " → %d/%d leituras" % (votos, total_leituras) if total_leituras else "",
+                 tipo_veiculo or "nao-estimado",
                  "" if confirmada else " NAO-CONFIRMADA")
         self._notificar_webhook_todas(placa, padrao, conf, snapshot_rel)
         self._verificar_alerta(placa, padrao)
@@ -745,23 +863,45 @@ def iniciar(cfg: dict[str, str]) -> None:
     iniciar_cameras_db(cfg)
 
 
-def parar_camera(camera_db_id: int) -> None:
-    p = _instancias.pop(camera_db_id, None)
-    if p is not None:
-        p.parar()
-        with estado.lock:
-            estado.frames_cameras.pop(camera_db_id, None)
-            estado.frames_cameras_limpos.pop(camera_db_id, None)
-        # Sem isto o cache de JPEG do stream (app/streaming/stream.py) mantinha vivo
-        # o último frame desta câmera indefinidamente, e podia servir imagem velha a
-        # um viewer que reconectasse antes do primeiro frame novo pós-reinício.
-        from app.streaming import stream as stream_mod
-        stream_mod.descartar_cache(camera_db_id)
+def parar_camera(camera_db_id: int) -> bool:
+    """Para e desregistra o pipeline desta câmera. Retorna False, SEM desregistrar
+    nada, se a thread do pipeline não confirmou parada (ver `Pipeline.parar()`) —
+    quem chama não pode tratar a câmera como livre nesse caso."""
+    p = _instancias.get(camera_db_id)
+    if p is None:
+        return True
+    if not p.parar():
+        # NÃO faz `_instancias.pop(...)` aqui (diferente de antes): a thread zumbi
+        # ainda está viva e pode estar usando `self.camera` — remover a instância
+        # faria `estado_stream()` (e uma nova chamada a `iniciar_camera`) achar a
+        # câmera livre e abrir uma segunda conexão RTSP concorrente com a antiga.
+        return False
+    _instancias.pop(camera_db_id, None)
+    with estado.lock:
+        estado.frames_cameras.pop(camera_db_id, None)
+        estado.frames_cameras_limpos.pop(camera_db_id, None)
+    # Sem isto o cache de JPEG do stream (app/streaming/stream.py) mantinha vivo
+    # o último frame desta câmera indefinidamente, e podia servir imagem velha a
+    # um viewer que reconectasse antes do primeiro frame novo pós-reinício.
+    from app.streaming import stream as stream_mod
+    stream_mod.descartar_cache(camera_db_id)
+    return True
 
 
-def reiniciar_camera(camera_db_id: int, cfg: dict[str, str]) -> None:
-    parar_camera(camera_db_id)
+def reiniciar_camera(camera_db_id: int, cfg: dict[str, str]) -> bool:
+    """Para o pipeline atual e sobe um novo com `cfg`. Retorna False SEM tentar abrir
+    uma nova conexão se `parar_camera` não conseguiu confirmar que a thread anterior
+    morreu — abrir mesmo assim duplicaria a conexão RTSP com a câmera física."""
+    if not parar_camera(camera_db_id):
+        log.error(
+            "Câmera %d: reinício ABORTADO — thread do pipeline anterior ainda viva; "
+            "NÃO abrindo uma segunda conexão RTSP concorrente. Tentativa seguinte "
+            "(supervisor/backoff) pode ter sucesso quando a thread antiga morrer.",
+            camera_db_id,
+        )
+        return False
     iniciar_camera(camera_db_id, cfg)
+    return True
 
 
 def parar_todas() -> None:

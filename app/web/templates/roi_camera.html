@@ -254,10 +254,14 @@ async function salvarTudo() {
   let n = 0, erro = null;
   for (const b of _bicos.filter(x => x.sujo)) {
     try {
+      // Sempre com `camera_id`: um bico de 2 câmeras aparece nos DOIS editores, e sem
+      // dizer de qual se trata a área desenhada aqui sobrescreveria a da outra câmera —
+      // que está em outro sistema de coordenadas.
       const r = b.roi
         ? await fetch(`/api/bicos/${b.id}/roi`, { method: 'PUT',
-            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b.roi) })
-        : await fetch(`/api/bicos/${b.id}/roi`, { method: 'DELETE' });
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...b.roi, camera_id: CAM_ID }) })
+        : await fetch(`/api/bicos/${b.id}/roi?camera_id=${CAM_ID}`, { method: 'DELETE' });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
       b.sujo = false; n++;
     } catch (ex) { erro = `Bico ${b.codigo}: ${ex.message}`; break; }
@@ -275,11 +279,19 @@ function renderLista() {
   document.getElementById('lista-bicos').innerHTML = _bicos.map(b => `
     <div class="bico-item ${b.id === _ativo ? 'ativo' : ''}" onclick="selecionar(${b.id})">
       <span class="bico-cor" style="background:${b.cor}"></span>
-      <span class="bico-nome">${esc(b.codigo)}${b.nome ? ` <span style="font-weight:400;color:#94a3b8">${esc(b.nome)}</span>` : ''}</span>
+      <span class="bico-nome">${esc(b.codigo)}${b.nome ? ` <span style="font-weight:400;color:#94a3b8">${esc(b.nome)}</span>` : ''}
+        ${b.papel ? `<span style="font-weight:400;color:#94a3b8;font-size:12px"> · ${esc(b.papel)}</span>` : ''}</span>
       ${b.sujo ? '<span class="badge badge-warn">não salvo</span>'
                : b.roi ? '<span class="badge badge-ok">ok</span>'
                        : '<span class="badge badge-err">sem área</span>'}
-    </div>`).join('');
+    </div>
+    ${b.outraId ? `<div style="padding:4px 10px 8px 26px;font-size:12px;color:#94a3b8;line-height:1.5">
+        também usa <strong>${esc(b.outraNome || 'outra câmera')}</strong>${b.outraPapel ? ` (${esc(b.outraPapel)})` : ''}
+        ${b.outraTemRoi ? '<span class="badge badge-ok" style="font-size:10px">área ok</span>'
+                        : '<span class="badge badge-err" style="font-size:10px">sem área</span>'}
+        <a href="/roi-camera/${b.outraId}?bico=${b.id}" onclick="event.stopPropagation()"
+           style="color:#16a34a;text-decoration:none">abrir →</a>
+      </div>` : ''}`).join('');
 }
 function selecionar(id) { _ativo = id; _rect = null; renderLista(); desenhar(); }
 
@@ -447,9 +459,16 @@ async function carregar() {
   _d = await r.json();
 
   if (_d.frame_largura) { _frameW = _d.frame_largura; _frameH = _d.frame_altura; }
+  // `roi_nesta_camera` e não `roi`: o mesmo bico aparece nos editores das duas câmeras
+  // dele, e aqui se edita a área DESTA. Quem decide o slot é o servidor.
   _bicos = _d.bicos.map((b, i) => ({
     id: b.id, codigo: b.codigo, nome: b.nome, cor: CORES[i % CORES.length], sujo: false,
-    roi: b.roi ? (typeof b.roi === 'string' ? JSON.parse(b.roi) : b.roi) : null,
+    roi: b.roi_nesta_camera
+      ? (typeof b.roi_nesta_camera === 'string' ? JSON.parse(b.roi_nesta_camera) : b.roi_nesta_camera)
+      : null,
+    papel: b.papel_nesta_camera,
+    outraId: b.outra_camera_id, outraNome: b.outra_camera_nome,
+    outraPapel: b.outra_papel, outraTemRoi: b.outra_tem_roi,
   }));
   if (_ativo === null || !_bicos.some(b => b.id === _ativo)) {
     _ativo = (BICO_INICIAL && _bicos.some(b => b.id === BICO_INICIAL))
