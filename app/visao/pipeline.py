@@ -15,7 +15,8 @@ from app.core import estado
 from app.visao import contexto_log
 from app.visao.camera import Camera
 from app.visao.consenso import confirmada as _confirmada
-from app.visao.detector import Detector, MultiDetector, OrigemTipo, deslocar, origem_de_bbox
+from app.visao.detector import (Detector, MultiDetector, OrigemTipo, TRACK_SEM_DETECCAO,
+                                deslocar, origem_de_bbox)
 from app.visao.ocr import OCR
 from app.visao.ocr.auto import crop_legivel
 from app.visao.validador import parecidas, validar
@@ -54,23 +55,29 @@ def _expandir_bbox(x: int, y: int, w: int, h: int, frame_w: int, frame_h: int,
 IOU_MIN_TRACK = 0.5
 
 
-def _origem_do_track(bbox_track: tuple, bboxes) -> OrigemTipo | None:
+def _origem_do_track(bbox_track: tuple, bboxes) -> OrigemTipo:
     """Origem do tipo de veículo (classe + sinal cru) da detecção que melhor casa com
     esta caixa de track.
 
-    None quando nenhuma detecção deste frame se sobrepõe o bastante — o track pode estar
-    sendo predito sem detecção nova (paciência do tracker), e nesse caso não há veículo
-    observado agora para afirmar o tipo. Devolve o objeto inteiro, e não só o `str` do
-    tipo: os quatro campos (`tipo_veiculo`/`veiculo_classe`/`veiculo_conf`/
-    `tipo_veiculo_fonte`) têm que gravar juntos, e um objeto é o que torna "mover em
-    bloco" o caminho natural.
+    Devolve o objeto inteiro, e não só o `str` do tipo: os quatro campos
+    (`tipo_veiculo`/`veiculo_classe`/`veiculo_conf`/`tipo_veiculo_fonte`) têm que gravar
+    juntos, e um objeto é o que torna "mover em bloco" o caminho natural.
+
+    NUNCA devolve None. Sem casamento suficiente devolve `TRACK_SEM_DETECCAO`: o track foi
+    emitido sem detecção nova neste quadro (ByteTrack prevendo por Kalman durante oclusão),
+    então não há veículo OBSERVADO agora para afirmar o tipo. Um None aqui viraria
+    `tipo_veiculo_fonte = NULL`, que o esquema reserva para linha anterior à migração — a
+    causa ficaria indistinguível de "leitura antiga", que é exatamente a confusão que esta
+    coluna existe para eliminar.
     """
     melhor, melhor_iou = None, 0.0
     for b in bboxes:
         iou = MultiDetector._iou(bbox_track, b)
         if iou > melhor_iou:
             melhor, melhor_iou = b, iou
-    return origem_de_bbox(melhor) if melhor_iou >= IOU_MIN_TRACK else None
+    if melhor_iou < IOU_MIN_TRACK:
+        return TRACK_SEM_DETECCAO
+    return origem_de_bbox(melhor)
 
 
 def _vale_como_negativo(crop) -> bool:
@@ -904,15 +911,35 @@ def reiniciar_camera(camera_db_id: int, cfg: dict[str, str]) -> bool:
     return True
 
 
-def parar_todas() -> None:
-    for p in list(_instancias.values()):
-        p.parar()
+def parar_todas() -> bool:
+    """Para todos os pipelines. Devolve False se algum não confirmou parada.
+
+    Mesmo contrato de `parar_camera`, e pelo mesmo motivo: quem chama isto para depois
+    subir tudo de novo (`reiniciar`, usado ao salvar a config) não pode tratar as câmeras
+    como livres se uma thread ficou viva — `iniciar_cameras_db` abriria uma SEGUNDA conexão
+    RTSP concorrente para a mesma câmera física.
+
+    A instância que não parou FICA em `_instancias` (o resto sai), para que ela continue
+    visível a `parar_camera`/ao supervisor em vez de virar órfã invisível.
+    """
+    presos = {}
+    for cam_id, p in list(_instancias.items()):
+        if not p.parar():
+            presos[cam_id] = p
     _instancias.clear()
+    _instancias.update(presos)
     with estado.lock:
         estado.frames_cameras.clear()
         estado.frames_cameras_limpos.clear()
     from app.streaming import stream as stream_mod
     stream_mod.limpar_cache()
+    if presos:
+        log.error(
+            "Parada geral: %d pipeline(s) não confirmaram encerramento (câmeras %s) — "
+            "mantidos registrados para não abrir conexão RTSP concorrente ao subir de novo",
+            len(presos), ", ".join(str(c) for c in presos),
+        )
+    return not presos
 
 
 def parar() -> None:

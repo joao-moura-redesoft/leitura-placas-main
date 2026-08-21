@@ -555,9 +555,11 @@ class TestPropagacaoPeloPipelineContinuo:
         # em uso quando boxmot não está instalado — casamento exato, IoU 1.0).
         assert _origem_do_track((10, 10, 60, 28), bboxes) is origem
 
-        # Track sem detecção correspondente neste frame (paciência do tracker) → None,
-        # nunca um chute.
-        assert _origem_do_track((500, 500, 10, 10), bboxes) is None
+        # Track sem detecção correspondente neste frame: nunca um chute, e também nunca
+        # None — ver `TestTrackSemDeteccaoTemCausaPropria` para o porquê do rótulo próprio.
+        sem_match = _origem_do_track((500, 500, 10, 10), bboxes)
+        assert sem_match.tipo is None
+        assert sem_match.fonte == "track-sem-deteccao"
 
 
 class TestOCRNaoEstimaMaisTipoDeVeiculo:
@@ -670,3 +672,67 @@ class TestAutoOCRNaoCarregaEstadoDoCropAnterior:
 
         assert a._ultimo_e_moto is False
         assert a._ultimo_formato_hint == ""
+
+
+class TestAmbiguidadeEntreVeiculosSobrepostos:
+    """A mesma placa achada dentro de DOIS veículos de classes diferentes.
+
+    Acontece de verdade num posto: moto no bico com um carro atrás, caixas se cruzando no
+    plano da imagem, e o recorte do carro (com 5% de padding) contendo a placa da moto. O
+    `_dedup` mantinha "a de maior confiança de PLACA" — uma medida que nada diz sobre de
+    quem é o veículo —, então dava para gravar a placa da moto como 'carro' com
+    `fonte='veiculo'`: um erro AFIRMATIVO, pior que NULL.
+    """
+
+    def test_classes_diferentes_viram_ambiguo_em_vez_de_escolher(self):
+        det = DetectorDoisEstagios(
+            # mesma placa nos dois recortes; a do carro sai com confiança MAIOR
+            _PlacaFalsa([(10, 10, 60, 28, 0.62)], [(10, 10, 60, 28, 0.71)]),
+            _VeiculoFalso([(100, 100, 200, 200, 0.9, 3),     # moto
+                           (100, 100, 400, 300, 0.8, 2)]),   # carro atrás
+        )
+        placas = det.detectar(_frame())
+
+        assert len(placas) == 1
+        origem = origem_de_bbox(placas[0])
+        assert origem.tipo is None, "não pode afirmar tipo quando os dois veículos discordam"
+        assert origem.fonte == "veiculo-ambiguo"
+
+    def test_classes_iguais_mantem_o_tipo(self):
+        """Dois carros sobrepostos concordam — aqui o tipo continua valendo."""
+        det = DetectorDoisEstagios(
+            _PlacaFalsa([(10, 10, 60, 28, 0.62)], [(10, 10, 60, 28, 0.71)]),
+            _VeiculoFalso([(100, 100, 200, 200, 0.9, 2),
+                           (100, 100, 400, 300, 0.8, 7)]),   # car + truck: ambos 'carro'
+        )
+        placas = det.detectar(_frame())
+        assert len(placas) == 1
+        assert tipo_de_bbox(placas[0]) == "carro"
+
+
+class TestTrackSemDeteccaoTemCausaPropria:
+    """`_origem_do_track` devolvia None quando o track vinha sem detecção nova no quadro
+    (ByteTrack prevendo por Kalman durante oclusão). Isso gravava `tipo_veiculo_fonte=NULL`,
+    que o esquema reserva para linha ANTERIOR À MIGRAÇÃO — a causa ficava indistinguível de
+    "leitura antiga", exatamente a confusão que a coluna existe para eliminar."""
+
+    def test_sem_casamento_devolve_causa_nomeada_e_nao_none(self):
+        from app.visao.pipeline import _origem_do_track
+
+        # caixa de track longe de qualquer detecção deste quadro
+        origem = _origem_do_track((900, 900, 50, 25), [BBoxPlaca(10, 10, 50, 25, 0.9, None)])
+
+        assert origem is not None
+        assert origem.tipo is None
+        assert origem.fonte == "track-sem-deteccao"
+
+    def test_com_casamento_usa_a_origem_da_deteccao(self):
+        from app.visao.detector import OrigemTipo
+        from app.visao.pipeline import _origem_do_track
+
+        alvo = BBoxPlaca(10, 10, 50, 25, 0.9, OrigemTipo.de_classe(3, 0.44))
+        origem = _origem_do_track((10, 10, 50, 25), [alvo])
+
+        assert origem.tipo == "moto"
+        assert origem.fonte == "veiculo"
+        assert origem.conf == 0.44

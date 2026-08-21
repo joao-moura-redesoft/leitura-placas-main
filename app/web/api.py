@@ -328,14 +328,20 @@ def cameras_atualizar(id_: int, payload: dict):
         raise HTTPException(500, str(e))
     if not ok:
         raise HTTPException(404, "Câmera não encontrada")
-    # Reinicia o pipeline com a nova configuração
+    # Reinicia o pipeline com a nova configuração. O cadastro JÁ foi gravado, mas o
+    # pipeline pode continuar rodando a config antiga: `reiniciar_camera`/`parar_camera`
+    # devolvem False quando a thread anterior não confirmou morte, e nesse caso elas se
+    # recusam a abrir uma segunda conexão RTSP concorrente. Responder `{"atualizado":
+    # True}` seco fazia a tela afirmar que a mudança estava no ar quando não estava; o
+    # supervisor tenta de novo sozinho, e o campo abaixo é o que permite avisar quem
+    # salvou que a config nova ainda não valeu.
     cam = banco.cameras_obter(id_)
     if cam and cam["ativo"]:
         cfg = config.carregar()
-        pipeline.reiniciar_camera(id_, pipeline._cfg_para_camera(cfg, cam))
+        pipeline_ok = pipeline.reiniciar_camera(id_, pipeline._cfg_para_camera(cfg, cam))
     else:
-        pipeline.parar_camera(id_)
-    return {"atualizado": True}
+        pipeline_ok = pipeline.parar_camera(id_)
+    return {"atualizado": True, "pipeline_aplicado": pipeline_ok}
 
 
 @router.delete("/cameras/{id_}", dependencies=[Depends(deps.exigir_admin)])
@@ -355,8 +361,15 @@ def cameras_remover(id_: int):
         # A checagem acima e o DELETE não são atômicos — se um bico foi cadastrado
         # nessa câmera bem no meio da janela entre as duas, o RESTRICT dispara aqui.
         raise HTTPException(409, "Câmera passou a estar em uso por um bico durante a remoção — tente novamente.")
-    pipeline.parar_camera(id_)
-    return {"removido": True}
+    # A linha já saiu do banco; o pipeline pode não ter parado. `parar_camera` devolve
+    # False quando a thread não confirmou morte — e nesse caso ela NÃO desregistra a
+    # instância nem fecha a câmera, de propósito (senão uma próxima chamada acharia a
+    # câmera livre e abriria uma segunda conexão RTSP concorrente). Reportar
+    # `{"removido": True}` seco escondia isso: o cadastro sumia da tela e a conexão
+    # ficava presa. O supervisor volta a tentar liberar sozinho (ver
+    # `_tentar_reiniciar`), então aqui basta ser honesto sobre o que ficou pendente.
+    liberado = pipeline.parar_camera(id_)
+    return {"removido": True, "pipeline_liberado": liberado}
 
 
 @router.get("/cameras/{id_}/detalhe")

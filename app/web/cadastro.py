@@ -134,15 +134,12 @@ def posto_detalhe(empresa_id: int, request: Request):
             # `cameras` descreve os slots do bico de uma vez; os campos avulsos
             # (`camera_nome`, `tem_roi`) continuam apontando para a primeira câmera para
             # as telas que ainda não leem a lista.
-            fontes = [{"camera_id": b["camera_id"], "papel": b.get("papel_camera") or "traseira",
-                       "nome": cam.get("nome", "?"), "local": cam.get("local", ""),
-                       "tem_roi": bool(b["roi"]), "slot": 1}]
-            if b.get("camera2_id"):
-                cam2 = cams.get(b["camera2_id"]) or banco.cameras_obter(b["camera2_id"]) or {}
-                fontes.append({"camera_id": b["camera2_id"],
-                               "papel": b.get("papel_camera2") or "frente",
-                               "nome": cam2.get("nome", "?"), "local": cam2.get("local", ""),
-                               "tem_roi": bool(b.get("roi2")), "slot": 2})
+            fontes = []
+            for slot, camera_id, roi, papel in banco.slots_do_bico(b):
+                c = cams.get(camera_id) or banco.cameras_obter(camera_id) or {}
+                fontes.append({"camera_id": camera_id, "papel": papel,
+                               "nome": c.get("nome", "?"), "local": c.get("local", ""),
+                               "tem_roi": bool(roi), "slot": slot})
             bicos.append({**b,
                           "camera_nome": cam.get("nome", "?"),
                           "camera_local": cam.get("local", ""),

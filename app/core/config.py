@@ -50,7 +50,12 @@ PADROES: dict[str, str] = {
     "veiculo_dois_estagios_get": "sim",     # leitura GET ("Ler Placa") — tolera a latência
     "veiculo_dois_estagios_live": "nao",    # stream ao vivo — desligado por padrão (latência)
     "veiculo_modelo_path": "models/vehicle_detector.onnx",
-    "veiculo_conf": "0.4",
+    # 0,25 e nao 0,4 (medido em 20/08/2026 nos quadros reais salvos): a 0,40 a
+    # cobertura de tipo era 85% e a 0,25 vai a 92%, sem NENHUM veredito mudando ou se
+    # perdendo. NAO baixe mais: a 0,15 a mediana de veiculos/quadro chega a 5 e 42% dos
+    # quadros estouram `veiculo_max_veiculos`, cujo desempate mantem os MAIORES — as
+    # motos sao expulsas do top-5 e a contagem de moto foi a ZERO na medicao.
+    "veiculo_conf": "0.25",
     "veiculo_nms": "0.5",
     "veiculo_classes": "2,3,5,7",           # COCO: car, motorcycle, bus, truck
     "veiculo_padding": "0.05",              # margem ao redor do veículo antes de buscar a placa

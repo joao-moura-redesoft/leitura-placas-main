@@ -369,17 +369,13 @@ def listar_bicos():
         cam = cameras.get(b["camera_id"])
         # `cameras` descreve os dois slots; os campos avulsos seguem apontando para a
         # primeira, para a tela de testes atual continuar funcionando sem alteração.
-        fontes = [{"camera_id": b["camera_id"], "papel": b.get("papel_camera") or "traseira",
-                   "camera_nome": cam["nome"] if cam else "?",
-                   "camera_local": cam.get("local", "") if cam else "",
-                   "tem_roi": bool(b["roi"])}]
-        if b.get("camera2_id"):
-            cam2 = cameras.get(b["camera2_id"])
-            fontes.append({"camera_id": b["camera2_id"],
-                           "papel": b.get("papel_camera2") or "frente",
-                           "camera_nome": cam2["nome"] if cam2 else "?",
-                           "camera_local": cam2.get("local", "") if cam2 else "",
-                           "tem_roi": bool(b.get("roi2"))})
+        fontes = []
+        for _slot, camera_id, roi, papel in banco.slots_do_bico(b):
+            c = cameras.get(camera_id)
+            fontes.append({"camera_id": camera_id, "papel": papel,
+                           "camera_nome": c["nome"] if c else "?",
+                           "camera_local": c.get("local", "") if c else "",
+                           "tem_roi": bool(roi)})
         saida.append({
             "id": b["id"],
             "codigo": b["codigo"],

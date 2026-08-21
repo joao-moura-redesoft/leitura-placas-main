@@ -124,3 +124,82 @@ def test_falha_de_escrita_nao_derruba_o_pipeline(dir_snap, monkeypatch):
 def test_crop_vazio_e_ignorado(dir_snap):
     _cap(dir_snap).negativo(np.zeros((0, 0, 3), dtype=np.uint8))
     assert _arquivos(dir_snap) == []
+
+
+class TestColetorNaoDisputaCameraComOPipeline:
+    """O coletor autônomo (`_coletar_de_camera`) abre a câmera por conta própria.
+
+    Numa câmera que já roda pipeline contínuo isso seria uma SEGUNDA conexão RTSP para o
+    mesmo aparelho — a Intelbras só aceita uma —, além de coletar em duplicidade: o
+    pipeline já chama `captura_dataset.amostrar()` de dentro do laço dele.
+
+    O `lock_camera` não cobre isso: `Pipeline.iniciar()` só o segura durante
+    `camera.abrir()` e segue com a conexão viva. Lock serializa abertura, não posse.
+    """
+
+    def _rodar_uma_volta(self, monkeypatch, pinst, dir_snap):
+        """Executa um ciclo de `_coletar_de_camera` e diz se ele tentou abrir a câmera."""
+        import app.visao.captura_dataset as mod
+        import app.visao.pipeline as pipeline_mod
+
+        if pinst is not None:
+            monkeypatch.setitem(pipeline_mod._instancias, 55, pinst)
+        abriu = []
+
+        class _CameraFalsa:
+            @staticmethod
+            def capturar_frame_unico(**_kw):
+                abriu.append(True)
+                return IMG
+
+        monkeypatch.setattr("app.visao.camera.capturar_frame_unico",
+                            _CameraFalsa.capturar_frame_unico)
+        monkeypatch.setattr("app.core.banco.cameras_obter",
+                            lambda _id: {"camera_tipo": "rtsp", "ativo": 1,
+                                         "camera_indice": "0"})
+        monkeypatch.setattr("app.core.config.carregar",
+                            lambda: {"captura_dataset": "sim", "captura_dataset_intervalo_seg": "0"})
+
+        # Uma volta só: o `_parar.wait(intervalo)` devolve False na 1ª e True na 2ª.
+        chamadas = {"n": 0}
+
+        def _wait(_intervalo):
+            chamadas["n"] += 1
+            return chamadas["n"] > 1
+
+        monkeypatch.setattr(mod._parar, "wait", _wait)
+        mod._coletar_de_camera(55, 0.0)
+        return bool(abriu)
+
+    def test_pula_camera_com_pipeline_continuo(self, dir_snap, monkeypatch):
+        assert self._rodar_uma_volta(
+            monkeypatch, _PipelineFalso(automatica=True, viva=True), dir_snap) is False
+
+    def test_coleta_quando_o_pipeline_falhou_ao_subir(self, dir_snap, monkeypatch):
+        """`iniciar_camera` MANTÉM a instância registrada quando `iniciar()` levanta, para
+        o supervisor tentar de novo. Nesse estado `_processar_frame` nunca roda: ninguém
+        amostra e ninguém detém a conexão. Pular por "existe instância" zeraria a coleta
+        exatamente na câmera com problema — e em silêncio, porque o log é DEBUG."""
+        assert self._rodar_uma_volta(
+            monkeypatch, _PipelineFalso(automatica=True, viva=False), dir_snap) is True
+
+    def test_coleta_quando_a_camera_esta_em_modo_manual(self, dir_snap, monkeypatch):
+        """Modo manual não mantém RTSP aberto (`_loop` só dorme) — aqui o coletor É a
+        única fonte de imagem, e pular seria perder a coleta inteira."""
+        assert self._rodar_uma_volta(
+            monkeypatch, _PipelineFalso(automatica=False, viva=True), dir_snap) is True
+
+    def test_coleta_quando_nao_ha_pipeline_algum(self, dir_snap, monkeypatch):
+        assert self._rodar_uma_volta(monkeypatch, None, dir_snap) is True
+
+
+class _PipelineFalso:
+    """Dublê de Pipeline no que o coletor inspeciona: modo e se a thread está viva."""
+
+    def __init__(self, automatica: bool, viva: bool):
+        self.deteccao_automatica = automatica
+
+        class _Thread:
+            def is_alive(self_inner):
+                return viva
+        self._thread = _Thread()

@@ -397,8 +397,17 @@ async function salvarCamera(e) {
     const metodo = _editandoId ? 'PUT' : 'POST';
     const res = await fetch(url, { method: metodo, headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     if (res.ok) {
+      // O cadastro foi salvo, mas o pipeline pode não ter assumido a config nova (thread
+      // anterior travada — o servidor se recusa a abrir uma 2ª conexão RTSP concorrente).
+      // Sem este aviso a tela dizia "salvo" e o stream seguia no enquadramento antigo,
+      // sem ninguém saber por que.
+      const corpo = await res.json().catch(() => ({}));
       fecharModal();
       await carregarCameras();
+      if (corpo.pipeline_aplicado === false) {
+        avisar('Câmera salva, mas o pipeline não assumiu a configuração nova: a thread '
+             + 'anterior ainda está no ar. O supervisor tenta de novo em alguns segundos.', 'err');
+      }
     } else {
       await avisarResposta(res);
     }
@@ -412,7 +421,16 @@ async function removerCamera(id) {
   const cam = _cameras.find(c => c.id === id);
   if (!confirm(`Remover câmera "${cam?.nome}"?`)) return;
   const res = await fetch(`/api/cameras/${id}`, { method: 'DELETE' });
-  if (res.ok) await carregarCameras();
+  if (!res.ok) return avisarResposta(res);
+  // Removida do cadastro não é o mesmo que conexão liberada: se a thread do pipeline
+  // não confirmou morte, a instância fica retendo o RTSP até o supervisor conseguir
+  // encerrá-la. Avisar importa porque o sintoma seguinte é a câmera recusar conexão.
+  const corpo = await res.json().catch(() => ({}));
+  await carregarCameras();
+  if (corpo.pipeline_liberado === false) {
+    avisar('Câmera removida do cadastro, mas a conexão dela ainda não foi liberada '
+         + '(thread do pipeline travada). O supervisor segue tentando encerrá-la.', 'err');
+  }
 }
 
 async function testarCamera() {

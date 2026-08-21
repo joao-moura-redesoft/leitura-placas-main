@@ -160,6 +160,28 @@ def _coletar_de_camera(cam_id: int, intervalo: float) -> None:
             cam = banco.cameras_obter(cam_id)
             if not cam or not cam.get("ativo", 1):
                 continue
+            # Câmera com pipeline contínuo já é amostrada DE DENTRO do laço dele
+            # (`Pipeline._processar_frame` chama `captura_dataset.amostrar`), e ele mantém
+            # a conexão RTSP aberta o tempo todo. Abrir aqui seria uma SEGUNDA conexão
+            # concorrente para a mesma câmera física — que a Intelbras não aceita — além
+            # de coletar duas vezes a mesma coisa.
+            #
+            # O `lock_camera` abaixo NÃO cobre este caso: `Pipeline.iniciar()` só o segura
+            # durante `camera.abrir()` e o solta em seguida, seguindo com a conexão viva.
+            # O lock serializa aberturas, não posse da câmera.
+            # Exige THREAD VIVA, não só instância registrada: `iniciar_camera` mantém a
+            # instância no registro de propósito quando `iniciar()` levanta (para o
+            # supervisor tentar de novo), e nesse estado `_processar_frame` nunca roda —
+            # ninguém está amostrando nem detendo a conexão. Pular por "existe instância"
+            # zeraria a coleta justamente na câmera com problema, em silêncio.
+            from app.visao import pipeline as pipeline_mod
+            pinst = pipeline_mod._instancias.get(cam_id)
+            thread = getattr(pinst, "_thread", None) if pinst is not None else None
+            if (pinst is not None and getattr(pinst, "deteccao_automatica", False)
+                    and thread is not None and thread.is_alive()):
+                log.debug("Camera %d: coleta pulada — pipeline contínuo já amostra "
+                          "de dentro do laço e detém a conexão", cam_id)
+                continue
             # O mesmo lock da leitura reativa: uma câmera, uma conexão RTSP por vez.
             # Sem isto a coleta disputaria o stream com a leitura de um bico.
             with lock_camera(cam_id):

@@ -200,6 +200,11 @@ def _sem_visao(monkeypatch):
 
     monkeypatch.setattr(det, "obter_detector_leitura", _explodir)
     monkeypatch.setattr(ocr, "obter_ocr_leitura", _explodir)
+    # Devolve True, não None: `parar_camera`/`reiniciar_camera` respondem "a thread do
+    # pipeline confirmou que morreu?", e quem chama desiste da operação quando é falso
+    # (para não abrir uma segunda conexão RTSP concorrente). Um stub devolvendo None faz
+    # TODO teste que passe por esse caminho ver "falhou" em silêncio — o no-op tem de
+    # dizer "considere que deu certo", que é o que ele está simulando.
     for nome in ("iniciar_camera", "reiniciar_camera", "parar_camera", "iniciar_cameras_db"):
-        monkeypatch.setattr(pipe, nome, lambda *_a, **_kw: None)
+        monkeypatch.setattr(pipe, nome, lambda *_a, **_kw: True)
     monkeypatch.setattr(api_mod, "_iniciar_camera_bg", lambda *_a, **_kw: None)

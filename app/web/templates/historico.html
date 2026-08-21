@@ -252,6 +252,9 @@ async function carregar() {
       'classe-nao-mapeada': 'veículo detectado, mas de um tipo não mapeado',
       'tiles': 'placa recuperada por varredura em janelas — não roda o estágio de veículo',
       'sem-2-estagios': 'detecção em 2 estágios desligada nesta câmera',
+      'veiculo-ambiguo': 'a placa caiu dentro de dois veículos de tipos diferentes — '
+                       + 'sem resposta única',
+      'track-sem-deteccao': 'veículo rastreado sem detecção nova neste quadro (oclusão)',
     };
     let tituloVeiculo;
     if (d.tipo_veiculo) {

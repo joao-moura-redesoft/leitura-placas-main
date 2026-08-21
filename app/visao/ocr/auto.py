@@ -91,6 +91,39 @@ def _sem_leitura() -> dict:
             "votos": 0, "total_engines": 0, "detalhes": []}
 
 
+# Aspecto máximo do recorte para tratá-lo como layout de MOTO (200×140 vs 400×130): duas
+# linhas de texto, onde a easyocr é superior à fast_plate_ocr (treinada em linha única).
+ASPECTO_MOTO_MAX = 2.0
+
+
+def _layout_do_crop(crop, tinha_header: bool) -> tuple[float, bool]:
+    """`(aspect, e_moto)` do recorte — a decisão de LAYOUT que guia a estratégia de OCR.
+
+    Existe como função porque `AutoOCR` e `MultiOCR` calculavam isto separadamente, com o
+    `2.0` escrito duas vezes. O limiar está marcado para recalibração (ver abaixo), e uma
+    regra duplicada é uma regra que diverge na primeira vez que alguém ajusta só um lado —
+    o mesmo motivo que fez `app/visao/consenso.py` existir.
+
+    NÃO alimenta `deteccoes.tipo_veiculo`: essa coluna vem da classe do detector de veículo
+    desde 20/08/2026. Aqui o valor decide só qual engine roda primeiro, se o PaddleOCR
+    sobrepõe e qual `formato_hint` vai ao `validar()`.
+
+    MEDIDO em 12/08/2026 nas 28 fotos reais de `testes/dataset.json`: o limiar 2,0 cai NO
+    MEIO da faixa dos carros, não entre as classes.
+
+        moto  (n=2)   aspect 1,14 e 1,17
+        carro (n=26)  aspect 1,45 .. 3,47   ← sete abaixo de 2,0
+
+    Três carros (aspect 1,45/1,63/1,64) rodam a estratégia de moto e erraram a leitura.
+    NÃO ajustado de propósito: nestes dados algo perto de 1,3 separaria as classes, mas são
+    DUAS motos, e calibrar com essa amostra é o erro que este arquivo já documenta na
+    arbitragem do AutoOCRPaddle. Refazer quando o dataset tiver ~10 motos reais — a fila de
+    classificação em /testes é o caminho.
+    """
+    aspect = (crop.shape[1] / max(crop.shape[0], 1)) if crop is not None else 3.0
+    return aspect, bool(tinha_header and aspect <= ASPECTO_MOTO_MAX)
+
+
 def crop_legivel(w: int, h: int) -> bool:
     """Vale sobre o recorte COMO VEIO do detector — antes de `_realcar_para_ocr`.
 
@@ -169,25 +202,7 @@ class AutoOCR:
         if crop is not None and crop.ndim == 3 and crop.size > 0:
             _, tinha_header, e_mercosul_header = self._fast._remover_header(crop)
 
-        # Moto: aspect ≤ 2 (200×140 vs 400×130) — 2 linhas de texto, easyocr é superior
-        #
-        # MEDIDO em 12/08/2026 nas 28 fotos reais de `testes/dataset.json`: o limiar 2,0
-        # cai NO MEIO da faixa dos carros, não entre as classes.
-        #
-        #     moto  (n=2)   aspect 1,14 e 1,17
-        #     carro (n=26)  aspect 1,45 .. 3,47   ← sete abaixo de 2,0
-        #
-        # Três carros (aspect 1,45/1,63/1,64) são classificados como moto, e o efeito não
-        # se limita ao hint logo abaixo: `e_moto` troca o engine PRINCIPAL de
-        # fast_plate_ocr para easyocr (linha ~91) e, no AutoOCRPaddle, dá prioridade ao
-        # PaddleOCR. Os três erraram a leitura.
-        #
-        # NÃO ajustado de propósito. Nestes dados algo perto de 1,3 separaria as classes,
-        # mas são DUAS motos — calibrar limiar com essa amostra é o mesmo erro que este
-        # arquivo já documenta na arbitragem do AutoOCRPaddle. Refazer a medição quando o
-        # dataset tiver ~10 motos reais; a fila de classificação em /testes é o caminho.
-        aspect = (crop.shape[1] / max(crop.shape[0], 1)) if crop is not None else 3.0
-        e_moto = tinha_header and aspect <= 2.0
+        aspect, e_moto = _layout_do_crop(crop, tinha_header)
         self._ultimo_e_moto = e_moto
 
         # APOSENTADO em 20/08/2026: `e_moto` NÃO alimenta mais `deteccoes.tipo_veiculo`.
@@ -528,13 +543,14 @@ class MultiOCR:
         #
         # `e_moto` aqui serve SÓ ao `formato_hint`, igual ao AutoOCR. Ele não alimenta
         # `deteccoes.tipo_veiculo`: essa coluna vem da classe do detector de veículo desde
-        # 20/08/2026 (ver a justificativa medida em `AutoOCR.ler_detalhado`).
+        # 20/08/2026. O cálculo é o MESMO `_layout_do_crop` do AutoOCR — o limiar está
+        # marcado para recalibração, e duplicá-lo garantiria divergência entre os dois
+        # caminhos de OCR na primeira vez que alguém mexesse em só um.
         formato_hint = ""
         e_moto = False
         if crop is not None and crop.ndim == 3 and crop.size > 0 and self._ocrs:
             _, tinha_header, e_mercosul_header = self._ocrs[0]._remover_header(crop)
-            aspect = crop.shape[1] / max(crop.shape[0], 1)
-            e_moto = tinha_header and aspect <= 2.0
+            _aspect, e_moto = _layout_do_crop(crop, tinha_header)
             if tinha_header and e_mercosul_header:
                 formato_hint = "mercosul_moto" if e_moto else "mercosul"
 

@@ -423,6 +423,27 @@ def bico_limpar_roi(id_: int, slot: int = 1) -> None:
         c.execute(f"UPDATE bicos SET {coluna}=NULL WHERE id=?", (id_,))
 
 
+def slots_do_bico(bico: dict) -> list[tuple[int, int, str | None, str]]:
+    """Os slots de câmera de um bico, em ordem: `(slot, camera_id, roi, papel)`.
+
+    Regra única sobre COMO os slots são guardados — slot 1 em `camera_id`/`roi`/
+    `papel_camera`, slot 2 em `camera2_id`/`roi2`/`papel_camera2`, com os defaults de
+    papel. Esse mapeamento estava reescrito em três lugares (aqui, no detalhe do posto e
+    na listagem de /testes); um terceiro slot, ou renomear uma coluna, exigiria acertar os
+    três — e é fácil acertar dois.
+
+    Devolve TODOS os slots preenchidos, sem julgar se a câmera existe ou está ativa: quem
+    monta tela precisa mostrar a câmera desativada, e quem vai LER precisa descartá-la.
+    Esse filtro é de `cameras_do_bico`.
+    """
+    slots = [(1, bico["camera_id"], bico.get("roi"),
+              bico.get("papel_camera") or "traseira")]
+    if bico.get("camera2_id"):
+        slots.append((2, bico["camera2_id"], bico.get("roi2"),
+                      bico.get("papel_camera2") or "frente"))
+    return slots
+
+
 def cameras_do_bico(bico: dict) -> tuple[list[dict], list[str], str | None]:
     """Resolve as câmeras utilizáveis de um bico (1 ou 2), em ordem de slot.
 
@@ -445,10 +466,7 @@ def cameras_do_bico(bico: dict) -> tuple[list[dict], list[str], str | None]:
     justamente a duplicação dessa regra que deixou o botão de teste driblando o gate de
     `ativo` no passado.
     """
-    slots = [(1, bico["camera_id"], bico.get("roi"), bico.get("papel_camera") or "traseira")]
-    if bico.get("camera2_id"):
-        slots.append((2, bico["camera2_id"], bico.get("roi2"),
-                      bico.get("papel_camera2") or "frente"))
+    slots = slots_do_bico(bico)
 
     fontes: list[dict] = []
     avisos: list[str] = []

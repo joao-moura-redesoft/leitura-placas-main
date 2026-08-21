@@ -62,6 +62,15 @@ class OrigemTipo:
 SEM_VEICULO = OrigemTipo(fonte="sem-veiculo")
 TILES = OrigemTipo(fonte="tiles")
 SEM_2_ESTAGIOS = OrigemTipo(fonte="sem-2-estagios")
+# A mesma placa caiu dentro de dois veículos de classes diferentes (ver
+# `DetectorDoisEstagios._dedup`): a associação estrutural deixou de ser única, então não há
+# tipo a afirmar. Guardado como causa própria para a consulta de NULL saber diferenciar
+# "não vi veículo" de "vi dois e eles discordam".
+VEICULO_AMBIGUO = OrigemTipo(fonte="veiculo-ambiguo")
+# O track foi emitido sem detecção nova neste quadro que casasse com ele (ByteTrack
+# prevendo por Kalman durante oclusão). Não há veículo OBSERVADO agora para afirmar o tipo,
+# e isso é diferente de "não vi veículo" — ver `pipeline._origem_do_track`.
+TRACK_SEM_DETECCAO = OrigemTipo(fonte="track-sem-deteccao")
 
 
 class BBoxPlaca(tuple):
@@ -568,16 +577,36 @@ class DetectorDoisEstagios:
     def _dedup(placas: list[tuple[int, int, int, int, float]]) -> list[tuple[int, int, int, int, float]]:
         """Remove placas duplicadas de veículos sobrepostos (mantém a de maior confiança).
 
-        INVARIANTE: só filtra e ordena, nunca RECONSTRÓI a tupla — é o que preserva o
-        `tipo_veiculo` das `BBoxPlaca`. Trocar isto por uma comprehension que remonte
+        INVARIANTE: não RECONSTRÓI a tupla para preservar coordenadas/confiança — é o que
+        mantém o `origem` das `BBoxPlaca`. Uma comprehension que remonte
         `(x, y, w, h, conf)` derrubaria o tipo em silêncio, e o sintoma apareceria longe
         daqui: histórico inteiro em "Não estimado".
+
+        A ÚNICA reescrita permitida é a de desempate de tipo, abaixo. Quando a MESMA placa
+        é achada dentro de dois veículos sobrepostos de CLASSES diferentes (moto no bico 5
+        com um carro atrás, caixas se cruzando no plano da imagem — o recorte do carro
+        contém a placa da moto), sobreviver "a de maior confiança de placa" escolhia o tipo
+        pela confiança do detector de PLACA, que nada diz sobre de quem é o veículo. Dava
+        para gravar a placa da moto como 'carro' com `fonte='veiculo'`: um erro afirmativo,
+        que é pior que NULL. Aqui isso vira ambíguo — a associação estrutural deixou de ser
+        única, e o honesto é dizer que não se sabe.
         """
         placas = sorted(placas, key=lambda p: -p[4])
         mantidas: list[tuple[int, int, int, int, float]] = []
         for p in placas:
-            if all(MultiDetector._iou(p, m) < 0.5 for m in mantidas):
+            duplicada_de = next(
+                (m for m in mantidas if MultiDetector._iou(p, m) >= 0.5), None)
+            if duplicada_de is None:
                 mantidas.append(p)
+                continue
+            # Mesma placa, dois veículos: se discordam do tipo, ninguém ganha.
+            tipo_mantido = tipo_de_bbox(duplicada_de)
+            tipo_descartado = tipo_de_bbox(p)
+            if tipo_mantido != tipo_descartado and None not in (tipo_mantido, tipo_descartado):
+                log.debug("Placa em %d veículos de classes diferentes (%s vs %s) — tipo ambíguo",
+                          2, tipo_mantido, tipo_descartado)
+                mantidas[mantidas.index(duplicada_de)] = BBoxPlaca(
+                    *duplicada_de[:5], VEICULO_AMBIGUO)
         return mantidas
 
 

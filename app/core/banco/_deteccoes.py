@@ -26,7 +26,8 @@ TIPOS_VEICULO_FILTRO = ("moto", "carro", "desconhecido", "todos")
 # Cresce (o replay de `testes/recalcula_tipo_veiculo.py` usa o prefixo `replay:`), por
 # isso é validado aqui em Python, e não por CHECK de coluna: um CHECK não dá para
 # estender sem recriar a tabela.
-TIPOS_VEICULO_FONTE = ("veiculo", "classe-nao-mapeada", "sem-veiculo", "tiles", "sem-2-estagios")
+TIPOS_VEICULO_FONTE = ("veiculo", "classe-nao-mapeada", "veiculo-ambiguo",
+                       "sem-veiculo", "tiles", "sem-2-estagios", "track-sem-deteccao")
 
 
 def _validar_tipo_veiculo(tipo_veiculo: str | None) -> None:

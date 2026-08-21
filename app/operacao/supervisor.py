@@ -177,11 +177,41 @@ class WorkerSupervisor:
             from app.visao import pipeline as pl
             cam = next((c for c in banco.cameras_listar() if c["id"] == cam_id), None)
             if not cam or not cam["ativo"]:
-                log.warning("Camera %d: não encontrada ou inativa — cancelando reinício", cam_id)
+                # Instância viva para uma câmera que saiu do cadastro (ou foi desativada):
+                # é um pipeline ÓRFÃO. Ele chega aqui quando `parar_camera` devolveu False
+                # numa remoção anterior — a thread não confirmou morte, então nada foi
+                # desregistrado e a conexão RTSP continua aberta. Reiniciar não faz sentido
+                # (não há config para subir); o que falta é PARAR de novo.
+                #
+                # Antes daqui só saía "cancelando reinício", a cada ciclo, para sempre: o
+                # órfão retinha a câmera física até o processo reiniciar. O supervisor é
+                # quem tem de ser o zelador disso, porque é o único que volta a olhar.
+                if pl.parar_camera(cam_id):
+                    log.warning("Camera %d: fora do cadastro — pipeline órfão liberado", cam_id)
+                    self._backoff_ate.pop(cam_id, None)
+                    self._delay_atual.pop(cam_id, None)
+                else:
+                    log.error(
+                        "Camera %d: fora do cadastro e thread do pipeline ainda viva — "
+                        "órfão retendo a conexão; tenta liberar de novo no próximo ciclo",
+                        cam_id,
+                    )
                 return
             cfg_merged = pl._cfg_para_camera(self._cfg, cam)
-            pl.reiniciar_camera(cam_id, cfg_merged)
-            log.info("Camera %d: pipeline reiniciado com sucesso", cam_id)
+            if pl.reiniciar_camera(cam_id, cfg_merged):
+                log.info("Camera %d: pipeline reiniciado com sucesso", cam_id)
+            else:
+                # `reiniciar_camera` já logou o motivo (thread anterior viva, segunda
+                # conexão RTSP não aberta). O que importa aqui é NÃO registrar sucesso: o
+                # backoff acima já está armado, então a próxima tentativa vem sozinha
+                # quando a thread antiga finalmente morrer. Antes esta linha dizia
+                # "reiniciado com sucesso" mesmo neste caso, e quem lia o log concluía
+                # que a câmera havia voltado.
+                log.error(
+                    "Camera %d: reinício NÃO confirmado (tentativa #%d) — pipeline "
+                    "anterior ainda no ar; nova tentativa após o backoff",
+                    cam_id, n,
+                )
         except Exception as e:
             log.error("Camera %d: falha ao reiniciar: %s", cam_id, e)
 

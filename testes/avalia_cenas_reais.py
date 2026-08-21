@@ -64,26 +64,19 @@ def _frames_reais() -> list[Path]:
 
 
 def _detectores(cfg: dict):
-    """Os dois caminhos de produção, montados como produção monta."""
-    from app.visao.detector import (OpenImageDetector, VehicleDetector,
-                                    DetectorDoisEstagios, criar_detector)
+    """Os dois caminhos de produção, pelas FÁBRICAS de produção.
+
+    Nada é remontado à mão aqui de propósito. A versão anterior instanciava
+    `DetectorDoisEstagios` diretamente para o caminho GET e, com isso, deixava de fora o
+    `BuscaEmTiles` que `obter_detector_leitura` põe por cima quando `tiles_fallback_get`
+    está ligado (o padrão) — justamente a varredura em janelas que é a correção medida
+    para placa de moto (0/12 → 12/12). O script existe para responder "produção detecta
+    isto?", e media um detector mais fraco que produção.
+    """
+    from app.visao.detector import criar_detector, obter_detector_leitura
     live = criar_detector(cfg)
     live.carregar()
-
-    modelo_get = cfg.get("oim_modelo_leitura") or cfg.get("oim_modelo")
-    placa = OpenImageDetector(modelo=modelo_get, conf=float(cfg.get("conf_threshold", "0.3")))
-    veic = VehicleDetector(
-        modelo_path=cfg.get("veiculo_modelo_path", "models/vehicle_detector.onnx"),
-        conf=float(cfg.get("veiculo_conf", "0.4")),
-        nms=float(cfg.get("veiculo_nms", "0.5")),
-    )
-    get = DetectorDoisEstagios(
-        placa, veic,
-        padding=float(cfg.get("veiculo_padding", "0.05")),
-        obrigatorio=str(cfg.get("veiculo_obrigatorio", "nao")).lower() in ("sim", "true", "1"),
-        max_veiculos=int(cfg.get("veiculo_max_veiculos", "5")),
-    )
-    get.carregar()
+    get = obter_detector_leitura(cfg)   # já vem carregado pela fábrica
     return live, get
 
 
