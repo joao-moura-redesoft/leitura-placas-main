@@ -29,6 +29,7 @@ CAM = 7777
 # suíte não tocar câmera. Aqui o alvo do teste É essa função, então guardamos a real antes
 # do stub — mesmo padrão de `test_stream_cache.py::_PARAR_CAMERA_REAL`.
 _PARAR_CAMERA_REAL = pipeline.parar_camera
+_INICIAR_CAMERA_REAL = pipeline.iniciar_camera
 
 
 class _PipelineFalso:
@@ -155,3 +156,44 @@ class TestLogDeReinicioNaoMente:
             s._tentar_reiniciar(CAM, time.time())
 
         assert "reiniciado com sucesso" in caplog.text
+
+
+class TestCicloDeVidaSerializado:
+    """`iniciar_camera`/`parar_camera`/`reiniciar_camera` faziam check-then-act sobre
+    `_instancias` sem lock, e a janela entre checar e agir é de SEGUNDOS (join de 5s na
+    parada, dezenas de segundos abrindo RTSP e carregando modelos no início).
+
+    O cenário real: supervisor reiniciando a câmera 3 no mesmo intervalo em que um admin
+    salva o cadastro dela — as duas threads pegam a mesma instância, as duas fazem `pop`, e
+    as duas sobem um `Pipeline`. Dois pipelines, duas conexões RTSP, e o registro guardando
+    só o último: o outro fica órfão e invisível.
+    """
+
+    def test_nao_sobe_segundo_pipeline_com_um_vivo(self, limpo, monkeypatch):
+        """A guarda de último nível: fecha o caminho de `reiniciar` (salvar config), que
+        chama `parar_todas()` e segue para `iniciar_cameras_db` mesmo com thread presa."""
+        vivo = _PipelineFalso(parou=False)      # thread viva, não confirmou parada
+        pipeline._instancias[CAM] = vivo
+        monkeypatch.setattr(pipeline, "iniciar_camera", _INICIAR_CAMERA_REAL)
+        criados = []
+        monkeypatch.setattr(pipeline, "Pipeline",
+                            lambda *a, **k: criados.append(1) or _PipelineFalso())
+
+        pipeline.iniciar_camera(CAM, {"camera_tipo": "rtsp"})
+
+        assert criados == [], "subiu um segundo pipeline com o anterior ainda vivo"
+        assert pipeline._instancias[CAM] is vivo
+
+    def test_o_lock_e_por_camera_e_nao_global(self):
+        """Uma câmera subindo leva dezenas de segundos; travar as outras nesse período
+        transformaria o conserto numa indisponibilidade."""
+        assert pipeline._lock_ciclo(1) is pipeline._lock_ciclo(1)
+        assert pipeline._lock_ciclo(1) is not pipeline._lock_ciclo(2)
+
+    def test_o_lock_e_reentrante(self):
+        """`reiniciar_camera` chama `parar_camera` e `iniciar_camera` já com o lock na
+        mão — um Lock simples daria deadlock consigo mesmo."""
+        lock = pipeline._lock_ciclo(CAM)
+        with lock:
+            with lock:                  # não pode travar
+                pass

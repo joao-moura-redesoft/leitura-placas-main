@@ -126,3 +126,51 @@ def test_concordancia_em_moto_nao_duplica_o_detalhe(ocr, monkeypatch):
 
     assert d["placa"] == "YOI5947"
     assert [x["engine"] for x in d["detalhes"]] == ["easyocr"]
+
+
+class TestFalhaDoAutoOCRNaoDerrubaALeitura:
+    """No crop BORRADO — o caminho comum do GET — o AutoOCR roda numa thread e o resultado
+    era colhido com `resultado["d"]`.
+
+    Uma exceção ali dentro (qualquer `cv2.error` do pré-processamento: `imdecode` devolvendo
+    None, `getPerspectiveTransform` num quadrilátero degenerado) ia para o
+    `threading.excepthook` — stderr do uvicorn, fora do logger do app — e a colheita
+    estourava `KeyError: 'd'`. Como `KeyError` não é `LeituraError`, o roteador levava 500
+    em vez do payload degradado, a chamada não virava linha em `chamadas`, e no log só
+    aparecia o KeyError: a causa real ficava invisível.
+    """
+
+    def _paddle(self, monkeypatch, texto_paddle="ABC1D23"):
+        from app.visao.ocr.auto import AutoOCRPaddle
+
+        m = AutoOCRPaddle.__new__(AutoOCRPaddle)
+        m._ultimo_detalhe = {}
+        m._ultimo_e_moto = False
+        m._ultimo_formato_hint = ""
+        m._limiar_nitidez = 10_000_000        # força o ramo BORRADO
+
+        class _PaddleFalso:
+            engine = "paddleocr"
+
+            def ler(self, crop):
+                return texto_paddle, 0.88
+        m._paddle = _PaddleFalso()
+        return m
+
+    def test_excecao_no_autoocr_degrada_para_so_o_paddle(self, monkeypatch, caplog):
+        import numpy as np
+        from app.visao.ocr.auto import AutoOCR, AutoOCRPaddle
+
+        m = self._paddle(monkeypatch)
+        monkeypatch.setattr(AutoOCR, "ler_detalhado",
+                            lambda self, crop: (_ for _ in ()).throw(
+                                RuntimeError("cv2 explodiu no pre-processamento")))
+
+        crop = np.zeros((60, 180, 3), dtype=np.uint8)
+        with caplog.at_level("ERROR"):
+            det = AutoOCRPaddle.ler_detalhado(m, crop)
+
+        # Não levanta, e aproveita o Paddle, que já tinha rodado.
+        assert det["placa"] == "ABC1D23"
+        # E a causa REAL aparece no log do app, não só no stderr.
+        assert "cv2 explodiu no pre-processamento" in caplog.text

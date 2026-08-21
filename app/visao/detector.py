@@ -44,6 +44,10 @@ class OrigemTipo:
                               veículo (tipo None)
         'sem-2-estagios'      detector de 1 estágio (tipo None) — é o default quando a bbox
                               não carrega o atributo (ver `origem_de_bbox`)
+        'veiculo-ambiguo'     a placa caiu dentro de dois veículos de classes DIFERENTES
+                              (tipo None) — ver `DetectorDoisEstagios._dedup`
+        'track-sem-deteccao'  track emitido sem detecção nova neste quadro (tipo None) —
+                              ver `pipeline._origem_do_track`
     """
     fonte: str
     tipo: str | None = None
@@ -139,6 +143,8 @@ class Detector:
         self.input_name: str | None = None
 
     def carregar(self) -> None:
+        if self.sess is not None:
+            return          # idempotente — ver a nota em `BuscaEmTiles.carregar`
         if not self.modelo_path.exists():
             log.warning("Modelo %s não encontrado — usando fallback por contornos", self.modelo_path)
             return
@@ -333,6 +339,8 @@ class OpenImageDetector:
         self._det = None
 
     def carregar(self) -> None:
+        if self._det is not None:
+            return          # idempotente — ver a nota em `BuscaEmTiles.carregar`
         try:
             from open_image_models import LicensePlateDetector
         except ImportError:
@@ -419,6 +427,8 @@ class VehicleDetector:
         return np.concatenate(grids, 1)[0], np.concatenate(strides_exp, 1)[0]
 
     def carregar(self) -> None:
+        if self.sess is not None:
+            return          # idempotente — ver a nota em `BuscaEmTiles.carregar`
         if not self.modelo_path.exists():
             log.warning("VehicleDetector: modelo %s não encontrado — 2 estágios cairá "
                         "sempre no fallback (frame inteiro)", self.modelo_path)
@@ -665,9 +675,20 @@ class BuscaEmTiles:
         self.sess = None
 
     def carregar(self) -> None:
+        """Carrega os dois detectores.
+
+        Chama `carregar()` nos dois SEM checar se são o mesmo objeto: a guarda anterior
+        (`detector_tiles is not detector`) comparava identidade e não conseguia ver que
+        `detector_tiles` costuma estar ANINHADO dentro de `detector` — em produção
+        `detector` é o `DetectorDoisEstagios` e `detector_tiles` é o detector de placa que
+        vive dentro dele. A identidade passava, o modelo carregava duas vezes, e a primeira
+        sessão ONNX ficava presa para sempre por trás de `.sess`.
+
+        A idempotência vive agora em cada `carregar()` (todos saem cedo se já carregaram),
+        que resolve o caso aninhado em qualquer profundidade — e não só o de um nível.
+        """
         self.detector.carregar()
-        if self.detector_tiles is not self.detector:
-            self.detector_tiles.carregar()
+        self.detector_tiles.carregar()
         self.sess = self.detector.sess
 
     def detectar(self, frame) -> list[tuple[int, int, int, int, float]]:
@@ -745,6 +766,37 @@ def _bool_cfg(cfg: dict, chave: str, padrao: str = "nao") -> bool:
     return str(cfg.get(chave, padrao)).strip().lower() in ("sim", "true", "1", "yes")
 
 
+def _criar_detector_placa(cfg: dict, modelo_oim: str | None = None):
+    """Só o detector de PLACA, sem estágio de veículo nem varredura em janelas.
+
+    Extraído de `criar_detector` porque `obter_detector_leitura` precisa exatamente disto
+    e antes chamava `criar_detector(cfg)` — que já aplica `veiculo_dois_estagios_live` e
+    portanto podia devolver um `DetectorDoisEstagios` pronto. Aquele resultado era então
+    envolvido em OUTRO `DetectorDoisEstagios` e, pior, entregue ao `BuscaEmTiles` como
+    `detector_tiles`: cada janela passava a rodar o estágio de veículo, exatamente o que o
+    comentário de `BuscaEmTiles` diz que nunca deve acontecer.
+
+    `modelo_oim` sobrescreve o modelo do backend open-image-models (a leitura GET usa um
+    modelo próprio, maior).
+    """
+    conf = float(cfg.get("conf_threshold", "0.3"))
+    nms = float(cfg.get("nms_threshold", "0.4"))
+    backend = (cfg.get("detector_backend", "open_image_models") or "open_image_models").strip().lower()
+
+    if backend == "open_image_models":
+        return OpenImageDetector(
+            modelo=modelo_oim or cfg.get("oim_modelo", "yolo-v9-t-384-license-plate-end2end"),
+            conf=conf,
+        )
+    extras = [e.strip() for e in cfg.get("detector_modelos_extra", "").split(",") if e.strip()]
+    if extras:
+        dets = [Detector(cfg["modelo_path"], conf, nms)]
+        for m in extras:
+            dets.append(Detector(m, conf, nms))
+        return MultiDetector(dets, votos_minimos=max(1, int(cfg.get("detector_votos_minimos", "1"))))
+    return Detector(modelo_path=cfg["modelo_path"], conf=conf, nms=nms)
+
+
 def criar_detector(cfg: dict):
     """Fábrica de detector conforme a config. Usada por pipeline e endpoint ler-placa.
 
@@ -755,24 +807,7 @@ def criar_detector(cfg: dict):
     Se `veiculo_dois_estagios_live=sim`, envolve o detector de placa com um estágio de
     detecção de veículo (VehicleDetector) — ver `DetectorDoisEstagios`.
     """
-    conf = float(cfg.get("conf_threshold", "0.3"))
-    nms = float(cfg.get("nms_threshold", "0.4"))
-    backend = (cfg.get("detector_backend", "open_image_models") or "open_image_models").strip().lower()
-
-    if backend == "open_image_models":
-        detector_placa = OpenImageDetector(
-            modelo=cfg.get("oim_modelo", "yolo-v9-t-384-license-plate-end2end"),
-            conf=conf,
-        )
-    else:
-        extras = [e.strip() for e in cfg.get("detector_modelos_extra", "").split(",") if e.strip()]
-        if extras:
-            dets = [Detector(cfg["modelo_path"], conf, nms)]
-            for m in extras:
-                dets.append(Detector(m, conf, nms))
-            detector_placa = MultiDetector(dets, votos_minimos=max(1, int(cfg.get("detector_votos_minimos", "1"))))
-        else:
-            detector_placa = Detector(modelo_path=cfg["modelo_path"], conf=conf, nms=nms)
+    detector_placa = _criar_detector_placa(cfg)
 
     if _bool_cfg(cfg, "veiculo_dois_estagios_live"):
         return DetectorDoisEstagios(
@@ -824,18 +859,39 @@ def obter_detector_leitura(cfg: dict):
 
     dois_estagios = _bool_cfg(cfg, "veiculo_dois_estagios_get", "sim")
     tiles = _bool_cfg(cfg, "tiles_fallback_get", "sim")
-    ident = (*ident_placa, dois_estagios, cfg.get("veiculo_modelo_path", "") if dois_estagios else "",
-             tiles, (cfg.get("tiles_lado_alvo", ""), cfg.get("tiles_conf", "")) if tiles else "")
+    # A identidade tem de cobrir TODA chave que a fábrica congela na construção — este
+    # detector é um singleton cacheado, e nada mais o invalida quando a config é salva. O
+    # `ident` antigo listava só os modelos e os dois booleanos, então mexer em
+    # `conf_threshold`, `veiculo_conf`, `veiculo_obrigatorio`, `veiculo_max_veiculos` (ou
+    # qualquer um dos demais abaixo) não tinha efeito nenhum no "Ler Placa" até o processo
+    # reiniciar — enquanto o stream ao vivo, que é recriado por `pipeline.reiniciar`, pegava
+    # a mudança na hora. O diagnóstico invertia: o botão parecia ignorar o ajuste e o
+    # caminho que já estava bom parecia responder. Espelha `obter_ocr_leitura`, cujo ident
+    # inclui todos os parâmetros que ele passa.
+    ident = (
+        *ident_placa,
+        cfg.get("conf_threshold", ""), cfg.get("nms_threshold", ""),
+        cfg.get("detector_modelos_extra", ""), cfg.get("detector_votos_minimos", ""),
+        dois_estagios,
+        (cfg.get("veiculo_modelo_path", ""), cfg.get("veiculo_conf", ""),
+         cfg.get("veiculo_nms", ""), cfg.get("veiculo_classes", ""),
+         cfg.get("veiculo_padding", ""), cfg.get("veiculo_obrigatorio", ""),
+         cfg.get("veiculo_max_veiculos", "")) if dois_estagios else "",
+        tiles,
+        (cfg.get("tiles_lado_alvo", ""), cfg.get("tiles_conf", ""),
+         cfg.get("tiles_sobreposicao", ""), cfg.get("tiles_max_janelas", "")) if tiles else "",
+    )
 
     if _detector_leitura is None or _detector_leitura_id != ident:
         with _detector_leitura_criacao_lock:
             # Reconfirma dentro do lock — outra thread pode ter carregado enquanto
             # esperávamos aqui.
             if _detector_leitura is None or _detector_leitura_id != ident:
-                if backend == "open_image_models":
-                    det_placa = OpenImageDetector(modelo=ident_placa[1], conf=float(cfg.get("conf_threshold", "0.3")))
-                else:
-                    det_placa = criar_detector(cfg)
+                # SÓ o detector de placa: envolver os estágios é responsabilidade daqui
+                # para baixo. `criar_detector(cfg)` devolveria um 2 estágios já montado
+                # (ele aplica `veiculo_dois_estagios_live`), que seria envolvido de novo.
+                det_placa = _criar_detector_placa(
+                    cfg, modelo_oim=ident_placa[1] if backend == "open_image_models" else None)
 
                 if dois_estagios:
                     det = DetectorDoisEstagios(

@@ -833,7 +833,58 @@ def _cfg_para_camera(global_cfg: dict, cam: dict) -> dict:
     return merged
 
 
+# Serializa o CICLO DE VIDA de cada câmera (iniciar/parar/reiniciar). Sem isto as três
+# funções faziam check-then-act sobre `_instancias` sem lock, e a janela entre a leitura e
+# a escrita é de SEGUNDOS, não de instruções: `parar_camera` fica até 5s no join da thread e
+# `iniciar_camera` leva dezenas de segundos abrindo RTSP e carregando modelos.
+#
+# O cenário real: o supervisor decide reiniciar a câmera 3 no mesmo intervalo em que um
+# admin salva o cadastro dela. As duas threads chamam `parar_camera(3)`, as duas pegam a
+# MESMA instância no `.get`, as duas fazem `pop`, e as duas seguem para `iniciar_camera(3)`
+# — dois `Pipeline` para a mesma câmera física, duas conexões RTSP, e `_instancias[3]`
+# guardando só a última. A outra fica órfã, invisível ao supervisor E a `parar_camera`,
+# segurando a câmera até o processo morrer. Nenhum dos retornos `bool` cobre isso, porque o
+# problema é a não-atomicidade do par checar/agir.
+#
+# POR CÂMERA e não global: uma câmera subindo (dezenas de segundos) não pode bloquear
+# operação em outra. RLock porque `reiniciar_camera` chama `parar_camera` e
+# `iniciar_camera` já com o lock na mão.
+_locks_ciclo: dict[int, threading.RLock] = {}
+_locks_ciclo_guard = threading.Lock()
+
+
+def _lock_ciclo(camera_db_id: int) -> threading.RLock:
+    with _locks_ciclo_guard:
+        lock = _locks_ciclo.get(camera_db_id)
+        if lock is None:
+            lock = threading.RLock()
+            _locks_ciclo[camera_db_id] = lock
+        return lock
+
+
 def iniciar_camera(camera_db_id: int, cfg: dict[str, str]) -> None:
+    with _lock_ciclo(camera_db_id):
+        _iniciar_camera_travado(camera_db_id, cfg)
+
+
+def _iniciar_camera_travado(camera_db_id: int, cfg: dict[str, str]) -> None:
+    # Guarda de último nível contra a segunda conexão RTSP: se já existe instância com
+    # thread VIVA, subir outra sobrescreveria `_instancias[id]` e orfanaria a antiga —
+    # invisível ao supervisor e a `parar_camera`, segurando a câmera até o processo morrer.
+    # Vale para todo chamador, e é o que fecha o caminho de `reiniciar` (salvar config):
+    # ele chama `parar_todas()` e segue para `iniciar_cameras_db` mesmo quando alguma
+    # thread não confirmou parada, e aquela câmera continua registrada de propósito.
+    existente = _instancias.get(camera_db_id)
+    if existente is not None:
+        thread = getattr(existente, "_thread", None)
+        if getattr(existente, "iniciando", False) or (thread is not None and thread.is_alive()):
+            log.error(
+                "Câmera %d: início IGNORADO — já existe pipeline vivo para ela; abrir "
+                "outro duplicaria a conexão RTSP e deixaria o anterior órfão",
+                camera_db_id,
+            )
+            return
+
     p = Pipeline(cfg, camera_db_id=camera_db_id)
     # Registra ANTES de iniciar: `iniciar()` já abre o RTSP e demora dezenas de segundos
     # (conexão + carga dos modelos). Nessa janela a câmera está ocupada, e quem consultar
@@ -874,6 +925,11 @@ def parar_camera(camera_db_id: int) -> bool:
     """Para e desregistra o pipeline desta câmera. Retorna False, SEM desregistrar
     nada, se a thread do pipeline não confirmou parada (ver `Pipeline.parar()`) —
     quem chama não pode tratar a câmera como livre nesse caso."""
+    with _lock_ciclo(camera_db_id):
+        return _parar_camera_travado(camera_db_id)
+
+
+def _parar_camera_travado(camera_db_id: int) -> bool:
     p = _instancias.get(camera_db_id)
     if p is None:
         return True
@@ -899,6 +955,11 @@ def reiniciar_camera(camera_db_id: int, cfg: dict[str, str]) -> bool:
     """Para o pipeline atual e sobe um novo com `cfg`. Retorna False SEM tentar abrir
     uma nova conexão se `parar_camera` não conseguiu confirmar que a thread anterior
     morreu — abrir mesmo assim duplicaria a conexão RTSP com a câmera física."""
+    with _lock_ciclo(camera_db_id):
+        return _reiniciar_camera_travado(camera_db_id, cfg)
+
+
+def _reiniciar_camera_travado(camera_db_id: int, cfg: dict[str, str]) -> bool:
     if not parar_camera(camera_db_id):
         log.error(
             "Câmera %d: reinício ABORTADO — thread do pipeline anterior ainda viva; "
@@ -921,13 +982,17 @@ def parar_todas() -> bool:
 
     A instância que não parou FICA em `_instancias` (o resto sai), para que ela continue
     visível a `parar_camera`/ao supervisor em vez de virar órfã invisível.
+
+    Delega a `parar_camera` por câmera em vez de chamar `p.parar()` direto: assim cada
+    parada passa pelo lock de ciclo daquela câmera, e esta função deixa de driblar a
+    serialização que `iniciar_camera`/`reiniciar_camera` respeitam. Um por vez, nunca todos
+    os locks de uma vez — segurar o conjunto seria caminho para deadlock com uma thread que
+    já detém um deles.
     """
-    presos = {}
-    for cam_id, p in list(_instancias.items()):
-        if not p.parar():
-            presos[cam_id] = p
-    _instancias.clear()
-    _instancias.update(presos)
+    presos = []
+    for cam_id in [c for c in _instancias]:
+        if not parar_camera(cam_id):
+            presos.append(cam_id)
     with estado.lock:
         estado.frames_cameras.clear()
         estado.frames_cameras_limpos.clear()

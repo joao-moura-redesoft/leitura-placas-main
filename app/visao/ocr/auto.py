@@ -454,13 +454,29 @@ class AutoOCRPaddle(AutoOCR):
 
         def _rodar_auto() -> None:
             with contexto_log.herdar(ctx):
-                resultado["d"] = AutoOCR.ler_detalhado(self, crop)
+                try:
+                    resultado["d"] = AutoOCR.ler_detalhado(self, crop)
+                except Exception as e:
+                    # A exceção tem de ser CAPTURADA aqui. Numa thread ela iria para o
+                    # `threading.excepthook` — stderr do uvicorn, fora do logger do app —
+                    # e a linha `resultado["d"]` estouraria `KeyError: 'd'`, um erro sem
+                    # relação com a causa. `KeyError` não é `LeituraError`, então subia até
+                    # o handler genérico e o roteador levava 500 em vez do payload
+                    # degradado; a chamada nem virava linha em `chamadas`, e no log só
+                    # aparecia o KeyError. Nada em `_preprocessar_dl`/`_deskew`/
+                    # `_corrigir_perspectiva` tem try/except próprio, e este é o caminho
+                    # do crop BORRADO — o caso comum em produção.
+                    log.error("AutoOCR falhou no crop borrado (%s: %s) — seguindo só com "
+                              "o PaddleOCR", type(e).__name__, e, exc_info=True)
+                    resultado["erro"] = e
 
         t = threading.Thread(target=_rodar_auto, daemon=True)
         t.start()
         texto_p, conf_p = self._paddle.ler(crop)
         t.join()
-        d = resultado["d"]
+        # Sem resultado do AutoOCR, degrada para "só o Paddle" em vez de derrubar a
+        # leitura: o Paddle já rodou e pode ter lido a placa.
+        d = resultado.get("d") or _sem_leitura()
 
         vp = validar(texto_p, getattr(self, "_ultimo_formato_hint", ""))
         if not vp:

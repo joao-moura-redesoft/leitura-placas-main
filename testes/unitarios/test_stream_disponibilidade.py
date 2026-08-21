@@ -134,3 +134,45 @@ class TestGeradorNaoGiraParaSempre:
         estado.esquecer_camera(CAM)          # câmera parou de publicar
         with pytest.raises(StopIteration):
             next(g)
+
+
+class TestWatchdogOlhaAcameraNaoAEmissao:
+    """O corte de `gerar_mjpeg_camera` mede `estado.ultimo_frame_ts`, não "quando emiti".
+
+    Medir a emissão não detectava nada: `obter_frame_camera` devolve o último frame para
+    sempre e `_jpeg_cacheado` devolve o JPEG guardado quando o objeto é o mesmo — então
+    havia sempre o que emitir e o prazo era renovado a cada volta. Câmera morta com frame
+    velho em memória era servida a 15 fps indefinidamente, prendendo uma thread do pool por
+    viewer e mostrando imagem congelada como se fosse ao vivo.
+    """
+
+    def test_frame_velho_encerra_o_stream(self, monkeypatch):
+        monkeypatch.setattr(stream, "PARADA_SEM_FRAME_SEG", 0.2)
+        estado.frames_cameras[CAM] = np.zeros((16, 16, 3), dtype=np.uint8)
+        # A câmera publicou, mas há muito tempo — é o estado de câmera morta.
+        estado.ultimo_frame_ts[CAM] = time.time() - 60
+
+        emitidos = list(stream.gerar_mjpeg_camera(CAM, fps_max=50))
+
+        assert emitidos, "deve emitir o que tem antes de desistir"
+        assert len(emitidos) < 20, "não pode servir o quadro congelado para sempre"
+
+    def test_frame_fresco_mantem_o_stream(self, monkeypatch):
+        """Não pode cortar stream saudável: o gerador é infinito enquanto houver frame
+        novo, então consumimos só as primeiras iterações."""
+        import itertools
+        monkeypatch.setattr(stream, "PARADA_SEM_FRAME_SEG", 0.5)
+        estado.frames_cameras[CAM] = np.zeros((16, 16, 3), dtype=np.uint8)
+        estado.ultimo_frame_ts[CAM] = time.time()
+
+        primeiros = list(itertools.islice(stream.gerar_mjpeg_camera(CAM, fps_max=50), 5))
+        assert len(primeiros) == 5
+
+    def test_camera_que_nunca_publicou_ainda_encerra(self, monkeypatch):
+        """Sem timestamp não há referência; sem o fallback para o início do stream o laço
+        giraria para sempre — o oposto do que o corte existe para impedir."""
+        monkeypatch.setattr(stream, "PARADA_SEM_FRAME_SEG", 0.2)
+        estado.frames_cameras.pop(CAM, None)
+        estado.ultimo_frame_ts.pop(CAM, None)
+
+        assert list(stream.gerar_mjpeg_camera(CAM, fps_max=50)) == []

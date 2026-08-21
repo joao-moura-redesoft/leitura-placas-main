@@ -108,25 +108,37 @@ def gerar_mjpeg_camera(camera_id: int, qualidade: int = 75, fps_max: int = 15):
     aberta (segurando uma thread do pool), o navegador continuava exibindo o último
     quadro como se fosse atual e nada indicava a falha. Terminando a resposta, o
     <img> dispara `load`/fim de stream e o watchdog da página assume.
+
+    O corte olha `estado.ultimo_frame_ts`, e NÃO "quando emiti bytes pela última vez".
+    Medir a emissão não detectava nada: `obter_frame_camera` devolve o último frame para
+    sempre (`frames_cameras` só é limpo por `parar_camera`/`esquecer_camera`) e
+    `_jpeg_cacheado` devolve o JPEG guardado quando o objeto é o mesmo — então havia
+    sempre o que emitir, `ultimo_envio` era renovado a cada volta e a condição nunca ficava
+    verdadeira. Câmera morta com frame velho em memória servia aquele quadro a 15 fps
+    indefinidamente: uma thread do pool presa por viewer, e o operador vendo uma imagem
+    congelada indistinguível de imagem ao vivo — exatamente o sintoma que este docstring
+    diz ter corrigido. `ultimo_frame_ts` só avança em `registrar_frame_camera`, então é o
+    sinal de que a CÂMERA produziu, não de que o gerador falou.
     """
     intervalo = 1.0 / max(fps_max, 1)
-    ultimo_envio = time.time()
+    inicio_stream = time.time()
     while True:
         inicio = time.time()
         frame = estado.obter_frame_camera(camera_id)
         if frame is not None:
             jpg = _jpeg_cacheado(camera_id, frame, qualidade)
             if jpg is not None:
-                ultimo_envio = time.time()
                 yield (
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n\r\n"
                     + jpg
                     + b"\r\n"
                 )
-        # Fora do `if`: vale tanto para câmera que parou de publicar quanto para o
-        # caso (patológico, mas silencioso) do encode falhar sempre.
-        if time.time() - ultimo_envio > PARADA_SEM_FRAME_SEG:
+        # `or inicio_stream`: câmera que nunca publicou não tem timestamp, e sem esse
+        # fallback o laço giraria para sempre — o oposto do que este corte existe para
+        # impedir.
+        referencia = estado.ultimo_frame_ts.get(camera_id) or inicio_stream
+        if time.time() - referencia > PARADA_SEM_FRAME_SEG:
             return
         elapsed = time.time() - inicio
         if elapsed < intervalo:
