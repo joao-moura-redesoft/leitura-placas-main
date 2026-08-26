@@ -41,6 +41,84 @@ log = logging.getLogger(__name__)
 
 SNAPSHOT_DIR = Path("app/web/static/snapshots")
 
+# Sufixos que ESTE modulo cria (ver `_salvar`: `{ts}_cam{N}-{marca}.jpg`). Sao a fronteira
+# entre "arquivo meu" e "arquivo de outro subsistema", e essa fronteira e o que torna a
+# evicção segura - ver `_cabe_no_disco`.
+#
+# `naolido-moto` existe porque moto e o caso raro que o throttle compartilhado apagava da
+# estatistica: um negativo a cada 20 s, com carro inundando o gatilho, faz a moto chegar
+# sempre no instante em que o relogio acabou de disparar. Marca propria + cota propria e o
+# que a torna achavel por nome em vez de estatisticamente invisivel.
+MARCAS = ("amostra", "naolido", "naolido-moto")
+SUFIXOS_MEUS = tuple("-%s.jpg" % m for m in MARCAS)
+
+# Quantos segundos o inventario de arquivos vale antes de ser recontado. `_cabe_no_disco`
+# roda em TODO gatilho de captura, e listar 5.000 arquivos a cada 10 s e I/O jogado fora
+# num servidor que tambem grava video.
+_TTL_INVENTARIO_SEG = 30.0
+
+# Folga que a evicção abre ALEM do excedente, para nao ser apagar-um-gravar-um em cada
+# gatilho (cada um custaria uma listagem da pasta).
+#
+# Teto ABSOLUTO era bug: com `_LOTE_EVICCAO = 50` e um teto de 10, `excedente + 50` apagava
+# os 10 arquivos e a pasta ficava vazia. A folga tem de ser proporcional ao teto — 1% dele —
+# com o absoluto virando so o limite superior. Teto 5.000 da folga 50 (1%); teto 10 da 1.
+_FOLGA_EVICCAO_MAX = 50
+_FRACAO_FOLGA = 100          # 1/100 do teto
+
+
+def _folga_eviccao(teto: int) -> int:
+    return max(1, min(_FOLGA_EVICCAO_MAX, teto // _FRACAO_FOLGA))
+
+
+def _meus_arquivos() -> list[Path]:
+    """So os arquivos que ESTE modulo criou, do mais antigo para o mais novo.
+
+    Ordena pelo NOME e nao por mtime: o nome comeca com o timestamp UTC em milissegundos
+    (`_salvar`), e isso e estavel. `mtime` muda se alguem copiar ou tocar o arquivo, e um
+    backup restaurado reordenaria a fila de evicção inteira.
+    """
+    try:
+        return sorted((f for f in SNAPSHOT_DIR.iterdir()
+                       if f.name.endswith(SUFIXOS_MEUS)), key=lambda f: f.name)
+    except OSError:
+        return []
+
+
+def _rotulados() -> set[str]:
+    """Nomes de arquivo que o dataset referencia - a evicção nunca pode toca-los.
+
+    Le `testes/dataset.json` porque rotulo humano e a coisa mais caro de reproduzir neste
+    projeto: apagar uma captura ja rotulada transformaria trabalho de gente numa linha
+    apontando para arquivo inexistente, que e um modo de falha que este projeto JA teve
+    (commit 2252896, "Corrige o caminho das capturas no dataset e tira arquivo faltando da
+    acuracia").
+
+    Hoje nenhuma entrada do dataset e `-amostra`/`-naolido` (as 48 que vivem em snapshots/
+    sao recortes de deteccao, que a evicção nao alcanca de qualquer forma). A checagem
+    existe para o dia em que alguem rotular uma captura - e ai o custo de nao ter checado
+    seria silencioso.
+
+    Falha em ler = conjunto vazio seria o mais perigoso possivel, entao devolve None e quem
+    chama ABORTA a evicção. Nao apagar nada e sempre recuperavel; apagar rotulo nao e.
+    """
+    import json
+    try:
+        dados = json.loads(Path("testes/dataset.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # Sem dataset nao ha rotulo a proteger - mas AVISA, porque "arquivo ausente" e
+        # ambiguo: pode ser projeto novo (legitimo) ou processo rodando do diretorio errado
+        # (e ai a evicção correria sem protecao nenhuma). O caminho e relativo de proposito,
+        # a mesma convencao de `SNAPSHOT_DIR`, e o Dockerfile leva `testes/dataset.json`
+        # (o .dockerignore exclui so `fotos/` e `resultados/`).
+        log.warning("Evicção sem protecao de rotulo: testes/dataset.json nao encontrado a "
+                    "partir de %s", Path.cwd())
+        return set()
+    except (OSError, ValueError) as e:
+        log.warning("Evicção abortada: nao consegui ler o dataset (%s)", e)
+        return None
+    return {Path(f["arquivo"]).name for f in dados.get("fotos", []) if f.get("arquivo")}
+
 _coletores: list[threading.Thread] = []
 _parar = threading.Event()
 
@@ -56,18 +134,35 @@ class CapturaDataset:
         self.camera_db_id = camera_db_id
         self.ativo = _sim(cfg.get("captura_dataset", "nao"))
         self.negativos = _sim(cfg.get("captura_dataset_negativos", "sim"))
-        self.intervalo = float(cfg.get("captura_dataset_intervalo_seg", "60"))
+        self.intervalo = float(cfg.get("captura_dataset_intervalo_seg", "300"))
         # Intervalo próprio para negativo: sem ele, uma caixa fantasma fixa na cena
         # (um adesivo, uma placa de sinalização) gravaria a cada tick de detecção.
-        self.intervalo_neg = float(cfg.get("captura_dataset_negativo_intervalo_seg", "20"))
+        self.intervalo_neg = float(cfg.get("captura_dataset_negativo_intervalo_seg", "300"))
+        # Cota SEPARADA para moto. Sem ela a moto nunca era coletada mesmo com a captura
+        # ligada: um so relogio de negativo, com carro inundando o gatilho, faz a moto
+        # chegar sempre logo depois de ele disparar. 60 s e mais permissivo que o negativo
+        # comum de proposito - moto e o caso escasso, e o que se quer e justamente nao
+        # perde-la quando ela aparece.
+        self.intervalo_neg_moto = float(cfg.get("captura_dataset_moto_intervalo_seg", "60"))
         self.qualidade = int(cfg.get("snapshot_qualidade", "85"))
-        # Teto de arquivos: a captura periódica é continua, e sem limite ela enche o
-        # disco de um servidor que tambem grava video. Ao bater o teto ela PARA, em vez
-        # de apagar: apagar arriscaria remover snapshot referenciado por uma detecção.
+        # Teto de arquivos: a captura periódica é continua, e sem limite ela enche o disco de
+        # um servidor que tambem grava video.
+        #
+        # O comentario original aqui dizia "ao bater o teto ela PARA, em vez de apagar:
+        # apagar arriscaria remover snapshot referenciado por uma deteccao". O raciocinio
+        # estava certo e o risco era real - o que mudou e que a evicção agora so alcanca os
+        # arquivos que ESTE modulo criou (`SUFIXOS_MEUS`), e esses nunca sao referenciados
+        # por `deteccoes`. O risco foi removido, nao ignorado.
+        #
+        # Parar era pior do que parecia: medido em 25/08/2026, a captura estava desligada ha
+        # 12 dias e nenhuma moto podia ser coletada nesse periodo. Ver `_cabe_no_disco`.
         self.max_arquivos = int(cfg.get("captura_dataset_max_arquivos", "5000"))
         self._ultima_amostra = 0.0
         self._ultimo_negativo = 0.0
+        self._ultimo_negativo_moto = 0.0
         self._avisou_teto = False
+        # Inventario em cache (contagem, instante) - ver `_TTL_INVENTARIO_SEG`.
+        self._inventario = (0, 0.0)
 
     # ── gatilhos ──────────────────────────────────────────────────────────────
     def amostrar(self, frame) -> None:
@@ -80,33 +175,125 @@ class CapturaDataset:
         if self._salvar(frame, "amostra"):
             self._ultima_amostra = agora
 
-    def negativo(self, crop) -> None:
-        """Recorte que o detector achou e a leitura não conseguiu resolver."""
+    def negativo(self, crop, tipo_veiculo: str | None = None) -> None:
+        """Recorte que o detector achou e a leitura nao conseguiu resolver.
+
+        `tipo_veiculo` ('moto'/'carro'/None) vem da classe do detector de veiculo e escolhe
+        qual relogio governa a gravacao. Moto tem o seu, e isso e o ponto: com UM relogio
+        compartilhado, a moto - que e o caso raro - chegava quase sempre no instante em que o
+        negativo de carro acabou de disparar, e era descartada. Doze dias de captura ligada
+        em agosto/2026 produziram 1.045 negativos e a revisao humana nao achou UMA moto neles.
+        Nao era azar de amostra: era o throttle.
+
+        `None` (o 2 estagios nao rodou, ou nao achou veiculo contendo a placa) cai no relogio
+        comum de proposito. Chutar 'moto' no desconhecido daria cota de caso raro para o caso
+        comum, que e o oposto do que se quer - e `tipo_veiculo` e None em 423 das 838
+        deteccoes do banco, entao o chute governaria a maioria.
+        """
         if not self.ativo or not self.negativos or crop is None or crop.size == 0:
             return
         agora = time.time()
-        if agora - self._ultimo_negativo < self.intervalo_neg:
+        e_moto = tipo_veiculo == "moto"
+        ultimo = self._ultimo_negativo_moto if e_moto else self._ultimo_negativo
+        intervalo = self.intervalo_neg_moto if e_moto else self.intervalo_neg
+        if agora - ultimo < intervalo:
             return
-        if self._salvar(crop, "naolido"):
-            self._ultimo_negativo = agora
+        if self._salvar(crop, "naolido-moto" if e_moto else "naolido"):
+            if e_moto:
+                self._ultimo_negativo_moto = agora
+            else:
+                self._ultimo_negativo = agora
 
     # ── escrita ───────────────────────────────────────────────────────────────
     def _cabe_no_disco(self) -> bool:
+        """Ha vaga para mais uma captura? Se nao, abre uma apagando a MAIS ANTIGA.
+
+        Duas mudancas em 25/08/2026, e as duas vieram de medicao no posto:
+
+        1. Conta so os arquivos que ESTE modulo criou. Antes contava todo `.jpg` da pasta, e
+           tres subsistemas escrevem nela: alem daqui, `leitura.py` e `pipeline.py` gravam o
+           HISTORICO (`{ts}_{placa}.jpg`, referenciado por `deteccoes.snapshot`). Medido: 4.184
+           arquivos meus contra 1.594 de historico, num teto de 5.000 - o historico consumia
+           cota do dataset, e como ele cresce a cada leitura bem-sucedida e nao pode ser
+           apagado sem quebrar o link, o teto virava uma catraca que desligava a captura para
+           sempre. A mensagem antiga pedia "classifique ou limpe a pasta", e classificar nao
+           mudava a contagem.
+
+        2. Ao encher, EVICTA em vez de parar. Parar custou 12 dias sem coleta nenhuma (nada
+           entre 13/08 e 25/08), e nesse periodo nenhuma moto podia ser coletada - o que
+           bloqueava a unica pendencia que precisa de amostra nova. Com 349 arquivos/hora
+           medidos, qualquer teto e um relogio: corrigir so a contagem daria 2,3 horas de
+           coleta antes de travar de novo.
+
+        A evicção e segura porque so alcanca `SUFIXOS_MEUS`, que nunca aparecem em
+        `deteccoes.snapshot`, e porque pula o que o dataset referencia (`_rotulados`).
+        """
         if self.max_arquivos <= 0:
             return True
-        try:
-            n = sum(1 for f in SNAPSHOT_DIR.iterdir() if f.suffix.lower() in (".jpg", ".png"))
-        except OSError:
-            return True
+
+        agora = time.time()
+        n, medido_em = self._inventario
+        if agora - medido_em > _TTL_INVENTARIO_SEG:
+            n = len(_meus_arquivos())
+            medido_em = agora
+
         if n < self.max_arquivos:
             self._avisou_teto = False
+            # Conta a que vai ser gravada agora, para nao relistar a pasta a cada gatilho.
+            # `medido_em` NAO avanca: o TTL tem de expirar a partir da ultima LISTAGEM, senao
+            # a contagem incrementada nunca seria confrontada com o disco e a deriva (gravacao
+            # que falhou, arquivo apagado por fora) se acumularia sem nunca ser corrigida.
+            self._inventario = (n + 1, medido_em)
             return True
-        if not self._avisou_teto:
-            log.warning("Captura para dataset PARADA: %d imagens em %s atingem o teto de "
-                        "%d (captura_dataset_max_arquivos). Classifique ou limpe a pasta.",
-                        n, SNAPSHOT_DIR, self.max_arquivos)
-            self._avisou_teto = True
-        return False
+
+        # Cheio: abre vaga. Recontagem forcada - o cache pode estar velho e listar de novo
+        # e barato ao lado de apagar por engano.
+        meus = _meus_arquivos()
+        self._inventario = (len(meus), agora)
+        if len(meus) < self.max_arquivos:
+            return True
+
+        protegidos = _rotulados()
+        if protegidos is None:
+            # Nao consegui ler o dataset: PARA, como antes. Nao apagar e recuperavel;
+            # apagar rotulo humano nao e.
+            if not self._avisou_teto:
+                log.warning("Captura pausada: teto de %d atingido e o dataset esta ilegivel, "
+                            "entao a evicção nao roda (risco de apagar rotulo).",
+                            self.max_arquivos)
+                self._avisou_teto = True
+            return False
+
+        # Quantos apagar: o excedente mais uma folga proporcional ao teto — ver
+        # `_folga_eviccao`, e o bug de teto absoluto que ela conserta.
+        alvo = len(meus) - self.max_arquivos + _folga_eviccao(self.max_arquivos)
+        apagados = 0
+        for f in meus:                     # `_meus_arquivos` ja vem do mais antigo
+            if apagados >= alvo:
+                break
+            if f.name in protegidos:
+                continue                   # rotulado: nunca
+            try:
+                f.unlink()
+                apagados += 1
+            except OSError as e:
+                log.debug("Evicção: nao consegui apagar %s (%s)", f.name, e)
+
+        if not apagados:
+            if not self._avisou_teto:
+                log.warning("Captura PARADA: teto de %d atingido e nada pode ser evictado "
+                            "(%d arquivo(s), todos rotulados ou em uso).",
+                            self.max_arquivos, len(meus))
+                self._avisou_teto = True
+            return False
+
+        self._inventario = (len(meus) - apagados, agora)
+        # INFO e nao DEBUG: apagar arquivo e efeito colateral visivel, e quem investiga
+        # "onde foi a captura de terca" precisa achar isto no log.
+        log.info("Evicção da captura: %d arquivo(s) mais antigo(s) apagado(s) para manter o "
+                 "teto de %d (a coleta continua)", apagados, self.max_arquivos)
+        self._avisou_teto = False
+        return True
 
     def salvar_amostra_agora(self, frame) -> bool:
         """Grava sem consultar o relógio — quem chama já controlou a cadência."""

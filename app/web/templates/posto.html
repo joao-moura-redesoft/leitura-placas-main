@@ -119,6 +119,13 @@
   .modal-caixa { background:#fff; border-radius:12px; padding:28px; width:520px; max-width:96vw;
     max-height:90vh; overflow-y:auto; box-shadow:0 20px 60px rgba(0,0,0,.18); }
   .linha-2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px; }
+  /* Card de bico com 2 ângulos ocupa duas colunas do grid de "Ao vivo": os dois quadros
+     têm que caber lado a lado, que é a razão de existir do agrupamento. Abaixo de 760px o
+     grid externo já tem uma coluna só e `span 2` criaria uma coluna implícita (rolagem
+     horizontal no celular) — nessa faixa o card volta a uma coluna e o `auto-fit` de
+     dentro empilha os quadros. */
+  .card-par { grid-column: span 2; }
+  @media (max-width: 760px) { .card-par { grid-column: auto; } }
   .modal-caixa label { display:block; margin-bottom:12px; }
   .modal-caixa .linha-2 label { margin-bottom:0; }
   .modal-caixa input, .modal-caixa select { width:100%; box-sizing:border-box; margin-top:4px; }
@@ -130,11 +137,16 @@
 const EMPRESA_ID = {{ empresa_id }};
 let _d = null, _modal = null;
 
-function msg(ok, txt) {
+let _msgTimer = null;
+// `segundos` maior quando a mensagem CONTÉM o próximo passo (link para desenhar a área):
+// 6s é curto para ler e clicar. O timer é guardado porque, sem isso, o timeout de uma
+// mensagem anterior apagava a seguinte antes da hora.
+function msg(ok, txt, segundos = 6) {
   const el = document.getElementById('msg');
   el.className = 'alert ' + (ok ? 'alert-ok' : 'alert-err');
   el.innerHTML = txt;
-  setTimeout(() => { el.innerHTML = ''; el.className = ''; }, 6000);
+  clearTimeout(_msgTimer);
+  _msgTimer = setTimeout(() => { el.innerHTML = ''; el.className = ''; }, segundos * 1000);
 }
 async function carregar() {
   const r = await fetch(`/api/postos/${EMPRESA_ID}`);
@@ -148,52 +160,118 @@ async function carregar() {
 }
 
 // ── Ao vivo ──────────────────────────────────────────────────────────────────
+// Agrupa as câmeras que compartilham bico: um bico de 2 câmeras é uma ARESTA entre elas, e
+// o card é o componente conexo. Com isso cada câmera tem UM quadro na página (os ids
+// img-cam-*/estado-cam-* seguem únicos, e é neles que o watchdog do MJPEG se pendura) e
+// cada bico UM botão. Antes o bico de 2 câmeras rendia um botão em cada card, os dois com
+// o mesmo id: clicar no da frente punha "Lendo…" no botão da traseira e deixava o clicado
+// livre para disparar uma segunda leitura concorrente.
+function gruposDeCameras() {
+  const pai = {};
+  const raiz = x => pai[x] === x ? x : (pai[x] = raiz(pai[x]));
+  _d.cameras.forEach(c => { pai[c.id] = c.id; });
+  const conhecidas = b => camerasDoBico(b).filter(f => pai[f.camera_id] !== undefined);
+
+  const bicos = _d.automacoes.flatMap(a => a.bicos);
+  bicos.forEach(b => {
+    const ids = conhecidas(b).map(f => f.camera_id);
+    ids.slice(1).forEach(id => { pai[raiz(id)] = raiz(ids[0]); });
+  });
+
+  const grupos = new Map();
+  _d.cameras.forEach(c => {
+    const k = raiz(c.id);
+    if (!grupos.has(k)) grupos.set(k, { cameras: [], bicos: [] });
+    grupos.get(k).cameras.push(c);
+  });
+  // Cada bico entra uma única vez, no grupo da primeira câmera dele que este posto tem.
+  bicos.forEach(b => {
+    const primeira = conhecidas(b)[0];
+    if (primeira) grupos.get(raiz(primeira.camera_id)).bicos.push(b);
+  });
+  return [...grupos.values()];
+}
+
+// Quadro de UMA câmera. `rotulo` só vem preenchido em grupo de 2+ câmeras, onde ele é o
+// que diferencia os ângulos — e é também o que marca o quadro como realçável (o id
+// quadro-cam-* que `realcarQuadros` procura depois da leitura).
+function quadroCamera(c, rotulo) {
+  return `
+    <div ${rotulo ? `id="quadro-cam-${c.id}"
+          style="border:2px solid #e2e8f0;border-radius:7px;overflow:hidden"` : ''}>
+      ${rotulo ? `<div style="padding:6px 10px;background:#f8fafc;font-size:12px">
+           <strong>${esc(rotulo)}</strong>
+           <span style="color:#94a3b8"> · ${esc(c.local || c.nome)}</span></div>` : ''}
+      <!-- Camada de estado: cobre a imagem enquanto não há quadro e nunca deixa o
+           espaço vazio — mostra o que está acontecendo, ou o erro com botão de nova
+           tentativa. Quem a esconde é o evento load da imagem. -->
+      <div style="position:relative;background:#0f172a;min-height:150px">
+        <img id="img-cam-${c.id}" alt="" style="width:100%;display:block">
+        <div id="estado-cam-${c.id}" style="position:absolute;inset:0;display:flex;flex-direction:column;
+             gap:9px;align-items:center;justify-content:center;color:#94a3b8;font-size:13px;
+             text-align:center;padding:14px">
+          <span id="estado-txt-${c.id}">carregando…</span>
+          <button id="estado-btn-${c.id}" onclick="recarregarCamera(${c.id})"
+                  style="display:none;background:#1e293b;border:1px solid #334155;color:#e2e8f0;
+                         font-size:12px;padding:5px 12px">Tentar de novo</button>
+        </div>
+        <span id="selo-cam-${c.id}" style="display:none;position:absolute;top:8px;left:8px;
+              background:#dc2626;color:#fff;font-size:11px;font-weight:600;padding:2px 8px;
+              border-radius:20px">● AO VIVO</span>
+      </div>
+    </div>`;
+}
+
+// UM botão por bico: a leitura sempre varre todas as câmeras dele (ver
+// bicos_ler_placa_teste em app/web/cadastro.py), então um botão por ângulo prometia uma
+// leitura por câmera que não existe.
+function botaoBico(b) {
+  const fontes = camerasDoBico(b);
+  const faltando = fontes.filter(f => !f.tem_roi);
+  const aviso = faltando.length
+    ? `title="Sem área ${fontes.length > 1
+        ? 'na câmera da ' + faltando.map(f => esc(f.papel)).join(' e da ')
+        : 'nesta câmera'} — vai analisar o quadro inteiro"`
+    : '';
+  return `<button onclick="lerBico(${b.id}, '${esc(b.codigo)}')" id="btn-bico-${b.id}"
+     style="background:#0f172a;padding:6px 12px;font-size:13px" ${aviso}>
+     Ler bico ${esc(b.codigo)}${faltando.length ? ' ⚠' : ''}</button>`;
+}
+
 // Sem pipeline contínuo não existe stream: a imagem é uma captura sob demanda.
 // Se algum dia a câmera rodar em modo contínuo, o MJPEG entra no lugar sozinho.
 function renderAoVivo() {
   document.getElementById('sem-aovivo').style.display = _d.cameras.length ? 'none' : '';
-  document.getElementById('ao-vivo').innerHTML = _d.cameras.map(c => {
-    const bs = bicosDaCamera(c.id);
-    const botoes = bs.length
-      ? bs.map(b => {
-          const ok = temRoiNaCamera(b, c.id);
-          const papel = papelNaCamera(b, c.id);
-          return `<button onclick="lerBico(${b.id}, '${esc(b.codigo)}', ${c.id})" id="btn-bico-${b.id}"
-             style="background:#0f172a;padding:6px 12px;font-size:13px"
-             ${ok ? '' : 'title="Bico sem área nesta câmera — vai analisar o quadro inteiro"'}>
-             Ler bico ${esc(b.codigo)}${papel ? ` (${esc(papel)})` : ''}${ok ? '' : ' ⚠'}</button>`;
-        }).join('')
-      : '<span style="color:#94a3b8;font-size:13px">Nenhum bico nesta câmera</span>';
+  document.getElementById('ao-vivo').innerHTML = gruposDeCameras().map(g => {
+    const par = g.cameras.length > 1;
+    const c0 = g.cameras[0];
+    const codigos = g.bicos.filter(b => camerasDoBico(b).length > 1).map(b => b.codigo);
+    const titulo = par
+      ? `<strong>${esc(codigos.length ? 'Bico ' + codigos.join(', ')
+                                      : g.cameras.map(c => c.local || c.nome).join(' + '))}</strong>
+         <span style="font-weight:400;color:#94a3b8">· ${g.cameras.length} ângulos do mesmo veículo</span>`
+      : `${esc(c0.local || c0.nome)}
+         <span style="font-weight:400;color:#94a3b8">${esc(c0.local ? c0.nome : '')}</span>`;
     return `
-      <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
-        <div style="padding:9px 12px;background:#f8fafc;font-size:13px;font-weight:600">
-          ${esc(c.local || c.nome)}
-          <span style="font-weight:400;color:#94a3b8">${esc(c.local ? c.nome : '')}</span>
-        </div>
-        <!-- Camada de estado: cobre a imagem enquanto não há quadro e nunca deixa o
-             espaço vazio — mostra o que está acontecendo, ou o erro com botão de nova
-             tentativa. Quem a esconde é o evento load da imagem. -->
-        <div style="position:relative;background:#0f172a;min-height:150px">
-          <img id="img-cam-${c.id}" alt="" style="width:100%;display:block">
-          <div id="estado-cam-${c.id}" style="position:absolute;inset:0;display:flex;flex-direction:column;
-               gap:9px;align-items:center;justify-content:center;color:#94a3b8;font-size:13px;
-               text-align:center;padding:14px">
-            <span id="estado-txt-${c.id}">carregando…</span>
-            <button id="estado-btn-${c.id}" onclick="recarregarCamera(${c.id})"
-                    style="display:none;background:#1e293b;border:1px solid #334155;color:#e2e8f0;
-                           font-size:12px;padding:5px 12px">Tentar de novo</button>
-          </div>
-          <span id="selo-cam-${c.id}" style="display:none;position:absolute;top:8px;left:8px;
-                background:#dc2626;color:#fff;font-size:11px;font-weight:600;padding:2px 8px;
-                border-radius:20px">● AO VIVO</span>
+      <div class="${par ? 'card-par' : ''}"
+           style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+        <div style="padding:9px 12px;background:#f8fafc;font-size:13px;font-weight:600">${titulo}</div>
+        <div style="display:grid;gap:10px;${par ? 'padding:10px;' : ''}
+             grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+          ${g.cameras.map(c => quadroCamera(c, par ? anguloDaCamera(g, c.id) : '')).join('')}
         </div>
         <div style="padding:10px 12px;display:flex;gap:8px;flex-wrap:wrap">
-          ${botoes}
-          ${bs.length ? `<a href="/roi-camera/${c.id}" style="display:inline-flex;align-items:center;
-             padding:6px 12px;border-radius:7px;border:1px solid #e2e8f0;color:#374151;
-             font-size:13px;text-decoration:none">áreas</a>` : ''}
+          ${g.bicos.length ? g.bicos.map(botaoBico).join('')
+                           : '<span style="color:#94a3b8;font-size:13px">Nenhum bico nesta câmera</span>'}
+          ${g.bicos.length ? g.cameras.map(c => {
+              const ang = par ? anguloDaCamera(g, c.id) : '';
+              return `<a href="/roi-camera/${c.id}" style="display:inline-flex;align-items:center;
+                 padding:6px 12px;border-radius:7px;border:1px solid #e2e8f0;color:#374151;
+                 font-size:13px;text-decoration:none">áreas${ang ? ' ' + esc(ang) : ''}</a>`;
+            }).join('') : ''}
         </div>
-        <div id="res-cam-${c.id}" style="display:none;padding:0 12px 12px;font-size:13px"></div>
+        ${g.bicos.map(b => `<div id="res-bico-${b.id}"
+             style="display:none;padding:0 12px 12px;font-size:13px"></div>`).join('')}
       </div>`;
   }).join('');
   atualizarAoVivo();
@@ -266,12 +344,9 @@ async function atualizarAoVivo() {
   if (btn) { btn.disabled = false; btn.textContent = '↻ Atualizar imagens'; }
 }
 
-async function lerBico(bicoId, codigo, camId) {
+async function lerBico(bicoId, codigo) {
   const bico = _d.automacoes.flatMap(a => a.bicos).find(b => b.id === bicoId);
-  // O resultado sai no card de onde o botão foi clicado; com 2 câmeras, `bico.camera_id`
-  // sozinho mandaria a resposta sempre para o card da primeira.
-  const camAlvo = camId ?? bico.camera_id;
-  const res = document.getElementById(`res-cam-${camAlvo}`);
+  const res = document.getElementById(`res-bico-${bicoId}`);
   const btn = document.getElementById(`btn-bico-${bicoId}`);
   const t0 = Date.now();
   btn.disabled = true;
@@ -281,7 +356,17 @@ async function lerBico(bicoId, codigo, camId) {
   }, 250);
   try {
     const r = await fetch(`/api/bicos/${bicoId}/ler-placa-teste`, { method: 'POST' });
-    const d = await r.json();
+    // Um 500 do servidor volta com corpo em TEXTO ("Internal Server Error"), não JSON.
+    // Com `await r.json()` cru, o parse estourava e a tela mostrava "Unexpected token
+    // 'I' ... is not valid JSON" — a mensagem apontava para um defeito de frontend
+    // enquanto o que havia acontecido era o servidor quebrar. O status é o que informa;
+    // o corpo ilegível vira nota de rodapé, não a manchete.
+    const d = await r.json().catch(() => null);
+    if (d === null) {
+      res.innerHTML = `<span style="color:#b91c1c">✗ erro ${r.status} no servidor — `
+        + `veja o log do servidor para o motivo.</span>`;
+      return;
+    }
     // Diagnóstico das fontes: qual câmera leu, e se alguma não enxergou nada — é a
     // informação que diz onde mexer no enquadramento.
     const fontes = d.fontes || [];
@@ -302,6 +387,8 @@ async function lerBico(bicoId, codigo, camId) {
       <strong style="font-family:'Consolas',monospace;letter-spacing:2px;font-size:16px">${esc(d.placa)}</strong>
       <span style="color:#94a3b8">· ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%${
         vencedora ? ` · leu pela <strong>${esc(vencedora)}</strong>` : ''}</span>${nota}`;
+
+    if (fontes.length > 1) realcarQuadros(fontes, d);
 
     // Atualiza o quadro de CADA câmera do bico — o operador precisa conferir as duas.
     const quadros = fontes.length > 1
@@ -328,14 +415,45 @@ function bicosDaCamera(camId) {
   return _d.automacoes.flatMap(a => a.bicos)
     .filter(b => b.camera_id === camId || b.camera2_id === camId);
 }
+// Fontes do bico já normalizadas. `cameras` vem pronto da API (um item por slot); o
+// fallback pelos campos avulsos cobre payload antigo em cache do browser, senão o
+// agrupamento do "Ao vivo" quebraria em vez de só perder o rótulo do ângulo.
+function camerasDoBico(b) {
+  if ((b.cameras || []).length) return b.cameras;
+  const fontes = [{ camera_id: b.camera_id, papel: b.papel_camera || 'traseira',
+                    tem_roi: !!b.tem_roi, slot: 1 }];
+  if (b.camera2_id) fontes.push({ camera_id: b.camera2_id, papel: b.papel_camera2 || 'frente',
+                                  tem_roi: !!b.roi2, slot: 2 });
+  return fontes;
+}
 // Se ESTA câmera do bico já tem área — "tem_roi" sozinho só fala da primeira.
 function temRoiNaCamera(b, camId) {
-  const f = (b.cameras || []).find(c => c.camera_id === camId);
+  const f = camerasDoBico(b).find(c => c.camera_id === camId);
   return f ? f.tem_roi : !!b.tem_roi;
 }
 function papelNaCamera(b, camId) {
-  const f = (b.cameras || []).find(c => c.camera_id === camId);
+  const f = camerasDoBico(b).find(c => c.camera_id === camId);
   return f ? f.papel : '';
+}
+// Ângulo desta câmera dentro do grupo: só os bicos de 2+ câmeras nomeiam ângulo (num bico
+// de uma câmera o rótulo não distingue nada, porque não há o que distinguir).
+function anguloDaCamera(g, camId) {
+  for (const b of g.bicos) {
+    if (camerasDoBico(b).length < 2) continue;
+    const p = papelNaCamera(b, camId);
+    if (p) return p;
+  }
+  return '';
+}
+// Verde na câmera que leu, âmbar na que não enxergou nada. Com 2 ângulos é este realce
+// que responde "onde eu mexo?" — até agora ele só existia no painel de teste.
+function realcarQuadros(fontes, d) {
+  fontes.forEach(f => {
+    const box = document.getElementById(`quadro-cam-${f.camera_id}`);
+    if (!box) return;
+    box.style.borderColor = (d.placa && f.camera_id === d.camera_id) ? '#16a34a'
+      : (f.estado === 'usada' && f.bboxes ? '#e2e8f0' : '#f59e0b');
+  });
 }
 
 function renderCameras() {
@@ -396,6 +514,8 @@ function renderAutomacoes() {
                     style="color:#16a34a;text-decoration:none;margin-right:10px">área ${esc(f.papel)}</a>`).join('')}
               <button onclick='modalBico(${JSON.stringify(b)}, ${a.id})'
                       style="padding:5px 11px;font-size:13px;background:#16a34a">editar</button>
+              <button onclick="removerBico(${b.id})"
+                      style="padding:5px 11px;font-size:13px;background:#dc2626;margin-left:6px">remover</button>
             </td>
           </tr>`).join('')}</tbody></table></div>`
         : '<p style="color:#94a3b8;padding:12px 14px;margin:0">Nenhum bico nesta automação.</p>'}
@@ -447,10 +567,18 @@ async function salvarModal(e) {
   const btn = e.target.querySelector('button[type=submit]');
   btn.disabled = true; btn.textContent = 'Salvando…';
   try {
-    await _modal();
+    // O callback PODE devolver a mensagem de sucesso (string) — é assim que o cadastro de
+    // bico oferece o passo seguinte (desenhar as áreas) em vez de um "Salvo." sem saída.
+    // Só string: `modalAutomacao` tem corpo conciso (`async () => api(...)`) e devolve o
+    // JSON da resposta, que é truthy — sem este filtro a tela mostrava "[object Object]".
+    const devolvido = await _modal();
+    const texto = typeof devolvido === 'string' ? devolvido : '';
     fecharModal();
     await carregar();
-    msg(true, 'Salvo.');
+    msg(true, texto || 'Salvo.', texto ? 20 : 6);
+    // O aviso vive no topo da página e o modal pode ter sido aberto bem abaixo — sem
+    // trazer a mensagem para a vista, o link do próximo passo nasce fora da tela.
+    if (texto) document.getElementById('msg').scrollIntoView({ behavior: 'smooth', block: 'center' });
   } catch (ex) {
     msg(false, esc(ex.message));
   } finally {
@@ -520,11 +648,15 @@ function modalBico(b = null, automacaoId = null) {
   const opcoes = (sel, vazia) => (vazia ? `<option value="">— sem segunda câmera —</option>` : '')
     + _d.cameras.map(c =>
         `<option value="${c.id}"${sel === c.id ? ' selected' : ''}>${esc(c.local ? c.local + ' — ' : '')}${esc(c.nome)}</option>`).join('');
-  const papel = (id, atual, padrao) => `
-    <label>Papel<select id="${id}">
-      <option value="traseira"${(atual || padrao) === 'traseira' ? ' selected' : ''}>traseira</option>
-      <option value="frente"${(atual || padrao) === 'frente' ? ' selected' : ''}>frente</option>
-    </select></label>`;
+  // O ângulo é RÓTULO de diagnóstico, não configuração: ele não chega ao detector nem ao
+  // OCR (ver `fontes` em app/visao/leitura.py) — é o nome pelo qual o resultado da leitura
+  // aponta a câmera que precisa de ajuste. Por isso os dois são sempre opostos.
+  const angulo = (id, atual, padrao) => `
+    <label>O que esta câmera enxerga
+      <select id="${id}" onchange="sincronizarAngulos('${id}')">
+        <option value="traseira"${(atual || padrao) === 'traseira' ? ' selected' : ''}>traseira do veículo</option>
+        <option value="frente"${(atual || padrao) === 'frente' ? ' selected' : ''}>frente do veículo</option>
+      </select></label>`;
   abrirModal(b ? 'Editar bico' : 'Novo bico', `
     <label>Código
       <small style="color:#94a3b8;font-weight:400"> — exatamente o valor que o roteador envia</small>
@@ -532,17 +664,19 @@ function modalBico(b = null, automacaoId = null) {
     <label>Nome<input id="m-nome" value="${esc(b?.nome || '')}" placeholder="opcional"></label>
     <div class="linha-2">
       <label>Câmera<select id="m-camera">${opcoes(b?.camera_id, false)}</select></label>
-      ${papel('m-papel', b?.papel_camera, 'traseira')}
+      ${angulo('m-papel', b?.papel_camera, 'traseira')}
     </div>
     <div class="linha-2">
       <label>Segunda câmera <small style="color:#94a3b8;font-weight:400">(opcional)</small>
-        <select id="m-camera2">${opcoes(b?.camera2_id, true)}</select></label>
-      ${papel('m-papel2', b?.papel_camera2, 'frente')}
+        <select id="m-camera2" onchange="alternarSegundaCamera()">${opcoes(b?.camera2_id, true)}</select></label>
+      ${angulo('m-papel2', b?.papel_camera2, 'frente')}
     </div>
     <p style="color:#94a3b8;font-size:12px;margin:-4px 0 12px">
       Duas câmeras cobrem o veículo por dois ângulos: quando a placa de um lado está
       encoberta (estepe, carona colada), a do outro resolve. Cada câmera tem a
-      <strong>sua própria área</strong> — desenhe as duas.
+      <strong>sua própria área</strong> — desenhe as duas. O lado que cada uma enxerga é o
+      nome que aparece no resultado da leitura (“a frente não detectou placa”), então uma
+      é sempre a traseira e a outra a frente.
     </p>
     <div class="linha-2">
       <label>Bomba <small style="color:#94a3b8;font-weight:400">(opcional)</small>
@@ -562,7 +696,7 @@ function modalBico(b = null, automacaoId = null) {
       if (b && cam2 !== (b.camera2_id ?? null) && b.cameras?.some(f => f.slot === 2 && f.tem_roi)
           && !confirm('A área já desenhada para a segunda câmera será apagada. Continuar?'))
         throw new Error('cancelado');
-      await api(b ? 'PUT' : 'POST', b ? `/api/bicos/${b.id}` : '/api/bicos', {
+      const r = await api(b ? 'PUT' : 'POST', b ? `/api/bicos/${b.id}` : '/api/bicos', {
         automacao_id: b ? b.automacao_id : automacaoId,
         codigo: val('m-codigo'), nome: val('m-nome'),
         camera_id: cam1, papel_camera: val('m-papel'),
@@ -570,7 +704,50 @@ function modalBico(b = null, automacaoId = null) {
         bomba: val('m-bomba') || null, lado: val('m-lado') || null,
         ativo: document.getElementById('m-ativo').checked,
       });
+      // Sem área desenhada a leitura analisa o quadro inteiro — salvar o bico é meio
+      // caminho. O link entra já em modo de edição (o editor liga a edição quando recebe
+      // `?bico=`) e, se houver segunda câmera, de lá o próprio editor encadeia a outra.
+      const id = b ? b.id : r.id;
+      return `Salvo. <a href="/roi-camera/${cam1}?bico=${id}" style="color:#166534;font-weight:600">${
+        cam2 ? 'desenhar as áreas (são duas) →' : 'desenhar a área →'}</a>`;
     });
+  alternarSegundaCamera();
+}
+
+// Recebe só o id e busca o resto em `_d`: o código do bico é texto do usuário e, interpolado
+// no atributo onclick, um apóstrofo nele quebraria o handler.
+async function removerBico(id) {
+  const b = _d.automacoes.flatMap(a => a.bicos).find(x => x.id === id);
+  if (!confirm(`Remover o bico "${b?.codigo ?? id}"? As áreas desenhadas para ele são perdidas.`
+             + ' As leituras já gravadas no histórico continuam lá.')) return;
+  try {
+    await api('DELETE', `/api/bicos/${id}`);
+    await carregar();
+    msg(true, `Bico ${esc(b?.codigo ?? '')} removido.`);
+  } catch (ex) {
+    msg(false, esc(ex.message));
+  }
+}
+
+const anguloOposto = v => v === 'frente' ? 'traseira' : 'frente';
+
+// Os dois ângulos são sempre opostos — o servidor recusa o par igual (ver `_validar_bico`
+// em app/web/cadastro.py), e aqui a tela nem deixa chegar lá.
+function sincronizarAngulos(origem) {
+  const a = document.getElementById('m-papel'), b = document.getElementById('m-papel2');
+  if (!a || !b) return;
+  if (origem === 'm-papel2') a.value = anguloOposto(b.value);
+  else b.value = anguloOposto(a.value);
+}
+
+// Sem segunda câmera o ângulo dela não descreve nada: fica desabilitado em vez de
+// oferecer uma escolha que não vai a lugar nenhum.
+function alternarSegundaCamera() {
+  const sel = document.getElementById('m-camera2');
+  const p2 = document.getElementById('m-papel2');
+  if (!sel || !p2) return;
+  p2.disabled = !sel.value;
+  if (sel.value) sincronizarAngulos('m-papel');
 }
 
 document.getElementById('overlay').addEventListener('click', e => {
@@ -604,6 +781,61 @@ function mostrarUrl() {
 // Um quadro por câmera do bico, cada um rotulado com o papel e o que ela contribuiu.
 // Com bico de 2 câmeras é este painel que mostra QUAL ângulo está mal enquadrado — sem
 // ele o operador vê só "não leu" e não tem onde mexer.
+// JSON cru da resposta, recolhido. O painel acima resume o que interessa no dia a dia;
+// isto e para quando a pergunta e "o que exatamente o roteador recebeu?" - integrar o
+// sidecar Java, conferir um campo que a tela nao mostra (`parada_motivo`, `veiculo_conf`,
+// `avisos`, o `motivo` de cada fonte) ou colar num chamado. Sem isto a resposta so existia
+// no DevTools, que nao e onde quem opera o posto vai olhar.
+//
+// `<details>` fechado por padrao de proposito: quem quer a placa nao deve rolar por 40
+// linhas de JSON para ve-la.
+function jsonDoTeste(d, status) {
+  const txt = JSON.stringify(d, null, 2);
+  // `id` unico por chamada: o botao de copiar precisa achar ESTE bloco, e o innerHTML e
+  // reescrito a cada leitura.
+  const id = 'json-teste-' + Date.now();
+  return `
+    <details style="margin-top:12px">
+      <summary style="cursor:pointer;font-size:12px;color:#64748b;user-select:none">
+        Resposta JSON${status ? ` · HTTP ${status}` : ''} (${txt.length} caracteres)
+      </summary>
+      <div style="display:flex;justify-content:flex-end;margin:6px 0 4px">
+        <button type="button" onclick="copiarJson('${id}',this)"
+                style="height:26px;font-size:11px;padding:0 10px;background:#475569">Copiar</button>
+      </div>
+      <pre id="${id}" style="margin:0;font-family:Consolas,Monaco,monospace;font-size:12px;
+           color:#e5e7eb;background:#0a0d13;border:1px solid #2a3142;border-radius:6px;
+           padding:10px;overflow-x:auto;white-space:pre-wrap;max-height:420px;
+           overflow-y:auto">${esc(txt)}</pre>
+    </details>`;
+}
+
+function copiarJson(id, btn) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  // `navigator.clipboard` exige contexto seguro: o painel roda em http://localhost (que
+  // conta como seguro) mas tambem em http://IP-do-posto, que NAO conta - e la a API nem
+  // existe. O fallback de textarea + execCommand cobre esse caso, que e o do posto.
+  const texto = el.textContent;
+  const ok = () => { btn.textContent = 'Copiado'; setTimeout(() => btn.textContent = 'Copiar', 1500); };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(texto).then(ok, () => copiarFallback(texto, ok));
+  } else {
+    copiarFallback(texto, ok);
+  }
+}
+
+function copiarFallback(texto, ok) {
+  const ta = document.createElement('textarea');
+  ta.value = texto;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); ok(); } catch (e) { /* nada a fazer */ }
+  document.body.removeChild(ta);
+}
+
 function quadrosDoTeste(d) {
   const fontes = d.fontes || [];
   const t = Date.now();
@@ -650,10 +882,12 @@ async function testarLeitura() {
     const headers = _d.empresa.api_key ? { 'X-API-Key': _d.empresa.api_key } : {};
     const r = await fetch('/api/leitura?' + q, { headers });
     const d = await r.json();
-    if (!r.ok) res.innerHTML = `<span style="color:#b91c1c">✗ ${esc(d.detail || 'falha')}</span>`;
+    if (!r.ok) res.innerHTML = `<span style="color:#b91c1c">✗ ${esc(d.detail || 'falha')}</span>
+        ${jsonDoTeste(d, r.status)}`;
     else if (!d.placa) res.innerHTML = `<span style="color:#a16207">Nenhuma placa detectada.</span>
         <span style="color:#94a3b8">${esc(d.mensagem || '')} (${d.tentativas} tentativa(s))</span>
-        ${quadrosDoTeste(d)}`;
+        ${quadrosDoTeste(d)}
+        ${jsonDoTeste(d, r.status)}`;
     else res.innerHTML = `
         <div style="font-size:28px;font-weight:700;letter-spacing:5px;color:#0f172a;font-family:'Consolas',monospace">${esc(d.placa)}</div>
         <div style="margin-top:6px;font-size:12px;color:#94a3b8">
@@ -661,7 +895,8 @@ async function testarLeitura() {
           &nbsp;${Math.round((d.confianca||0)*100)}% confiança · acordo ${Math.round((d.acordo||0)*100)}% · ${d.tentativas} foto(s)
           ${(d.fontes || []).length > 1 ? ` · ${d.n_cameras_votando} de ${d.fontes.length} câmeras concordaram` : ''}
         </div>
-        ${quadrosDoTeste(d)}`;
+        ${quadrosDoTeste(d)}
+        ${jsonDoTeste(d, r.status)}`;
   } catch (ex) {
     res.innerHTML = `<span style="color:#b91c1c">Erro de rede: ${esc(ex.message)}</span>`;
   } finally {

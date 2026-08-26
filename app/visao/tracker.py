@@ -10,13 +10,19 @@ O pipeline usa `tracker=None` apenas quando tracker_ativo=nao no config.
 Redução de OCR:
   - OCR roda no primeiro frame de cada track (novo veículo)
   - OCR roda novamente a cada `ocr_a_cada_n_frames` frames do mesmo track
-  - Emite quando o track acumula `votos_emitir` leituras concordantes
+  - Emite quando o track acumula `votos_emitir` leituras que CONVERGEM (ver
+    `_EstadoTrack.placa_eleita`) — concordância por posição, não por string exata
 """
 from __future__ import annotations
 import logging
 from collections import Counter
 
 import numpy as np
+
+from app.visao.consenso import (
+    agrupar_por_veiculo, consenso_caractere, leitura_real_proxima, prior_de_formato,
+)
+from app.visao.validador import validar
 
 log = logging.getLogger(__name__)
 
@@ -132,24 +138,71 @@ class _EstadoTrack:
         self.ultimo_ocr_frame = frame_global
 
     def placa_eleita(self, votos_min: int) -> tuple[str, str, float] | None:
+        """A placa deste veículo, por consenso POR POSIÇÃO entre as leituras acumuladas.
+
+        Votava por STRING EXATA (`Counter` sobre a placa inteira) até 25/08/2026, e era isso
+        que fazia moto não ser emitida nunca: em 24/08/2026, no bico 3 do ALTIPLANO, o trk1
+        leu a MESMA moto três vezes — `RLT2477`, `NLX2A77`, `RLX2A77` —, nenhuma string
+        repetiu, o contador deu 1 voto para cada e o veículo saiu do quadro sem emitir
+        ("trk1 SAIU sem emitir — 3 leitura(s), melhor RLT2477 com 1 voto(s)"). Votando
+        posição a posição essas três leituras dão `RLX2A77`, que era a placa certa E a
+        leitura de maior confiança do lote.
+
+        `votos_min` continua sendo sobre a QUANTIDADE de leituras acumuladas, não sobre
+        quantas bateram exatamente: exigir N leituras idênticas era a regra que travava, e
+        trocar o critério sem trocar o contador só mudaria de lugar o mesmo bloqueio.
+        """
         if len(self.resultados) < votos_min:
             return None
-        contagem = Counter(p for p, _, _ in self.resultados)
+
+        leituras = [(p, c) for p, _, c in self.resultados]
+        # Um track pode acumular leitura de VEÍCULOS diferentes quando o tracker troca a
+        # identidade da caixa. Fundir tudo junto inventaria uma placa que ninguém leu — as
+        # duas trancas de `visao.consenso` são as mesmas usadas na leitura reativa.
+        grupos = agrupar_por_veiculo(leituras)
+        pool = grupos[0] if grupos else leituras
+        if len(pool) < votos_min:
+            return None
+
+        fundida = consenso_caractere(pool, formato=prior_de_formato(pool))
+
+        if fundida and leitura_real_proxima(fundida, pool):
+            v = validar(fundida)
+            if v:
+                # Confiança da MELHOR leitura que sustenta a placa fundida — mantém a
+                # escala de `conf` que o pipeline já grava, que era a do vencedor.
+                apoio = [c for q, c in pool if q == fundida] or [c for _, c in pool]
+                return v[0], v[1], max(apoio)
+
+        # Sem fusão válida: volta ao voto por string exata, que ainda é o certo quando as
+        # leituras de fato se repetem.
+        contagem = Counter(q for q, _ in pool)
         placa, n_votos = contagem.most_common(1)[0]
         if n_votos < votos_min:
             return None
         candidatos = [(c, pad) for p, pad, c in self.resultados if p == placa]
+        if not candidatos:
+            return None
         melhor_conf, padrao = max(candidatos)
         return placa, padrao, melhor_conf
 
-    def consenso(self) -> tuple[int, int]:
-        """(votos da placa mais votada, total de leituras OCR deste veículo).
+    def consenso(self, placa: str | None = None) -> tuple[int, int]:
+        """(leituras que apontaram `placa`, total de leituras OCR deste veículo).
 
         A razão entre os dois é o `acordo` do contínuo no modo tracker, e é diretamente
         comparável ao da leitura reativa: nos dois casos é "que fração das leituras
-        INDEPENDENTES do mesmo veículo apontou a placa que foi emitida". `placa_eleita`
-        já calcula essa contagem para decidir a emissão — aqui ela é devolvida para
-        registro, em vez de ser descartada e o número chegar ao banco como desconhecido.
+        INDEPENDENTES do mesmo veículo apontou a placa que foi emitida".
+
+        `placa` PRECISA ser passada por quem vai gravar o número, e passou a existir junto
+        com a fusão por posição em `placa_eleita`. Antes daquela mudança a placa emitida era
+        sempre a string mais votada, então contar "a mais votada" respondia a pergunta certa
+        por coincidência. Com fusão a emitida pode não ser nenhuma das strings lidas (é o
+        objetivo: `RLT2477` + `NLX2A77` + `RLX2A77` dão `RLX2A77`), e contar a mais votada
+        passaria a gravar em `deteccoes.acordo` um número sobre OUTRA placa que não a
+        emitida — exatamente o tipo de número que parece medida e não é.
+
+        Sem `placa`, mantém o comportamento antigo (a mais votada). Esse caminho serve para
+        LOG, onde a pergunta é "quão dispersas estão as leituras", não "quantas apoiam X".
 
         (0, 0) quando ainda não houve nenhuma leitura: quem chama nunca deve dividir por
         `total` sem checar, porque um veículo detectado e nunca lido tem consenso NENHUM,
@@ -157,8 +210,11 @@ class _EstadoTrack:
         """
         if not self.resultados:
             return 0, 0
+        total = len(self.resultados)
+        if placa is not None:
+            return sum(1 for p, _, _ in self.resultados if p == placa), total
         contagem = Counter(p for p, _, _ in self.resultados)
-        return contagem.most_common(1)[0][1], len(self.resultados)
+        return contagem.most_common(1)[0][1], total
 
 
 # ── Interface pública ─────────────────────────────────────────────────────────
@@ -321,6 +377,32 @@ class Tracker:
         st = self._estados.get(track_id)
         return len(st.resultados) if st else 0
 
+    def leituras_recentes(self, limite: int = 12) -> list[tuple[str, float]]:
+        """`(placa, conf)` das leituras acumuladas nos tracks AINDA VIVOS desta camera.
+
+        Serve para a leitura reativa do GET aproveitar o que o monitoramento continuo ja
+        leu do mesmo veiculo, em vez de comecar do zero. Sem isto o "Ler Placa" descartava
+        evidencia melhor do que a que ele mesmo conseguia colher: em 24/08/2026 (bico 3 do
+        ALTIPLANO) o tracker havia lido `RLX2A77` com confianca 0,96 e todos os char_probs
+        >= 0,93 SETE SEGUNDOS antes da chamada, e o GET - que sondou apenas 2 dos 12 frames
+        do seu orcamento antes de estourar o timeout - emitiu `HDX2477`.
+
+        Traz TODAS as leituras dos tracks vivos e nao so as do "melhor" track: com o
+        veiculo parado na bomba o tracker frequentemente reabre o mesmo carro como track
+        novo, e escolher um deixaria de fora leituras do mesmo veiculo. Misturar dois
+        veiculos aqui e seguro porque quem consome agrupa antes de fundir
+        (`consenso.agrupar_por_veiculo`).
+
+        Ja emitido fica de FORA: aquela leitura virou linha no historico, e reinjeta-la
+        faria a chamada do bico votar em cima de um evento ja fechado.
+        """
+        leituras: list[tuple[str, float]] = []
+        for st in self._estados.values():
+            if st.emitido:
+                continue
+            leituras.extend((p, c) for p, _, c in st.resultados)
+        return leituras[-limite:] if limite and limite > 0 else leituras
+
     @property
     def votos_minimos(self) -> int:
         """Votos exigidos para emitir (`tracker_votos_emitir`). Exposto porque o pipeline
@@ -328,7 +410,7 @@ class Tracker:
         que `app/visao/consenso.py` faz nos dois caminhos de leitura."""
         return self._votos
 
-    def consenso(self, track_id: int) -> tuple[int, int]:
+    def consenso(self, track_id: int, placa: str | None = None) -> tuple[int, int]:
         """(votos da placa eleita, total de leituras) do track, ou (0, 0) se não existe.
 
         Ler ANTES de `marcar_emitido` não é obrigatório — a marca não apaga `resultados` —
@@ -336,7 +418,7 @@ class Tracker:
         de aparecer por `paciencia_frames`.
         """
         st = self._estados.get(track_id)
-        return st.consenso() if st else (0, 0)
+        return st.consenso(placa) if st else (0, 0)
 
     # ── Manutenção interna ────────────────────────────────────────────────────
 

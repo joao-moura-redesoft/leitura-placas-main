@@ -28,6 +28,28 @@ log = logging.getLogger(__name__)
 
 CHARS_VALIDOS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
+# Membros default do ensemble do fast-plate-ocr. TRÊS modelos, e não um, porque a
+# diversidade entre eles é o que a fusão por caractere consome — medido nas 30 fotos
+# rotuladas (26 carro + 4 moto), fundindo com `visao.consenso.consenso_caractere`:
+#
+#     1 modelo  (o que havia) .... carro 13/26 (50%)   moto 0/4
+#     2 modelos ................. carro 15/26 (58%)   moto 2/4
+#     3 modelos ................. carro 17/26 (65%)   moto 3/4
+#
+# O ganho é de MODELO, não de pré-processamento: rodar o mesmo modelo em 3 variantes de
+# imagem (perspectiva, cortar-as-2-linhas-e-colar) mede 11/26 — PIOR que o modelo sozinho.
+# E o voto tem de ser PLANO, um por modelo: consolidar a família num voto antes de fundir
+# com os outros engines derruba para 13/26, porque a concordância entre os três É o sinal.
+#
+# `global-plates-mobile-vit-v2` é grayscale 70x140 e os `cct-*` são RGB 64x128 — a conversão
+# sai de `config['image_color_mode']` de cada modelo, nunca do nome: passar grayscale a um
+# modelo RGB estoura `InvalidArgument` no onnxruntime.
+FAST_MODELOS_DEFAULT = (
+    "global-plates-mobile-vit-v2-model",
+    "cct-s-v2-global-model",
+    "cct-xs-v2-global-model",
+)
+
 
 def _ordenar_pontos(pts: np.ndarray) -> np.ndarray:
     """Ordena 4 pontos: [top-left, top-right, bottom-right, bottom-left]."""
@@ -116,7 +138,8 @@ def _tentar_importar(engine: str) -> bool:
 
 class OCR:
     def __init__(self, engine: str = "tesseract", tesseract_psm: int = 7,
-                 deskew_ativo: bool = True, deskew_angulo_max: float = 30.0):
+                 deskew_ativo: bool = True, deskew_angulo_max: float = 30.0,
+                 fast_modelos: tuple[str, ...] | None = None):
         self.engine = engine
         self.psm = tesseract_psm
         self._deskew_ativo = deskew_ativo
@@ -125,6 +148,11 @@ class OCR:
         self._paddle = None
         self._doctr = None
         self._fast_plate = None
+        # Membros do ensemble: [(nome, recognizer, cor)] — ver `FAST_MODELOS_DEFAULT`.
+        # `_fast_plate` continua apontando para o PRIMEIRO membro porque é o atributo que
+        # `ler()` e os dublês de teste checam para saber se o engine subiu.
+        self._fast_modelos = tuple(fast_modelos) if fast_modelos else FAST_MODELOS_DEFAULT
+        self._fast_membros: list[tuple[str, object, str]] = []
         # Marca se a última passada de `_preprocessar_dl` chegou a apagar QR/"BR" — é o que
         # deixa `ler()` saber que vale repetir sem essa limpeza quando o OCR volta vazio.
         self._ultimo_limpou_mercosul = False
@@ -228,14 +256,35 @@ class OCR:
             self._carregar_tesseract()
             return
         from fast_plate_ocr import LicensePlateRecognizer
-        self._fast_plate = LicensePlateRecognizer("global-plates-mobile-vit-v2-model")
-        log.info("fast-plate-ocr carregado")
-        # Warm-up: ONNX Runtime otimiza o grafo na primeira execução — fazer no startup.
-        try:
-            self._fast_plate.run(np.zeros((50, 200), dtype=np.uint8))
-            log.info("fast-plate-ocr aquecido")
-        except Exception:
-            pass
+        self._fast_membros = []
+        for nome in self._fast_modelos:
+            # Um membro que não baixa/carrega NÃO derruba o ensemble: os outros seguem, e a
+            # fusão só perde um voto. Derrubar tudo por causa de um download que falhou
+            # deixaria o posto sem OCR nenhum.
+            try:
+                rec = LicensePlateRecognizer(nome)
+            except Exception as e:
+                log.error("fast-plate-ocr: membro %s não carregou (%s) — segue sem ele", nome, e)
+                continue
+            self._fast_membros.append((nome, rec, _cor_do_modelo(rec)))
+        if not self._fast_membros:
+            log.error("fast-plate-ocr: nenhum membro carregou — caindo para tesseract")
+            self.engine = "tesseract"
+            self._carregar_tesseract()
+            return
+        self._fast_plate = self._fast_membros[0][1]
+        log.info("fast-plate-ocr carregado: %d modelo(s) [%s]", len(self._fast_membros),
+                 ", ".join(n for n, _, _ in self._fast_membros))
+        # Warm-up: ONNX Runtime otimiza o grafo na primeira execução — fazer no startup, e
+        # em CADA membro: aquecer só o primeiro deixaria a otimização dos outros para o
+        # primeiro "Ler Placa" de verdade.
+        for nome, rec, cor in self._fast_membros:
+            try:
+                forma = (50, 200, 3) if cor == "rgb" else (50, 200)
+                rec.run(np.zeros(forma, dtype=np.uint8))
+            except Exception as e:
+                log.debug("fast-plate-ocr: warm-up de %s falhou (%s)", nome, e)
+        log.info("fast-plate-ocr aquecido")
 
     # -- Pré-processamento -----------------------------------------------------
 
@@ -647,6 +696,55 @@ class OCR:
 
     # -- Leitura ---------------------------------------------------------------
 
+    def ler_varias(self, crop) -> list[tuple[str, float]]:
+        """TODAS as leituras que este engine tem a oferecer para o recorte.
+
+        Existe para alimentar a fusão por caractere em vez de a arbitragem: o
+        `fast_plate_ocr` devolve uma leitura por membro do ensemble, e é a discordância
+        entre elas que `visao.consenso.consenso_caractere` converte em placa. Os outros
+        engines devolvem uma leitura só — a lista de um elemento mantém o chamador com um
+        caminho único, sem `isinstance` nem `hasattr` espalhados.
+
+        O pré-processamento é o MESMO de `ler()` de propósito. Medido nas 30 fotos
+        rotuladas com o ensemble de 3 modelos: `deskew + perspectiva` (o que o sistema já
+        fazia) dá moto 3/4, contra 2/4 no recorte cru, com carro igual em 17/26. Trocar o
+        pré-processamento junto com o ensemble mexeria em duas variáveis de uma vez.
+        """
+        if crop is None or crop.size == 0:
+            return []
+        if self._fast_pronto():
+            # FILTRA sem reconstruir: `[(t, c) for t, c in ...]` monta tuplas novas e
+            # DESCARTA o `por_char` de cada `LeituraOCR` — o modo de falha que o docstring
+            # daquela classe descreve. Passar o objeto adiante é o que preserva o atributo.
+            return [l for l in self._ler_fast_plate_varias(self._preparar_fast(crop)) if l[0]]
+        texto, conf = self.ler(crop)
+        # Sem `por_char`: os outros engines não expõem confiança por caractere. A fusão cai
+        # para o peso escalar nessas leituras, que é o comportamento de antes.
+        return [LeituraOCR(texto, conf)] if texto else []
+
+    def _fast_pronto(self) -> bool:
+        """Este OCR e o fast-plate-ocr E tem ao menos um membro utilizavel?"""
+        return (self.engine == "fast_plate_ocr"
+                and bool(self._fast_membros or self._fast_plate is not None))
+
+    def _preparar_fast(self, crop):
+        """Pre-processamento do fast-plate-ocr: so deskew + perspectiva, SEM remover header.
+
+        O modelo foi treinado em placas completas, com a faixa colorida. Remover o header
+        muda a distribuicao de entrada e piora a leitura.
+
+        Funcao propria porque `ler` e `ler_varias` precisam da MESMA preparacao, e o
+        pre-processamento do fast e uma decisao medida (com deskew+perspectiva: moto 3/4;
+        no recorte cru: 2/4, com carro igual). Escrita duas vezes, ela diverge na primeira
+        vez que alguem ajustar so um dos lados - o mesmo motivo que fez
+        `app/visao/consenso.py` existir.
+        """
+        img = crop
+        if crop.ndim == 3:
+            img = self._corrigir_perspectiva(self._deskew(crop))
+        estado.registrar_crop_ocr(img)
+        return img
+
     def ler(self, crop) -> tuple[str, float]:
         if crop is None or crop.size == 0:
             return "", 0.0
@@ -658,16 +756,10 @@ class OCR:
             estado.registrar_crop_ocr(img)
             return self._ler_tesseract(img)
 
-        # fast-plate-ocr: só perspectiva, sem remoção de header.
-        # O modelo ViT foi treinado em placas completas (com a faixa colorida).
-        # Remover o header muda a distribuição de entrada e piora a leitura.
-        if engine == "fast_plate_ocr" and self._fast_plate is not None:
-            img_fp = crop
-            if crop.ndim == 3:
-                img_fp = self._deskew(crop)
-                img_fp = self._corrigir_perspectiva(img_fp)
-            estado.registrar_crop_ocr(img_fp)
-            return self._ler_fast_plate_ocr(img_fp)
+        # fast-plate-ocr: preparacao propria (ver `_preparar_fast`), e a MELHOR leitura do
+        # ensemble. Quem quer o ensemble inteiro chama `ler_varias`.
+        if self._fast_pronto():
+            return self._ler_fast_plate_ocr(self._preparar_fast(crop))
 
         # Outros engines DL: preprocessamento completo (remove header + artefatos)
         self._ultimo_limpou_mercosul = False
@@ -860,26 +952,130 @@ class OCR:
             log.error("Erro docTR: %s", e)
             return "", 0.0
 
-    def _ler_fast_plate_ocr(self, img) -> tuple[str, float]:
+    def _ler_um_membro(self, nome: str, rec, cor: str, img) -> "LeituraOCR":
+        """Uma leitura de UM membro do ensemble. Nunca levanta — devolve ("", 0.0) na falha.
+
+        Engolir a exceção aqui é o que mantém o ensemble útil: um membro que quebra num
+        recorte específico custa um voto, não a leitura inteira.
+        """
         try:
-            # Modelo exige grayscale (H, W)
-            cinza = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
-            result = self._fast_plate.run(cinza, return_confidence=True)
+            if cor == "rgb":
+                entrada = (cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if img.ndim == 3
+                           else cv2.cvtColor(img, cv2.COLOR_GRAY2RGB))
+            else:
+                entrada = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+            result = rec.run(entrada, return_confidence=True)
             if not result:
-                log.debug("fast-plate-ocr: sem resultado (img %dx%d)", img.shape[1], img.shape[0])
-                return "", 0.0
+                log.debug("fast-plate-ocr[%s]: sem resultado (img %dx%d)",
+                          nome, img.shape[1], img.shape[0])
+                return LeituraOCR("", 0.0)
             pred = result[0]
             texto = re.sub(r"[^A-Z0-9]", "", pred.plate.upper())
             conf = float(pred.char_probs.mean()) if pred.char_probs is not None else 0.8
             if pred.char_probs is not None:
                 por_char = " ".join(f"{c:.2f}" for c in pred.char_probs)
-                log.debug("fast-plate-ocr: %r conf=%.2f [%s]", texto, conf, por_char)
+                log.debug("fast-plate-ocr[%s]: %r conf=%.2f [%s]", nome, texto, conf, por_char)
             else:
-                log.debug("fast-plate-ocr: %r conf=%.2f", texto, conf)
-            return texto, conf
+                log.debug("fast-plate-ocr[%s]: %r conf=%.2f", nome, texto, conf)
+            return LeituraOCR(texto, conf, _alinhar_por_char(texto, pred.char_probs, nome))
         except Exception as e:
-            log.error("Erro fast-plate-ocr: %s", e)
+            log.error("Erro fast-plate-ocr[%s]: %s", nome, e)
+            return LeituraOCR("", 0.0)
+
+    def _ler_fast_plate_varias(self, img) -> list[tuple[str, float]]:
+        """Uma leitura POR MEMBRO do ensemble — a entrada da fusão por caractere.
+
+        Devolve as leituras cruas, inclusive as que discordam entre si: é exatamente a
+        discordância que `consenso_caractere` transforma em placa. Escolher a de maior
+        confiança aqui jogaria fora o mecanismo (ver `FAST_MODELOS_DEFAULT`).
+        """
+        if self._fast_membros:
+            return [self._ler_um_membro(n, r, c, img) for n, r, c in self._fast_membros]
+        if self._fast_plate is not None:
+            # Dublê de teste que injeta `_fast_plate` à mão, sem passar por `carregar()`.
+            return [self._ler_um_membro("fast_plate_ocr", self._fast_plate,
+                                        _cor_do_modelo(self._fast_plate), img)]
+        return []
+
+    def _ler_fast_plate_ocr(self, img) -> tuple[str, float]:
+        """A MELHOR leitura do ensemble, para quem só sabe consumir uma (`ler`).
+
+        Mantém o contrato `(texto, conf)` de que o pipeline contínuo e os dublês dependem.
+        Quem quer o ensemble inteiro usa `ler_varias`.
+        """
+        leituras = [(t, c) for t, c in self._ler_fast_plate_varias(img) if t]
+        if not leituras:
             return "", 0.0
+        return max(leituras, key=lambda tc: tc[1])
+
+
+class LeituraOCR(tuple):
+    """`(texto, confianca)` que carrega, à parte, a confiança POR CARACTERE.
+
+    Subclasse de `tuple` de tamanho 2 DE PROPÓSITO, e não uma 3-tupla: todo consumidor
+    desempacota dois posicionalmente (`for t, c in ocr.ler_varias(...)`, os dublês de teste,
+    `_leituras_do_engine` em ocr/auto.py). Assim a confiança por caractere viaja POR LEITURA
+    sem que nada disso mude. Mesmo padrão, e mesmo motivo, de `BBoxPlaca` em
+    `app/visao/detector.py`.
+
+    `por_char` é `None` em toda leitura que não tem o vetor — engine que não expõe (EasyOCR,
+    PaddleOCR, tesseract), dublê de teste, ou leitura em que o alinhamento não fechou. Quem
+    consome tem de tratar a ausência, nunca presumir que existe: ver
+    `consenso.consenso_caractere`, que aceita peso escalar ou por posição.
+
+    Reconstruir a tupla DESCARTA o atributo (`tuple(l)`, `(l[0], l[1])`). O modo de falha é
+    degradar para peso escalar — que é o comportamento anterior —, nunca indexar errado.
+    """
+
+    def __new__(cls, texto: str, conf: float, por_char=None):
+        obj = super().__new__(cls, (texto, float(conf)))
+        obj.por_char = por_char
+        return obj
+
+
+def _alinhar_por_char(texto: str, char_probs, nome: str):
+    """Confiança por caractere alinhada ao `texto` já limpo, ou `None` se não der.
+
+    O modelo devolve `char_probs` com um valor por SLOT (9 no `global-plates-mobile-vit-v2`,
+    10 nos `cct-*`), e o texto sai com 7 depois de tirar o padding. O padding é final, então
+    os `len(texto)` primeiros valores alinham — verificado no recorte da RLX2A77, onde
+    `BLX2677` vem com `[0.99, 0.30, 0.97, 0.99, 0.22, 0.99, 0.99]` e as duas posições de
+    confiança baixa são exatamente as duas erradas.
+
+    Devolve `None` em vez de adivinhar quando o vetor é menor que o texto: um alinhamento
+    errado colocaria a confiança de um caractere sobre outro, o que é pior que não ter
+    confiança por caractere nenhuma — o consumidor cai para o escalar e nada se perde além
+    da precisão extra.
+    """
+    if char_probs is None or not texto:
+        return None
+    try:
+        vals = [float(x) for x in char_probs]
+    except (TypeError, ValueError):
+        return None
+    if len(vals) < len(texto):
+        log.debug("fast-plate-ocr[%s]: char_probs (%d) menor que o texto (%d) — usando só a "
+                  "média", nome, len(vals), len(texto))
+        return None
+    return vals[:len(texto)]
+
+
+def _cor_do_modelo(rec) -> str:
+    """'rgb' ou 'grayscale' — o que ESTE modelo do fast-plate-ocr exige na entrada.
+
+    Sai de `config['image_color_mode']` e nunca do nome do modelo: o zoo mistura os dois
+    formatos (o `global-plates-mobile-vit-v2` é grayscale 70x140, os `cct-*` são RGB
+    64x128) e alimentar um modelo RGB com grayscale não degrada a leitura — estoura
+    `InvalidArgument: Got invalid dimensions for input` no onnxruntime, derrubando a
+    passada inteira de OCR.
+
+    Default 'grayscale' quando a config não diz nada: é o que o membro histórico usa.
+    """
+    cfg = getattr(rec, "config", None)
+    if cfg is None:
+        return "grayscale"
+    valor = cfg.get("image_color_mode") if isinstance(cfg, dict) else getattr(cfg, "image_color_mode", None)
+    return "rgb" if str(valor).strip().lower() == "rgb" else "grayscale"
 
 
 def _area_caixa(b) -> float:

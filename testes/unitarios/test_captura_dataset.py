@@ -93,16 +93,44 @@ def test_negativo_pode_ser_desligado_sem_desligar_a_amostra(dir_snap):
     assert len(_arquivos(dir_snap)) == 1
 
 
-def test_teto_de_arquivos_para_a_coleta(dir_snap):
-    """Ao bater o teto a coleta PARA. Não apaga: apagar arriscaria remover snapshot
-    que uma detecção do histórico referencia."""
+def test_teto_ignora_arquivo_que_nao_e_da_coleta(dir_snap):
+    """Arquivo de OUTRO subsistema não consome a cota da coleta.
+
+    Este teste dizia "ao bater o teto a coleta PARA. Não apaga: apagar arriscaria remover
+    snapshot que uma detecção do histórico referencia" — e o raciocínio estava certo. O que
+    mudou em 25/08/2026 foi que o risco sumiu: a evicção só alcança `SUFIXOS_MEUS`, que
+    nunca aparecem em `deteccoes.snapshot`.
+
+    Parar custou caro: `leitura.py` e `pipeline.py` gravam o histórico na MESMA pasta, o
+    teto contava tudo, e como o histórico cresce a cada leitura e não pode ser apagado, a
+    coleta ficou 12 dias desligada (13/08 a 25/08). Medido no posto: 4.184 arquivos da
+    coleta contra 1.594 de histórico, num teto de 5.000.
+    """
     for i in range(3):
-        (dir_snap / f"ja_existia_{i}.jpg").write_bytes(b"x")
+        (dir_snap / f"20260101T00000{i}_ABC1D23.jpg").write_bytes(b"x")   # histórico
     c = _cap(dir_snap, captura_dataset_max_arquivos="3")
 
     c.amostrar(IMG)
 
-    assert len(_arquivos(dir_snap)) == 3     # nada foi gravado nem apagado
+    # Gravou: o teto de 3 vale para os arquivos DELA, e ela ainda não tem nenhum.
+    assert len(_arquivos(dir_snap)) == 4
+    assert any(n.endswith("-amostra.jpg") for n in _arquivos(dir_snap))
+
+
+def test_teto_cheio_de_arquivo_proprio_evicta_e_continua(dir_snap):
+    """Cheio do que é dela: apaga o mais antigo e SEGUE coletando.
+
+    O oposto do teste acima, e sem ele aquele passaria com o teto desligado.
+    """
+    for i in range(3):
+        (dir_snap / f"20260101T00000{i}_cam9-amostra.jpg").write_bytes(b"x")
+    c = _cap(dir_snap, captura_dataset_max_arquivos="3")
+
+    c.amostrar(IMG)
+
+    nomes = set(_arquivos(dir_snap))
+    assert "20260101T000000_cam9-amostra.jpg" not in nomes, "o mais antigo sobreviveu"
+    assert len(nomes) <= 3, "evicção não respeitou o teto"
 
 
 def test_teto_zero_significa_sem_limite(dir_snap):

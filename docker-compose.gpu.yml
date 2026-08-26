@@ -7,6 +7,12 @@
 # em vez de subir em CPU silenciosamente e ninguém perceber a lentidão.
 services:
   alpr:
+    # As variaveis de OpenMP (`OMP_NUM_THREADS=1` e cia.) vem HERDADAS do compose base e
+    # nao sao redefinidas aqui de proposito. Elas existem para evitar conflito de runtime
+    # OpenMP na carga de DLL, e isso vale igual com GPU. Mas o custo e diferente: nesta
+    # maquina o pre-processamento (CLAHE, bilateralFilter, resize) roda em CPU e perde o
+    # paralelismo. Se o FPS de deteccao cair aqui, o ajuste e subir OMP_NUM_THREADS neste
+    # override -- medindo, nao adivinhando -- em vez de remover a variavel do base.
     build:
       context: .
       dockerfile: Dockerfile.gpu

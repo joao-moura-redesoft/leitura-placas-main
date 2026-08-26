@@ -87,3 +87,14 @@ class TestPaginasRenderizam:
         assert r.status_code == 303
         # Vai para a PRIMEIRA câmera; de lá o link "também usa…" leva à segunda.
         assert f"/roi-camera/{posto_2cam['camera_id']}" in r.headers["location"]
+
+    def test_atalho_por_bico_nao_resolve_para_cliente(self, cliente_logado, posto_2cam):
+        """O destino (/roi-camera) e admin-only, mas o atalho resolvia bico_id -> camera_id
+        no `Location` para qualquer usuario logado. bico_id e um inteiro sequencial: bastava
+        iterar para mapear a relacao bico/camera de todos os postos. Vale mesmo sendo o
+        posto DELE — o gate aqui e de papel, igual ao do editor.
+        """
+        r = cliente_logado.get(f"/roi-bico/{posto_2cam['bico_id']}", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/postos"
+        assert "roi-camera" not in r.headers["location"]

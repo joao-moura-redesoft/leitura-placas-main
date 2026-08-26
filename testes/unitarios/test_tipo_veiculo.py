@@ -614,10 +614,16 @@ class TestOCRNaoEstimaMaisTipoDeVeiculo:
         assert not hasattr(m, "_ultimo_tipo_veiculo")
 
     def test_mas_continua_calculando_o_hint_de_formato(self):
-        """A prova de que a remoção foi cirúrgica: o `formato_hint` guiado pelo header
-        Mercosul continua chegando ao `validar()`, e é ele que corrige posição de
-        caractere (ex.: FBI0123 → FBI0I23). Um crop de aspecto 2,0 com header Mercosul
-        pede o hint forte, `mercosul_moto`."""
+        """O `formato_hint` guiado pelo header Mercosul continua chegando ao `validar()`.
+
+        Espera o hint FRACO ('mercosul'). O forte ('mercosul_moto') foi removido dos dois
+        caminhos de OCR em 25/08/2026: ele reescrevia caractere sem ver a confiança por
+        caractere, e o detector de faixa que o alimentava errou nos dois sentidos nas duas
+        motos reais medidas. Este teste afirmava que o MultiOCR pedia o hint forte "e é ele
+        que corrige posição de caractere (FBI0123 → FBI0I23)" — as duas metades deixaram de
+        ser verdade, e a segunda nunca foi: ver
+        `test_validador.TestAlternativasDeLinha` e o docstring de `validador._validar_7`,
+        onde está medido que o hint fraco não muda resultado nenhum."""
         capturados = []
         m = self._multiocr(placa_lida="FBI0123", tinha_header=True, e_mercosul_header=True)
 
@@ -632,7 +638,7 @@ class TestOCRNaoEstimaMaisTipoDeVeiculo:
         finally:
             validador_mod.validar = real
 
-        assert capturados and all(h == "mercosul_moto" for h in capturados)
+        assert capturados and all(h == "mercosul" for h in capturados)
 
 
 class TestAutoOCRNaoCarregaEstadoDoCropAnterior:

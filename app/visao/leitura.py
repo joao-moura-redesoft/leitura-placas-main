@@ -16,7 +16,7 @@ import re
 import sqlite3
 import threading
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -29,9 +29,14 @@ import numpy as np
 from app.core import banco
 from app.core import estado
 from app.visao import contexto_log
+from app.visao import camera as camera_mod
 from app.visao.camera import Camera
 # Alias com underscore: `confirmada` é o nome da variável local em `ler_placa`.
 from app.visao.consenso import confirmada as _confirmada
+from app.visao.consenso import (
+    acordo_por_caractere, agrupar_por_veiculo, consenso_caractere, leitura_real_proxima,
+    prior_de_formato,
+)
 from app.visao.detector import deslocar, origem_de_bbox
 from app.visao.pipeline import _expandir_bbox
 from app.visao.validador import parecidas, validar
@@ -162,47 +167,21 @@ def _com_retry_lock(operacao: Callable[[], object], contexto: str) -> object:
     ) from ultimo_erro
 
 
-# Posições esperadas por formato (L=letra, D=dígito). Mercosul: pos-5 é LETRA.
-_PADRAO_POS = {"mercosul": "LLLDLDD", "antigo": "LLLDDDD"}
+# Re-exportado de `consenso.py`, onde a regra passou a morar para o TRACKER também
+# alcançá-la (ver o docstring daquele módulo). O alias privado fica porque este nome é o
+# que `testes/unitarios/test_consenso.py` importa e o que o resto deste arquivo usa.
+_consenso_caractere = consenso_caractere
 
 
-def _consenso_caractere(leituras: list[tuple[str, float]], formato: str | None = None) -> str | None:
-    """Consenso por POSIÇÃO de caractere, ponderado por confiança (padrão de mercado ALPR).
-
-    Combina várias leituras (de múltiplos frames E engines) votando cada posição
-    separadamente — corrige erros de 1 caractere: se 2 frames leem 'ABC1D23' e 1 lê
-    'ABC1O23', a posição 5 elege 'D'. Considera só placas de 7 chars (padrão BR).
-
-    `formato` ('mercosul'/'antigo'): quando o tipo visual é conhecido (faixa azul do
-    Mercosul), restringe cada posição ao TIPO esperado — na posição 5 do Mercosul só
-    conta votos de LETRA, descartando dígitos como erro de OCR (em vez de chutar 2→Z).
-    Recupera a letra certa de outro frame. Se nenhuma leitura deu o tipo certo numa
-    posição, cai para o voto bruto daquela posição.
-    """
-    validas = [(p, max(w, 0.01)) for p, w in leituras if p and len(p) == 7]
-    if not validas:
-        return None
-    padrao = _PADRAO_POS.get(formato or "")
-    consenso = []
-    for i in range(7):
-        votos: dict[str, float] = defaultdict(float)
-        if padrao:
-            tipo = padrao[i]
-            for p, w in validas:
-                ch = p[i]
-                if tipo == "L" and not ch.isalpha():
-                    continue          # espera letra, veio dígito → descarta (erro)
-                if tipo == "D" and not ch.isdigit():
-                    continue          # espera dígito, veio letra → descarta
-                votos[ch] += w
-        if not votos:                 # sem formato, ou nenhum voto do tipo certo
-            for p, w in validas:
-                votos[p[i]] += w
-        consenso.append(max(votos.items(), key=lambda kv: kv[1])[0])
-    return "".join(consenso)
+def _acordo_metrica(cfg: dict | None) -> str:
+    """'string' (default) ou 'caractere' — como `acordo` e medido. Ver `acordo_metrica`."""
+    if not cfg:
+        return "string"
+    return "caractere" if str(cfg.get("acordo_metrica", "string")).strip().lower() == "caractere" else "string"
 
 
-def _eleger_placa(candidatos: list[dict]) -> dict | None:
+def _eleger_placa(candidatos: list[dict], metrica: str = "string",
+                  leituras_extra: list[tuple[str, float]] | None = None) -> dict | None:
     """Elege a placa final por consenso de caractere entre TODOS os candidatos acumulados.
 
     Reusada tanto pela checagem de parada antecipada do loop de leitura (a cada frame)
@@ -223,19 +202,88 @@ def _eleger_placa(candidatos: list[dict]) -> dict | None:
             if d.get("placa"):
                 leituras.append((d["placa"], float(d.get("confianca", 0.5))))
 
-    # Formato visual predominante (Mercosul/antigo) detectado pelos engines — usado como
-    # prior para restringir o consenso por posição (posição 5 do Mercosul = letra).
-    fmt_votos = Counter(c["padrao"] for c in candidatos if c.get("padrao"))
-    formato_prior = fmt_votos.most_common(1)[0][0] if fmt_votos else None
 
-    placa_consenso = _consenso_caractere(leituras, formato=formato_prior)
+    # Vota só entre leituras do MESMO veículo. O pool mistura as câmeras do bico, e com duas
+    # câmeras a da frente costuma enquadrar outro veículo (moto não tem placa dianteira) —
+    # fundir posição a posição leituras de veículos diferentes não corrige ruído, fabrica
+    # placa. Ver `agrupar_por_veiculo`.
+    grupos = agrupar_por_veiculo(leituras)
+    pool = grupos[0] if grupos else leituras
+
+    # Leituras que o monitoramento continuo ja fez. Entram DEPOIS de o grupo estar escolhido,
+    # e so as que pertencem a ele.
+    #
+    # A ordem importa e foi um bug: injetadas junto com as outras, elas disputavam a escolha
+    # do grupo e PODIAM GANHAR - duas leituras do continuo a 0,95 pesam mais que a unica foto
+    # do GET a 0,90, e a chamada emitia a placa do carro do bico ao lado. Quem esta no bico
+    # AGORA e definido pelas fotos DESTA chamada; o continuo so refina os caracteres da placa
+    # que elas ja identificaram.
+    #
+    # Peso a 70% pelo mesmo motivo: e evidencia boa, de segundos atras, mas de outro instante.
+    # `max_diff=3` e nao 2, e o numero nao e novo: e o mesmo que `_mesclar_com_historico`
+    # usa para decidir "esta leitura e o MESMO veiculo daquela de instantes atras". A
+    # pergunta aqui e identica, e a distancia tipica e maior do que dentro de uma chamada
+    # so - no caso do bico 3, `HDX2477` (foto do GET) e `RLX2A77` (leitura do continuo)
+    # estao a 3 caracteres, enquanto o carro do bico ao lado fica a 6-7. O 2 de
+    # `agrupar_por_veiculo` continua valendo para agrupar leituras do MESMO instante.
+    if leituras_extra:
+        pool = pool + [(pt, float(ct) * 0.7) for pt, ct in leituras_extra
+                       if pt and len(pt) == 7
+                       and any(parecidas(pt, q, 3) for q, _ in pool)]
+
+    # Prior de formato do POOL que vai votar (ver `consenso.prior_de_formato`, que explica
+    # por que nao pode sair dos `candidatos` nem ser contado sem peso). O fallback para o
+    # `padrao` dos candidatos cobre o pool em que nada valida.
+    formato_prior = prior_de_formato(pool)
+    if formato_prior is None:
+        fmt_cands = Counter(c["padrao"] for c in candidatos if c.get("padrao"))
+        formato_prior = fmt_cands.most_common(1)[0][0] if fmt_cands else None
+
+    placa_consenso = _consenso_caractere(pool, formato=formato_prior)
     votos_placa = Counter(c["placa"] for c in candidatos)
-    if placa_consenso and validar(placa_consenso):
+    # `leitura_real_proxima` é a segunda tranca: a string montada caractere a caractere só
+    # vale se tiver respaldo em algo que um engine de fato leu. Sem isto, `OSL2G55` + um
+    # candidato de outro veículo emitia `OSL2855` — que ninguém leu — com acordo 0,00.
+    if (placa_consenso and validar(placa_consenso)
+            and leitura_real_proxima(placa_consenso, pool)):
         placa_eleita = placa_consenso           # consenso por caractere (corrige 1-char)
     else:
         placa_eleita = votos_placa.most_common(1)[0][0]   # fallback: string mais votada
 
     n_votos_snap = sum(1 for c in candidatos if c["placa"] == placa_eleita)
+    # LEITURAS que apoiam a placa eleita, que e coisa diferente de FOTOS que bateram com ela.
+    # Com o ensemble, uma foto rende 3-4 leituras de modelos diferentes; a regra dos 2 votos
+    # foi escrita quando uma foto valia uma leitura, e o docstring de `consenso.confirmada`
+    # diz por que ela existia: "uma fracao sobre uma amostra de tamanho 1 vale 1.0 sem que
+    # nada tenha concordado com nada". Com N modelos lendo o MESMO recorte, a amostra deixou
+    # de ser 1 e a justificativa mudou de lugar.
+    #
+    # Criterio `parecidas(..., 2)`, o mesmo que `ocr/auto.py::_fundir` ja usa para calcular a
+    # confianca: leitura a 1-2 caracteres da eleita e ruido de OCR sobre a MESMA placa, e
+    # conta como apoio; 3+ e outra placa e nao conta.
+    #
+    # Medido em 80 recortes de placa real contra 80 falsos positivos do detector:
+    #   >=2 leituras apoiando E acordo >=0,80  ->  86% das reais passam, 4% dos falsos passam
+    # Contra 0% e 0% da regra por fotos, que com 1 foto no orcamento nunca fecha.
+    #
+    # Conta sobre `detalhes_ocr` (uma entrada por ENGINE) e NAO sobre `pool`: o pool recebe a
+    # placa final de cada candidato MAIS cada engine dele, e a placa final e derivada dos
+    # engines - ela entra duas vezes. Medido: um falso positivo em que UM unico engine
+    # validou dava `n_votos_leitura = 2` e passava a guarda dos 2, anulando exatamente os 4%
+    # de falso aceite que a regra foi calibrada para ter.
+    #
+    # Candidato SEM `detalhes_ocr` conta como UMA leitura (a dele), e nao zero: e o caso do
+    # engine que nao reporta detalhe por modelo, dos dubles de teste e de qualquer caminho
+    # que nao passe pelo ensemble. Zero ali tornaria `confirmada` inalcancavel nesses
+    # caminhos - trocaria um bug por outro, na direcao oposta.
+    n_votos_leitura = 0
+    for c in candidatos:
+        det = [d for d in c.get("detalhes_ocr", []) if d.get("placa")]
+        if det:
+            n_votos_leitura += sum(1 for d in det
+                                   if parecidas(d["placa"], placa_eleita, 2))
+        elif c.get("placa") and parecidas(c["placa"], placa_eleita, 2):
+            n_votos_leitura += 1
     # Melhor candidato (p/ crop/bbox): o da placa eleita, senão o de maior confiança
     cands_eleita = [c for c in candidatos if c["placa"] == placa_eleita]
     melhor = dict(max(cands_eleita or candidatos, key=lambda c: c["confianca"]))
@@ -246,11 +294,25 @@ def _eleger_placa(candidatos: list[dict]) -> dict | None:
 
     # Concordância: fração do peso das leituras que bateu com a placa eleita — usada tanto
     # para escalar a confiança final quanto como sinal de parada antecipada do loop.
-    peso_total = sum(w for _, w in leituras)
-    acordo = sum(w for p, w in leituras if p == placa_eleita) / max(peso_total, 1e-6)
+    #
+    # Denominador é o pool INTEIRO, não o grupo que votou, e isto é deliberado: quando as
+    # duas câmeras do bico enxergam veículos diferentes, o acordo CAI e a leitura sai
+    # "a conferir". É o sinal honesto para o atendente — a placa passa a estar certa (o
+    # grupo é que decide) e continua marcada, em vez de errada e marcada como antes.
+    # Trocar para o grupo INFLA o acordo e é o que `acordo_metrica` vai medir em produção
+    # antes de virar default; não mudar aqui sem recalibrar `leitura_acordo_minimo`.
+    if metrica == "caractere":
+        # Escala nova: concordancia media por POSICAO, dentro do grupo que votou. Mede o que
+        # a fusao faz, mas move o ponto de corte de `leitura_acordo_minimo` - por isso so
+        # entra quando pedida explicitamente.
+        acordo = acordo_por_caractere(placa_eleita, pool)
+    else:
+        peso_total = sum(w for _, w in leituras)
+        acordo = sum(w for p, w in leituras if p == placa_eleita) / max(peso_total, 1e-6)
     melhor["confianca"] = round(melhor["confianca"] * max(acordo, 0.34), 3)
     melhor["acordo"] = round(acordo, 3)
     melhor["n_votos_snap"] = n_votos_snap
+    melhor["n_votos_leitura"] = n_votos_leitura
     return melhor
 
 
@@ -433,6 +495,9 @@ class FonteLeitura:
     especificacao: EspecificacaoCamera
     roi: dict | None                            # em coordenadas do frame DESTA câmera
     provider: Callable[[], np.ndarray | None] | None = None
+    # Leituras que o monitoramento continuo JA fez desta camera. Entram no pool de votacao
+    # mas NAO contam como foto desta chamada - ver `_eleger_placa(leituras_extra=...)`.
+    leituras_provider: Callable[[], list[tuple[str, float]]] | None = None
 
     # Preenchidos na abertura (`_abrir_fontes`: sonda o pipeline, pega o lock, conecta)
     usar_pipeline: bool = False
@@ -583,7 +648,11 @@ def _abrir_uma(f: FonteLeitura, cfg: dict) -> None:
                 break
             time.sleep(0.1)
         if f.frame_inicial is None:
-            f.camera_direta.fechar()
+            # Câmera que conectou e não mandou frame é o caso MAIS provável de leitora
+            # presa em `cap.read()` — `fechar_ou_adiar` retém a instância em vez de
+            # deixar o coletor de lixo liberar o cap por baixo da leitura viva
+            # (access violation, ver app/visao/camera.py).
+            camera_mod.fechar_ou_adiar(f.camera_direta, f"ler-placa {f.rotulo}")
             f.camera_direta = None
             f.erro = "câmera conectou mas não enviou frames"
             f.ativa = False
@@ -657,7 +726,11 @@ def _liberar_fontes(fontes: list[FonteLeitura]) -> None:
     for f in fontes:
         if f.camera_direta is not None:
             try:
-                f.camera_direta.fechar()
+                # Não `fechar()` direto: quando a leitora não morre, o cap NÃO pode ser
+                # liberado, e o `= None` logo abaixo entregaria o objeto ao coletor de
+                # lixo — cujo destrutor faz exatamente o release() proibido, derrubando
+                # o processo. `fechar_ou_adiar` segura a referência até ser seguro.
+                camera_mod.fechar_ou_adiar(f.camera_direta, f"ler-placa {f.rotulo}")
             except Exception as e:
                 log.warning("%s: falha ao fechar câmera: %s", f.rotulo, e)
             f.camera_direta = None
@@ -740,6 +813,26 @@ def _ler_placa(
     n_max = max(n_min, int(cfg.get("leitura_max_tentativas", "12")))
     timeout_seg = float(cfg.get("leitura_timeout_seg", "6"))
     acordo_min = float(cfg.get("leitura_acordo_minimo", "0.80"))
+    # Lido UMA vez por leitura: a parada antecipada e a decisao final tem de usar a MESMA
+    # metrica, senao o loop para com um numero e o banco grava outro.
+    metrica_acordo = _acordo_metrica(cfg)
+
+    def _leituras_do_continuo() -> list[tuple[str, float]]:
+        """Leituras que o pipeline continuo ja fez nas cameras deste bico.
+
+        Recolhido a cada eleicao, e nao uma vez antes do laco: o continuo segue rodando
+        durante os 28 s da chamada, e uma foto boa que ele tire no meio do caminho tem de
+        poder entrar na votacao.
+        """
+        extras: list[tuple[str, float]] = []
+        for f in fontes:
+            if f.leituras_provider is None:
+                continue
+            try:
+                extras.extend(f.leituras_provider() or [])
+            except Exception as e:
+                log.debug("%s: leituras do continuo indisponiveis (%s)", f.rotulo, e)
+        return extras
 
     # Cobre a chamada INTEIRA, inclusive esperas antes do laço (pipeline_frame_provider,
     # lock de câmera, conexão RTSP) — é a referência para o orçamento de tempo real que o
@@ -770,8 +863,10 @@ def _ler_placa(
     # usuário como a mesma mensagem — e são problemas opostos (enquadramento/modelo de
     # detecção vs resolução/nitidez da placa), que se resolvem de formas diferentes.
     bboxes_total = 0
-    frame_principal = None       # melhor (mais nítido) frame já visto — usado no preview
-    nitidez_principal = -1.0
+    # `frame_principal`/`nitidez_principal` viviam aqui e migraram para `FonteLeitura`
+    # (cada câmera tem o seu preview). As locais ficaram para trás: `nitidez_principal`
+    # nunca mais foi lida, e `frame_principal` é reatribuída sem condição antes do primeiro
+    # uso, a partir da fonte mais nítida.
     tentativas = 0
     parada_motivo = "max_tentativas"
     inicio = inicio_absoluto
@@ -944,9 +1039,14 @@ def _ler_placa(
             # abrindo mão do resto do orçamento de tempo/tentativas que poderia confirmar
             # (ou contradizer) essa única leitura.
             if tentativas >= n_min and candidatos:
-                eleito_parcial = _eleger_placa(candidatos)
+                eleito_parcial = _eleger_placa(candidatos, metrica_acordo,
+                                               _leituras_do_continuo())
+                # A MESMA contagem que decide `confirmada` no fim. Se a parada usasse fotos
+                # e a confirmacao usasse leituras, o laco correria ate o timeout mesmo com
+                # evidencia suficiente - e `web/leitura.py::_status` rebaixa por timeout,
+                # anulando o ganho. Os dois gates tem de olhar o mesmo numero.
                 if (eleito_parcial and eleito_parcial["acordo"] >= acordo_min
-                        and eleito_parcial["n_votos_snap"] >= 2):
+                        and eleito_parcial["n_votos_leitura"] >= 2):
                     parada_motivo = "acordo"
                     break
     finally:
@@ -975,7 +1075,9 @@ def _ler_placa(
         raise LeituraError(503, "Câmera conectou mas não enviou frames — verifique a conexão")
 
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    melhor = _eleger_placa(candidatos) if candidatos else None
+    leituras_continuo = _leituras_do_continuo()
+    melhor = (_eleger_placa(candidatos, metrica_acordo, leituras_continuo)
+              if candidatos else None)
 
     # Câmera do candidato ELEITO — é ela que vai para o histórico. `.get` com fallback
     # porque `_mesclar_com_anterior` remonta o dict a partir da leitura anterior e pode
@@ -1026,6 +1128,20 @@ def _ler_placa(
     if len(fontes) > 1:
         for f in fontes:
             if f.frame_principal is None:
+                # APAGA o preview desta camera em vez de deixar o arquivo anterior.
+                # O `continue` sozinho preservava no disco o quadro da leitura PASSADA, e a
+                # rota `/api/bicos/{id}/preview.jpg` o servia sem saber que era velho: a tela
+                # mostrava "traseira - 0 foto(s), 0 deteccao(oes)" ao lado da imagem de OUTRO
+                # dia, com a moto de ontem no quadro. Quem olha aquilo conclui que a camera
+                # viu a moto e nao leu, quando a camera nao entregou frame nenhum -- o
+                # oposto do diagnostico. Ausente, a rota devolve 404 e a tela nao mostra
+                # imagem, que e a verdade.
+                caminho_antigo = caminho_preview_bico(bico_id, f.camera_id)
+                try:
+                    caminho_antigo.unlink(missing_ok=True)
+                except OSError as e:
+                    log.warning("%s: nao consegui apagar preview velho %s (%s)",
+                                f.rotulo, caminho_antigo, e)
                 continue
             usa_bbox = melhor is not None and f.camera_id == camera_eleita
             img = _desenhar(melhor["frame"] if usa_bbox else f.frame_principal, f.roi,
@@ -1047,7 +1163,11 @@ def _ler_placa(
             "camera_id": f.camera_id, "papel": f.papel, "estado": f.estado(),
             "motivo": f.erro or f.motivo_inativa or "",
             "tentativas": f.tentativas, "bboxes": f.bboxes, "candidatos": f.candidatos,
-            "frame_url": (f"/api/bicos/{bico_id}/preview.jpg?camera_id={f.camera_id}"
+            # `None` quando ESTA camera nao entregou quadro nesta chamada. Sem isso o
+            # payload prometia uma imagem que nao existe (ou pior, a da leitura anterior),
+            # e a tela renderizava um <img> apontando para 404 ou para o quadro de ontem.
+            "frame_url": (None if f.frame_principal is None else
+                          f"/api/bicos/{bico_id}/preview.jpg?camera_id={f.camera_id}"
                           if bico_id is not None and len(fontes) > 1 else frame_url),
         } for f in fontes]
 
@@ -1070,9 +1190,17 @@ def _ler_placa(
                 "snapshots_analisados": tentativas, "tentativas": tentativas, "parada_motivo": parada_motivo}
 
     n_votos_snap = melhor.pop("n_votos_snap")
+    # `.pop` com default: `_mesclar_com_anterior`/`_mesclar_com_historico` remontam o dict a
+    # partir da leitura anterior e podem nao trazer a chave nova.
+    n_votos_leitura = melhor.pop("n_votos_leitura", n_votos_snap)
     acordo_final = melhor.pop("acordo")
 
-    confirmada = _confirmada(acordo_final, n_votos_snap, acordo_min, n_min)
+    # LEITURAS, e nao fotos. `consenso.confirmada` NAO muda de assinatura de proposito: ela
+    # tem outros dois chamadores em `pipeline.py`, e no continuo a unidade ja esta certa -
+    # cada voto e uma passada de OCR em frame DIFERENTE, entao ha varias leituras
+    # independentes de verdade. Aqui, com o GET conseguindo 1 foto em 28 s, "2 fotos" era
+    # inalcancavel e nada era confirmado; "2 leituras" e o que o ensemble de fato produz.
+    confirmada = _confirmada(acordo_final, n_votos_leitura, acordo_min, n_min)
 
     # Tipo estimado do candidato ELEITO, e o sinal cru por trás dele (`_eleger_placa`
     # devolve uma cópia do candidato, então as chaves vêm juntas). `.get` e não indexação:
@@ -1165,6 +1293,11 @@ def _ler_placa(
         "padrao":              melhor["padrao"],
         "confianca":           melhor["confianca"],
         "votos_snapshot":      n_votos_snap,
+        # Campo NOVO, ao lado de `votos_snapshot` e nunca no lugar dele: `votos_snapshot` e
+        # `total_snapshots` sao contrato publicado (docs/INTEGRACAO_ROTEADOR.md) e continuam
+        # significando FOTOS. Redefinir campo que o sidecar Java ja le, em silencio, seria
+        # pior que nao corrigir nada.
+        "votos_leitura":       n_votos_leitura,
         "total_snapshots":     tentativas,
         "votos_ocr":           melhor["votos_ocr"],
         "total_engines":       melhor["total_engines"],

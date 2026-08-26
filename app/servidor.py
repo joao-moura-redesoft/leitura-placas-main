@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import platform
+import re
+import secrets
 import socket
 import sys
 from contextlib import asynccontextmanager
@@ -12,6 +14,15 @@ from pathlib import Path
 # importa "app.servidor:app" num subprocess separado, sem passar pelo main.py.
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# Mesma razão de estar aqui, e não em main.py nem no `lifespan`: o subprocess do --reload
+# não passa pelo main.py, e o `lifespan` roda DEPOIS de `app.visao` ter sido importado. Isto
+# configura estado global de biblioteca nativa e só vale se acontecer antes do primeiro
+# frame — ver `app/core/nativo.py`, que documenta as 1030 exceções de OpenCV que a ausência
+# disto custou num único processo.
+from app.core import nativo    # noqa: E402  (tem de vir antes de qualquer import de visao)
+
+nativo.aplicar()
 
 import uvicorn
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
@@ -62,6 +73,14 @@ log = logging.getLogger(__name__)
 _PUBLICAS = frozenset({"/login", "/criar-admin", "/favicon.ico", "/ws",
                        "/api/leitura", "/api/healthz", "/esqueci-senha"})
 
+# Preview de um bico: continua exigindo credencial (o arquivo é privado — ver
+# app/visao/leitura.py:PREVIEW_DIR), mas ACEITA a api_key própria do posto dono do bico,
+# além da sessão do painel e da api_key global. Sem isso, `/api/leitura` (público)
+# devolvia em `frame_url` uma URL que o próprio chamador não conseguia buscar: o roteador
+# recebe a placa e não consegue mostrar a foto ao atendente, que é justamente o fluxo
+# recomendado quando `confirmada` vem false.
+_RE_PREVIEW_BICO = re.compile(r"^/api/bicos/(\d+)/preview\.jpg$")
+
 
 class _AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -102,6 +121,16 @@ class _AuthMiddleware(BaseHTTPMiddleware):
             h = request.headers.get("X-API-Key", "")
             q = request.query_params.get("api_key", "")
             if h == api_key or q == api_key:
+                return await call_next(request)
+
+        # Chave PRÓPRIA do posto, só para o preview daquele bico (escopo estreito de
+        # propósito: a chave do posto A nunca abre o preview do posto B).
+        m = _RE_PREVIEW_BICO.match(path)
+        if m:
+            enviada = (request.headers.get("X-API-Key", "")
+                       or request.query_params.get("api_key", ""))
+            chave_posto = web_deps.chave_do_posto_do_bico(int(m.group(1)))
+            if chave_posto and enviada and secrets.compare_digest(enviada, chave_posto):
                 return await call_next(request)
 
         # Não autenticado
@@ -212,6 +241,65 @@ def _silenciar_polling_da_ui() -> None:
     logging.getLogger("uvicorn.access").addFilter(_FiltroPolling())
 
 
+def _instalar_log_arquivo(cfg: dict) -> None:
+    """Log em arquivo com rotação, mais o dump do `faulthandler` no MESMO arquivo.
+
+    Sem isto, "a aplicação caiu do nada" é impossivel de investigar: o `basicConfig`
+    escrevia só em stderr, e `/api/logs` lê um buffer em memória que morre com o processo.
+    O `servidor.log` que existe hoje só existe porque quem sobe o servidor redireciona a
+    saída à mão - numa máquina onde ninguém redirecionou, não há nada para ler.
+
+    `faulthandler` importa mais que o log Python nas quedas que interessam: quando o
+    processo morre por access violation do OpenCV/FFmpeg não existe traceback Python, e o
+    dump nativo é a única pista. Ele estava ATIVO no log de 24/08 (2061 dumps) por acidente
+    de ambiente - não há nenhum `faulthandler` em `app/` -, o que significa que noutra
+    máquina aqueles 2061 dumps não teriam sido gravados. Aqui passa a ser explicito.
+
+    NUNCA levanta: log é diagnóstico, e um disco cheio ou caminho sem permissão não pode
+    impedir o servidor de subir.
+    """
+    caminho = str(cfg.get("log_arquivo", "") or "").strip()
+    if not caminho:
+        return
+    try:
+        from logging.handlers import RotatingFileHandler
+
+        # Caminho com pasta ("logs/alpr.log") tem de funcionar sem `mkdir` manual: no posto
+        # ninguem vai criar diretorio para o log subir.
+        pai = Path(caminho).parent
+        if str(pai) not in ("", "."):
+            pai.mkdir(parents=True, exist_ok=True)
+        mb = max(1, config.get_int(cfg, "log_arquivo_mb"))
+        backups = max(0, config.get_int(cfg, "log_arquivo_backups"))
+        h = RotatingFileHandler(caminho, maxBytes=mb * 1024 * 1024,
+                                backupCount=backups, encoding="utf-8")
+        h.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+        logging.getLogger().addHandler(h)
+    except Exception as e:
+        log.warning("Log em arquivo desativado (%s): %s", caminho, e)
+        return
+
+    try:
+        import faulthandler
+
+        # `delete=False`/append: o dump nativo tem de sobreviver à próxima subida, senão o
+        # reinicio automatico apaga a evidência da queda que causou o reinicio.
+        # `-nativo.log` e nao `.nativo`: o `.gitignore` do projeto cobre `*.log`, e um
+        # dump com placa e caminho de cliente nao pode escapar por causa da extensao.
+        nativo_path = str(Path(caminho).with_suffix("")) + "-nativo.log"
+        _fh = open(nativo_path, "a", buffering=1, encoding="utf-8")
+        faulthandler.enable(file=_fh, all_threads=True)
+        # Guardado no módulo para o arquivo não ser fechado pelo GC: o faulthandler grava
+        # nele de dentro de um handler de sinal, e escrever num descritor fechado ali é uma
+        # segunda falha nativa em cima da primeira.
+        globals()["_ARQUIVO_FAULTHANDLER"] = _fh
+        log.info("Log em arquivo: %s (%d MB x %d) + dump nativo em %s",
+                 caminho, mb, backups, nativo_path)
+    except Exception as e:
+        log.warning("faulthandler não instalado: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     cfg = config.carregar()
@@ -219,6 +307,9 @@ async def lifespan(_app: FastAPI):
         level=cfg["log_level"].upper(),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    _instalar_log_arquivo(cfg)
+    # Só agora há handler: `nativo.aplicar()` rodou no import deste módulo, muito antes.
+    log.info("OpenCV blindado: %s", nativo.estado_para_log())
     _silenciar_polling_da_ui()
     contexto_log.instalar()
     estado.instalar_log_handler()
@@ -229,10 +320,22 @@ async def lifespan(_app: FastAPI):
     loop = asyncio.get_running_loop()
     bc.broadcaster.registrar_loop(loop)
 
-    # Inicia pipeline em background — servidor responde imediatamente
-    _tarefa = loop.run_in_executor(None, _iniciar_pipeline_bg, cfg)
-    # Aquece os modelos em paralelo, para a primeira leitura não pagar a carga
-    _tarefa_modelos = loop.run_in_executor(None, _aquecer_modelos_bg, cfg)
+    # Aquece os modelos e SO DEPOIS sobe o pipeline. Os dois rodavam em paralelo, e o
+    # paralelismo custava caro: carregar sessao ONNX / importar EasyOCR num thread enquanto
+    # outro roda CLAHE, bilateralFilter e inferencia poe o OpenCV num estado em que a
+    # chamada seguinte estoura. Medido no log de 24/08/2026: 849 falhas do `VehicleDetector`
+    # e 846 do `AjustadorAmbiente` com "Unknown C++ exception from OpenCV code", todas numa
+    # janela de 3,5 min que comeca 19 ms depois de `VehicleDetector carregado` e nao volta
+    # nas 2h16 seguintes. Nessa janela o tipo do veiculo chegou nulo ao banco, em silencio.
+    #
+    # O custo de sequenciar e alguns segundos a mais para a primeira camera comecar a
+    # detectar. Isso e barato: o servidor ja responde (as duas tarefas estao fora do loop),
+    # e a leitura reativa do bico carrega o que precisa sob demanda de qualquer jeito.
+    async def _subir_visao() -> None:
+        await loop.run_in_executor(None, _aquecer_modelos_bg, cfg)
+        await loop.run_in_executor(None, _iniciar_pipeline_bg, cfg)
+
+    _tarefa_visao = asyncio.ensure_future(_subir_visao())
 
     # Supervisor monitora threads de câmera e reinicia com backoff exponencial
     sv.supervisor.iniciar(cfg)
@@ -266,8 +369,11 @@ async def lifespan(_app: FastAPI):
     sv.supervisor.parar()
     ret_mod.retencao.parar()
     pipeline.parar()
-    await asyncio.shield(_tarefa)
-    await asyncio.shield(_tarefa_modelos)
+    # Uma tarefa só agora: aquecer-modelos e subir-pipeline viraram uma sequência (ver
+    # `_subir_visao`). Aguardar aqui é o que garante que nenhum thread de visao continua
+    # mexendo em camera depois de `pipeline.parar()` - a corrida que `Camera.fechar()` já
+    # documenta como causa de access violation.
+    await asyncio.shield(_tarefa_visao)
 
 
 app = FastAPI(title="Leitura de Placas (ALPR)", lifespan=lifespan)

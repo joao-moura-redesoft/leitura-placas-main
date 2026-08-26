@@ -33,6 +33,12 @@ _USB_BACKEND = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_V4L2
 
 log = logging.getLogger(__name__)
 
+# Quanto `fechar()` espera a thread leitora antes de desistir de liberar o cap. Com folga
+# sobre os 4s de CAP_PROP_READ_TIMEOUT_MSEC: a leitora só precisa de um `read()` para
+# notar `_parar_leitura`. Constante (e não literal) para os testes conseguirem exercitar
+# o caminho do timeout sem esperar 6s de verdade.
+TIMEOUT_JOIN_LEITORA_SEG = 6.0
+
 
 def url_intelbras(
     host: str,
@@ -133,13 +139,21 @@ class Camera:
         if not self.cap or not self.cap.isOpened():
             raise RuntimeError(f"Não foi possível abrir a câmera ({self.tipo})")
 
-        # Timeout de leitura: cap.read() retorna após 4s sem frame em vez de bloquear para sempre.
-        # Isso permite que fechar() aguarde a thread leitora encerrar sem race condition.
+        # Timeout de leitura: cap.read() retorna após 4s sem frame em vez de bloquear para
+        # sempre. É o que dá a `fechar()` a chance de ver a thread leitora encerrar.
+        # `set` devolve False quando o backend não implementa a propriedade — e essa é
+        # justamente a situação em que `fechar()` vai bater no timeout do join e ter de
+        # segurar o cap. Logar aqui é o que liga uma coisa à outra: sem isto, o "não
+        # encerrou em 6s" mais adiante aparece sem causa visível.
         if self.tipo in ("rtsp", "intelbras"):
             try:
-                self.cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 4000)
-            except Exception:
-                pass
+                if not self.cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 4000):
+                    log.warning(
+                        "Backend não aceitou CAP_PROP_READ_TIMEOUT_MSEC — cap.read() pode "
+                        "bloquear sem teto se a câmera parar de responder"
+                    )
+            except Exception as e:
+                log.warning("Não foi possível definir o timeout de leitura (%s)", e)
 
         self._log_abertura("Câmera aberta: tipo=%s %dx%d@%d",
                            self.tipo, self.largura, self.altura, self.fps)
@@ -180,14 +194,41 @@ class Camera:
         with self._frame_lock:
             return self._ultimo_frame
 
-    def fechar(self) -> None:
+    def fechar(self) -> bool:
+        """Encerra a thread leitora e libera o cap. Devolve False, SEM liberar nada,
+        se a leitora não morrer dentro do timeout.
+
+        Aguardar a leitora ANTES de liberar o cap não é zelo: chamar `cap.release()`
+        enquanto `cap.read()` corre em outra thread derruba o PROCESSO INTEIRO com
+        access violation no Windows+FFmpeg+RTSP — crash nativo, sem traceback Python,
+        o servidor simplesmente some. O `join` sempre esteve aqui, mas o retorno dele
+        era ignorado: passado o timeout o código seguia para o `release()` do mesmo
+        jeito, que é exatamente a condição que ele existia para evitar. Bastava a
+        leitora estar presa num `read()` (RTSP remoto instável, câmera que sumiu da
+        rede) para editar/remover uma câmera matar o servidor.
+
+        `CAP_PROP_READ_TIMEOUT_MSEC` (definido em `abrir`) deveria limitar o `read()`
+        a 4s, mas é best-effort — o backend pode recusar a propriedade, e aí não há
+        teto nenhum. Não dá para apostar o processo nisso.
+
+        Quando a leitora não confirma parada, o cap FICA vivo: a conexão RTSP vaza
+        até alguém chamar `fechar()` de novo (o supervisor faz isso a cada ciclo, via
+        `parar_camera`), e nessa hora a leitura já terá retornado e o release é
+        seguro. Uma conexão pendurada por alguns segundos é incomparavelmente melhor
+        que um processo morto.
+        """
         self._parar_leitura.set()
-        # Aguarda a thread leitora encerrar ANTES de liberar o cap.
-        # Chamar cap.release() enquanto cap.read() está em andamento em outra
-        # thread causa crash nativo (access violation) no Windows+FFmpeg+RTSP.
-        # O CAP_PROP_READ_TIMEOUT_MSEC garante que cap.read() retorna em ≤4s.
         if self._reader is not None:
-            self._reader.join(timeout=6)
+            self._reader.join(timeout=TIMEOUT_JOIN_LEITORA_SEG)
+            if self._reader.is_alive():
+                log.error(
+                    "Câmera (%s): thread leitora não encerrou a tempo — provavelmente "
+                    "presa em cap.read(). NÃO liberando o cap: release() com a leitura "
+                    "em andamento derruba o processo. A conexão fica retida até a "
+                    "próxima tentativa de fechar.",
+                    self.tipo,
+                )
+                return False
             self._reader = None
         if self.cap is not None:
             try:
@@ -197,9 +238,19 @@ class Camera:
             self.cap = None
         with self._frame_lock:
             self._ultimo_frame = None
+        return True
+
+    def leitora_viva(self) -> bool:
+        """Se a thread leitora ainda está no ar — é ela que impede liberar o cap."""
+        return self._reader is not None and self._reader.is_alive()
 
     def reconectar(self, tentativas: int = 2) -> bool:
-        self.fechar()
+        # Sem o guarda, uma reconexão em cima de uma leitora presa abriria uma SEGUNDA
+        # conexão RTSP para a mesma câmera física (que a Intelbras não aceita) e ainda
+        # sobrescreveria `self.cap`, tornando o cap antigo inalcançável para sempre.
+        if not self.fechar():
+            log.warning("Reconexão adiada: a conexão anterior ainda não pôde ser liberada")
+            return False
         for n in range(tentativas):
             try:
                 self.abrir()
@@ -209,6 +260,45 @@ class Camera:
                 if n + 1 < tentativas:
                     time.sleep(5)
         return False
+
+
+# Câmeras de vida curta (`capturar_frame_unico`/`capturar_teste`) que não puderam ser
+# fechadas com segurança. Elas PRECISAM continuar referenciadas: sem isto o objeto sai de
+# escopo ao fim da função, o coletor de lixo destrói o `cv2.VideoCapture` e o destrutor
+# nativo chama release() — com a leitora ainda dentro de `cap.read()`, que é o access
+# violation que `Camera.fechar` recusa a provocar. Só que agora ele viria depois, em outra
+# thread e sem relação visível com nada. A lista é o que segura a referência até dar.
+_pendentes_fechar: list["Camera"] = []
+_pendentes_lock = threading.Lock()
+
+
+def _drenar_pendentes() -> None:
+    """Tenta de novo liberar as câmeras que ficaram retidas. Barato: quem ainda tem
+    leitora viva é pulado sem pagar o join de 6s."""
+    with _pendentes_lock:
+        if not _pendentes_fechar:
+            return
+        restantes = []
+        for cam in _pendentes_fechar:
+            if cam.leitora_viva() or not cam.fechar():
+                restantes.append(cam)
+            else:
+                log.info("Câmera retida anteriormente foi liberada")
+        _pendentes_fechar[:] = restantes
+
+
+def fechar_ou_adiar(cam: "Camera", contexto: str) -> None:
+    """Fecha a câmera; se a leitora não morreu, guarda a instância para tentar depois."""
+    _drenar_pendentes()
+    if cam.fechar():
+        return
+    with _pendentes_lock:
+        _pendentes_fechar.append(cam)
+    log.error(
+        "%s: conexão retida (thread leitora presa) — %d câmera(s) aguardando liberação. "
+        "A próxima captura tenta de novo.",
+        contexto, len(_pendentes_fechar),
+    )
 
 
 def capturar_frame_unico(
@@ -242,7 +332,7 @@ def capturar_frame_unico(
             break
         time.sleep(0.1)
 
-    cam.fechar()
+    fechar_ou_adiar(cam, "capturar_frame_unico")
     return frame
 
 
@@ -269,7 +359,7 @@ def capturar_teste(
             break
         time.sleep(0.1)
 
-    cam.fechar()
+    fechar_ou_adiar(cam, "capturar_teste")
     if frame is None:
         return False, "Câmera abriu mas não retornou frame", None
 

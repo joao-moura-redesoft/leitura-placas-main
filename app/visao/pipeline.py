@@ -15,7 +15,7 @@ from app.core import estado
 from app.visao import contexto_log
 from app.visao.camera import Camera
 from app.visao.consenso import confirmada as _confirmada
-from app.visao.detector import (Detector, MultiDetector, OrigemTipo, TRACK_SEM_DETECCAO,
+from app.visao.detector import (MultiDetector, OrigemTipo, TRACK_SEM_DETECCAO,
                                 deslocar, origem_de_bbox)
 from app.visao.ocr import OCR
 from app.visao.ocr.auto import crop_legivel
@@ -160,8 +160,16 @@ class Pipeline:
         extras = [e.strip() for e in cfg.get("ocr_engines_extra", "").split(",") if e.strip()]
         if _engine == "auto":
             from app.visao.ocr import AutoOCR
+            from app.visao.ocr.auto import modelos_fast_da_config
+            # O continuo NAO leva o Paddle (747 ms por recorte) nem a EasyOCR: fica com o
+            # ensemble de modelos do fast-plate-ocr, que custa ~62 ms os tres juntos. Isto
+            # e MAIS RAPIDO do que era antes desta mudanca (easyocr 212 + fast 22 = 234 ms)
+            # e mede melhor - ver `FAST_MODELOS_DEFAULT` em ocr/engines.py.
             self.ocr = AutoOCR(tesseract_psm=_psm,
-                               deskew_ativo=_deskew_on, deskew_angulo_max=_deskew_max)
+                               deskew_ativo=_deskew_on, deskew_angulo_max=_deskew_max,
+                               fast_modelos=modelos_fast_da_config(cfg),
+                               usar_easyocr=str(cfg.get("ocr_leitura_easyocr", "nao")).strip().lower()
+                               in ("sim", "true", "1"))
         elif extras:
             from app.visao.ocr import MultiOCR
             self.ocr = MultiOCR(engines=[_engine] + extras, tesseract_psm=_psm,
@@ -278,7 +286,19 @@ class Pipeline:
                     self.camera_db_id,
                 )
                 return False
-        self.camera.fechar()
+        # A thread do LOOP morreu, mas a thread LEITORA de dentro da câmera é outra, e
+        # ela pode estar presa num `cap.read()`. `fechar()` devolve False nesse caso, sem
+        # liberar o cap — liberar com a leitura em andamento derruba o processo inteiro
+        # (ver `Camera.fechar`). Propagar o False é o que mantém a instância registrada
+        # em `_instancias`, para o supervisor tentar liberar de novo no próximo ciclo em
+        # vez de a câmera virar órfã segurando a conexão até o processo reiniciar.
+        if not self.camera.fechar():
+            log.error(
+                "Câmera %d: loop encerrado, mas a conexão não pôde ser liberada com "
+                "segurança — pipeline segue registrado para nova tentativa",
+                self.camera_db_id,
+            )
+            return False
         estado.pipeline_rodando = False
         estado.camera_conectada = False
         log.info("Pipeline parado")
@@ -483,7 +503,12 @@ class Pipeline:
                 if not resultado and _vale_como_negativo(crop):
                     # Mesmo caso do modo clássico: detectou e não leu. Sem isto, o
                     # gatilho de negativo só existiria em um dos dois modos.
-                    self.captura_dataset.negativo(crop)
+                    #
+                    # O tipo vai junto para a moto ter cota propria de captura: com um
+                    # throttle so, ela chegava sempre logo depois do negativo de carro
+                    # disparar e nunca era gravada. Ver `CapturaDataset.negativo`.
+                    self.captura_dataset.negativo(
+                        crop, origem_tipo.tipo if origem_tipo else None)
                 if resultado:
                     placa, padrao = resultado
                     aceitar = True
@@ -505,7 +530,10 @@ class Pipeline:
             # medida de consenso do contínuo, e sem ela a detecção chegava ao banco
             # com `acordo`/`confirmada` nulos — indistinguível, no histórico, de uma
             # leitura sólida.
-            votos, total = self.tracker.consenso(track_id)
+            # `placa` explicita: com fusão por posição a placa emitida pode não ser
+            # nenhuma das strings lidas, e sem passa-la o acordo gravado seria sobre a
+            # string mais votada -- outra placa que não a que foi emitida.
+            votos, total = self.tracker.consenso(track_id, placa)
             acordo = votos / total if total else 0.0
             self.tracker.marcar_emitido(track_id)
             self._desenhar_bbox(frame, x, y, w, h, placa, conf)
@@ -537,7 +565,8 @@ class Pipeline:
                 # Achou a placa e não conseguiu ler: é justamente o caso que o dataset
                 # não tem, porque o histórico só guarda o que deu certo.
                 if _vale_como_negativo(crop):
-                    self.captura_dataset.negativo(crop)
+                    self.captura_dataset.negativo(
+                        crop, origem_tipo.tipo if origem_tipo else None)
                 continue
             if self.votos_minimos > 1 and hasattr(self.ocr, "_ultimo_detalhe"):
                 det = self.ocr._ultimo_detalhe

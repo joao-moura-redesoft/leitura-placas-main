@@ -73,3 +73,63 @@ def test_veiculo_ja_emitido_nao_reemite_apos_oclusao(tracker):
     tracker.update([], FRAME)
     assert _ver_veiculo(tracker) == tid
     assert tracker.placa_pronta(tid) is None, "não pode emitir o mesmo veículo duas vezes"
+
+
+class TestFusaoPorPosicao:
+    """O tracker votava por STRING EXATA, e por isso moto nunca era emitida.
+
+    Em 24/08/2026, no bico 3 do ALTIPLANO, o trk1 leu a MESMA moto três vezes e as três
+    strings saíram diferentes — `RLT2477`, `NLX2A77`, `RLX2A77`. Com `Counter` sobre a placa
+    inteira, cada uma valia 1 voto, nenhuma chegava aos 2 exigidos, e o veículo saía do
+    quadro sem emitir nada: "trk1 SAIU sem emitir — 3 leitura(s), melhor RLT2477 com
+    1 voto(s)". As três, votadas posição a posição, dão `RLX2A77` — que era a placa certa e
+    também a leitura de maior confiança do lote.
+    """
+
+    def test_tres_leituras_divergentes_da_mesma_moto_convergem(self, tracker):
+        tid = _ver_veiculo(tracker)
+        for placa, conf in [("RLT2477", 0.92), ("NLX2A77", 0.86), ("RLX2A77", 0.90)]:
+            tracker.registrar_ocr(tid, placa, "mercosul", conf)
+
+        pronto = tracker.placa_pronta(tid)
+        assert pronto is not None, "três leituras da mesma moto e nada emitido"
+        assert pronto[0] == "RLX2A77"
+
+    def test_acordo_gravado_e_sobre_a_placa_emitida(self, tracker):
+        """Com fusão, a emitida pode não ser nenhuma das lidas — o acordo tem de saber disso.
+
+        Sem passar a placa, `consenso()` devolveria a contagem da string MAIS VOTADA, e o
+        histórico gravaria em `deteccoes.acordo` um número referente a outra placa.
+        """
+        tid = _ver_veiculo(tracker)
+        for placa in ["RLT2477", "NLX2A77", "RLX2A77"]:
+            tracker.registrar_ocr(tid, placa, "mercosul", 0.9)
+
+        placa = tracker.placa_pronta(tid)[0]
+        votos, total = tracker.consenso(tid, placa)
+        assert total == 3
+        assert votos == 1, "só uma das três leituras era exatamente a placa emitida"
+        # Acordo baixo com placa certa é o resultado desejado: emite e marca "a conferir",
+        # em vez de não emitir nada (antes) ou emitir com falsa certeza.
+        assert votos / total < 0.8
+
+    def test_leituras_repetidas_continuam_com_acordo_alto(self, tracker):
+        """A fusão não pode rebaixar o caso fácil, que é a maioria das leituras de carro."""
+        tid = _ver_veiculo(tracker)
+        for _ in range(3):
+            tracker.registrar_ocr(tid, "ABC1D23", "mercosul", 0.9)
+
+        placa = tracker.placa_pronta(tid)[0]
+        assert placa == "ABC1D23"
+        votos, total = tracker.consenso(tid, placa)
+        assert (votos, total) == (3, 3)
+
+    def test_dois_veiculos_no_mesmo_track_nao_geram_placa_inventada(self, tracker):
+        """Tracker que troca a identidade da caixa acumula leitura de veículos diferentes."""
+        tid = _ver_veiculo(tracker)
+        for placa, conf in [("OSL2G55", 0.85), ("OSL2G55", 0.84), ("FWX9760", 0.74)]:
+            tracker.registrar_ocr(tid, placa, "antigo", conf)
+
+        pronto = tracker.placa_pronta(tid)
+        assert pronto is not None
+        assert pronto[0] == "OSL2G55", "o grupo majoritário tem de sobreviver intacto"

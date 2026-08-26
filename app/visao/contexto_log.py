@@ -16,8 +16,13 @@ precisem saber que ele existe.
         ocr.ler(crop)      # → "[cam3 trk365] OCR crop=17x6px ..."
 
 CUIDADO: thread nova nasce SEM rótulo (`threading.local` não é herdado). Quem cria uma
-thread para chamar OCR precisa reabrir o contexto lá dentro com `herdar()` — ver
-`AutoOCRPaddle.ler_detalhado`, que roda os dois engines em paralelo.
+thread para chamar OCR precisa reabrir o contexto lá dentro com `herdar()`.
+
+Quem usa `herdar()` hoje é `leitura._em_paralelo`, que abre uma thread por câmera do bico.
+O `AutoOCRPaddle` também usava, para rodar AutoOCR e PaddleOCR em paralelo, até 25/08/2026:
+o paralelismo saiu junto com a arbitragem entre engines, porque no pool plano os três
+modelos do fast-plate-ocr custam 62 ms contra 747 ms do Paddle — paralelizar economizaria
+62 ms em troca de uma thread.
 """
 from __future__ import annotations
 
@@ -77,8 +82,12 @@ def capturar() -> tuple:
 def herdar(contexto: tuple):
     """Reabre, numa thread nova, o contexto capturado na thread que a criou.
 
-    `threading.local` não atravessa `Thread(...)`: sem isto o trabalho paralelo do
-    `AutoOCRPaddle` logaria sem dono, intercalado com o das câmeras.
+    `threading.local` não atravessa `Thread(...)`: sem isto o trabalho de uma thread de OCR
+    logaria sem dono, intercalado com o das câmeras.
+
+    Quem usa hoje é `leitura._em_paralelo`, que abre uma thread por câmera do bico. O
+    `AutoOCRPaddle` também usava, para rodar AutoOCR e PaddleOCR em paralelo, até
+    25/08/2026 — ver o docstring do módulo.
     """
     anterior = _estado()
     _local.estado = contexto
@@ -116,3 +125,58 @@ def instalar() -> None:
 
     logging.setLogRecordFactory(fabrica)
     _instalado = True
+
+
+# Depois de quantas falhas SEGUIDAS um componente deixa de estar "tropeçando" e passa a
+# estar inoperante. 10 é ~2 s de vídeo a 5 fps de detecção: curto para aparecer rápido,
+# longo para não gritar por causa de um quadro corrompido isolado.
+FALHAS_PARA_ALARMAR = 10
+
+
+class ContadorDeFalhas:
+    """Transforma uma enxurrada de WARNINGs iguais em UM alarme, e avisa quando recupera.
+
+    Mora aqui, junto do rótulo de log, porque o problema é de LOG e não do componente que
+    falha: `detector.py` e `ambiente.py` precisam dos dois, e `contexto_log` é o módulo que
+    os dois já importam sem criar ciclo.
+
+    O log de 24/08/2026 tem 849 linhas de `VehicleDetector: falha na inferência` e 846 de
+    `AjustadorAmbiente: falha ao processar frame`, cada uma um WARNING solto. Ninguém lê 849
+    WARNINGs — e o que aconteceu de fato foi que, por 3,5 minutos, o detector de veículo
+    estava MORTO e `deteccoes.tipo_veiculo` chegou nulo ao banco, indistinguível no
+    histórico de "não havia veículo no quadro".
+
+    A falha individual continua logada, mas em DEBUG. Ao cruzar o limiar sai UMA linha de
+    ERROR. A recuperação também é logada: sem ela, quem vê o ERROR não sabe se o problema
+    durou 2 segundos ou 2 horas.
+    """
+
+    __slots__ = ("nome", "limiar", "_seguidas", "_alarmado")
+
+    def __init__(self, nome: str, limiar: int = FALHAS_PARA_ALARMAR) -> None:
+        self.nome = nome
+        self.limiar = max(1, limiar)
+        self._seguidas = 0
+        self._alarmado = False
+
+    def falhou(self, erro: object) -> None:
+        self._seguidas += 1
+        if self._seguidas >= self.limiar and not self._alarmado:
+            self._alarmado = True
+            _log_alarme.error(
+                "%s INOPERANTE: %d falhas seguidas (última: %s). Enquanto durar, o "
+                "resultado deste componente sai VAZIO e não há como distinguir isso de "
+                "'nada detectado'.", self.nome, self._seguidas, erro)
+        else:
+            _log_alarme.debug("%s: falha (%s) [%d seguida(s)]",
+                              self.nome, erro, self._seguidas)
+
+    def funcionou(self) -> None:
+        if self._alarmado:
+            _log_alarme.warning("%s VOLTOU depois de %d falhas seguidas",
+                                self.nome, self._seguidas)
+        self._seguidas = 0
+        self._alarmado = False
+
+
+_log_alarme = logging.getLogger(__name__)

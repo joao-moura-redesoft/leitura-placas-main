@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.visao.validador import formatar, parecidas, validar
+from app.visao.validador import alternativas_de_linha, formatar, parecidas, validar
 
 
 @pytest.mark.parametrize("texto, esperado", [
@@ -81,10 +81,22 @@ def test_placa_antiga_legitima_nao_vira_mercosul():
     assert validar("CDV2112", formato_hint="mercosul") == ("CDV2112", "antigo")
 
 
-def test_hint_de_moto_corrige_digito_na_posicao_de_letra():
-    """Na moto o layout de 2 linhas confirma o formato, então o hint tem prioridade:
-    'FBI0123' lido de uma Mercosul precisa virar 'FBI0I23'."""
-    assert validar("FBI0123", formato_hint="mercosul_moto") == ("FBI0I23", "mercosul")
+def test_hint_de_moto_nao_reescreve_mais_placa_que_casa_como_antiga():
+    """O hint 'mercosul_moto' foi REMOVIDO em 25/08/2026 — este teste guarda a remoção.
+
+    Ele era o único hint com poder de sobrepor um match antigo direto, e usava esse poder às
+    cegas: `validar` não vê confiança POR CARACTERE. Na moto antiga metálica OSL2659 (bico
+    3 do ALTIPLANO, 24/08/2026) o detector de faixa deu falso positivo, o hint entrou, e
+    'OSL2655' virou 'OSL2G55' — reescrevendo a posição 4, que o modelo havia lido com 0,99
+    de confiança. Um erro de 1 caractere passou a 2 e o padrão inverteu.
+
+    'FBI0123' — o caso que este teste defendia — casa como antiga e agora fica como antiga.
+    Se ela era de fato uma Mercosul mal lida, quem conserta é a fusão por posição entre
+    várias leituras (`visao.consenso.consenso_caractere`), que pondera por confiança em vez
+    de adivinhar a diagramação a partir da cor de uma faixa.
+    """
+    assert validar("FBI0123", formato_hint="mercosul_moto") == ("FBI0123", "antigo")
+    assert validar("FBI0123") == ("FBI0123", "antigo")
 
 
 def test_extrai_placa_de_texto_com_lixo_em_volta():
@@ -107,3 +119,57 @@ def test_parecidas(a, b, max_diff, esperado):
 def test_formatar_poe_hifen_so_no_padrao_antigo():
     assert formatar("ABC1234", "antigo") == "ABC-1234"
     assert formatar("ABC1D23", "mercosul") == "ABC1D23"
+
+
+class TestAlternativasDeLinha:
+    """Extração por ESTRUTURA, para placa de duas linhas que o OCR concatenou.
+
+    `validar('OSL12659')` devolve `OSL1265`: a janela deslizante para na primeira que casa,
+    da esquerda para a direita, e essa mantém o `1` espúrio e descarta o `9`, que era dígito
+    de verdade. A placa era `OSL2659` — e nenhuma janela de 7 caracteres CONTÍGUOS a produz,
+    porque o caractere sobrando está no meio do texto, entre as letras e os dígitos.
+
+    Caso real: bico 3 do ALTIPLANO, 24/08/2026. A EasyOCR devolveu as caixas `'OSL'` e
+    `'12659'`, o `'2659'` com 0,99 de confiança.
+    """
+
+    def test_gera_as_duas_leituras_plausiveis_de_letras_mais_digitos(self):
+        alts = alternativas_de_linha("OSL12659")
+        assert "OSL2659" in alts, "a placa correta tem de estar entre as alternativas"
+        assert "OSL1265" in alts, "a leitura da janela antiga continua sendo alternativa"
+
+    def test_nao_escolhe_por_conta_propria(self):
+        """A função não decide — quem decide é o voto contra os outros engines.
+
+        Fixado porque a tentação óbvia é "prefira sempre os 4 últimos dígitos". Isso seria
+        um palpite sobre de que lado o artefato de borda entrou, calibrado em UM caso.
+        """
+        assert len(alternativas_de_linha("OSL12659")) > 1
+
+    def test_nao_faz_janela_deslizante(self):
+        """Só ESTRUTURA letras+dígitos. Janela é trabalho de `validar`, que tem a ordem de
+        prioridade certa (casamento direto antes de correção posicional).
+
+        Regressão medida: com janela deslizante aqui, `BRASILABC1D23` gerava `ILABC1D`, que
+        valida como `ILA8C10` gastando 2 correções, empatava em peso com a placa real e
+        chegava a GANHAR a eleição no `_fundir`.
+        """
+        assert alternativas_de_linha("BRASILABC1D23") == []
+
+    def test_texto_de_7_nao_tem_alternativa(self):
+        assert alternativas_de_linha("ABC1D23") == []
+        assert alternativas_de_linha("ABC1234") == []
+
+    def test_curto_demais_nao_gera_nada(self):
+        """`OS2659` (6 chars) não vira placa por invenção de caractere."""
+        assert alternativas_de_linha("OS2659") == []
+        assert alternativas_de_linha("") == []
+
+    def test_sem_bloco_suficiente_nao_gera_nada(self):
+        """Precisa de ao menos 3 letras E 4 dígitos para haver o que recortar."""
+        assert alternativas_de_linha("AB123456") == []
+        assert alternativas_de_linha("ABCDE123") == []
+
+    def test_sem_duplicata(self):
+        alts = alternativas_de_linha("AAA11111")
+        assert len(alts) == len(set(alts))

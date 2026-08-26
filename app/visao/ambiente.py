@@ -52,6 +52,7 @@ import cv2
 import numpy as np
 
 from app.core import estado
+from app.visao.contexto_log import ContadorDeFalhas
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +91,9 @@ class AjustadorAmbiente:
         self.usar_saturacao = _bool(cfg, "ajuste_saturacao", "sim")
         self.usar_denoise = _bool(cfg, "ajuste_denoise_noite", "sim")
         self.recalc_n = max(1, _int(cfg, "ajuste_recalc_frames", 3))
+        # 846 WARNINGs iguais num unico processo em 24/08/2026, todos por
+        # "Unknown C++ exception from OpenCV code" - ver `ContadorDeFalhas`.
+        self._falhas = ContadorDeFalhas("[cam%d] AjustadorAmbiente" % camera_db_id)
 
         # Estado adaptativo (persistente entre frames)
         self._frames = 0
@@ -277,11 +281,12 @@ class AjustadorAmbiente:
             if self.usar_denoise and self._denoise:
                 trabalho = cv2.bilateralFilter(trabalho, 5, 45, 45)
 
+            self._falhas.funcionou()
             if self.forca >= 0.999:
                 return trabalho
             if self.forca <= 0.001:
                 return frame
             return cv2.addWeighted(frame, 1.0 - self.forca, trabalho, self.forca, 0.0)
         except Exception as e:  # nunca deixa o ajuste derrubar o pipeline
-            log.warning("AjustadorAmbiente: falha ao processar frame (%s) — usando original", e)
+            self._falhas.falhou(e)
             return frame

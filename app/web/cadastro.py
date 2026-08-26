@@ -9,6 +9,7 @@ próprio posto. Mesmo padrão de validação/erros já usado no CRUD de câmeras
 """
 from __future__ import annotations
 import json
+import logging
 import re
 import sqlite3
 
@@ -16,9 +17,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core import banco
 from app.core import config
+from app.integracoes import apiplacas
 from app.visao import leitura
 from app.web import deps
 from app.web import leitura as leitura_rotas
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -469,6 +473,17 @@ def _validar_bico(payload: dict) -> None:
                  "enxergar o veículo por outro ângulo.")
     _validar_camera_do_posto(camera2_id, automacao)
 
+    # Papéis iguais nas duas câmeras não são só redundância de rótulo: o papel é o NOME
+    # pelo qual a tela distingue as duas fontes (botão "Ler bico X (frente)", aviso
+    # "⚠ frente: não detectou placa", quadro do teste). Com as duas chamadas "traseira" o
+    # operador vê dois rótulos idênticos e não tem como saber em qual câmera mexer — que é
+    # a única coisa que o diagnóstico de duas fontes existe para dizer.
+    if payload["papel_camera"] == payload["papel_camera2"]:
+        raise HTTPException(
+            400, "As duas câmeras não podem enxergar o mesmo lado do veículo — uma é a "
+                 "traseira e a outra a frente. É por esse nome que o diagnóstico da "
+                 "leitura diz qual das duas precisa de ajuste.")
+
 
 @router.post("/bicos", dependencies=[Depends(deps.exigir_admin)])
 def bicos_inserir(payload: dict):
@@ -580,10 +595,23 @@ def bicos_ler_placa_teste(id_: int, request: Request):
 
     cfg = config.carregar()
     try:
-        return leitura.ler_placa(
+        resultado = leitura.ler_placa(
             fontes=leitura_rotas.montar_fontes(fontes_db, cfg),
             cfg=cfg, avisos=avisos,
             preview_nome=f"preview_bico_{id_}", bico_id=id_, origem="teste",
         )
     except leitura.LeituraError as e:
         raise HTTPException(e.status, e.mensagem)
+
+    # Dados do veículo em modo CACHE-ONLY: este fluxo é o botão "Testar como o roteador" e
+    # o editor de ROI, clicados em rajada enquanto se ajusta o enquadramento. Cada consulta
+    # à apiplacas custa crédito pré-pago, então ajustar câmera não pode gastar dinheiro.
+    # Mostrar o bloco mesmo assim é melhor que omiti-lo: quem está ajustando vê exatamente
+    # o que o roteador vai receber, e quando o dado falta vem o motivo em vez de silêncio.
+    if config.get_bool(cfg, "apiplacas_ativo") and resultado.get("placa"):
+        try:
+            resultado["veiculo"] = apiplacas.consultar(
+                resultado["placa"], cfg, permitir_gasto=False)
+        except Exception as e:
+            log.error("Falha ao ler cache de veículo no teste do bico %s: %s", id_, e)
+    return resultado

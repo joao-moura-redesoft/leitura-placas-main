@@ -127,6 +127,53 @@ class TestApiKeyPorPosto:
         admin.delete(f"/api/empresas/{posto['empresa_id']}/api-key")
         assert banco.empresas_obter(posto["empresa_id"])["api_key"] == ""
 
+
+class TestPreviewComChaveDoPosto:
+    """`/api/leitura` é público e devolve `frame_url` apontando para o preview do bico.
+
+    O arquivo é privado (ver app/visao/leitura.py:PREVIEW_DIR — vazamento de 13/08), então
+    a URL exige credencial. Sem aceitar a chave PRÓPRIA do posto, o payload anunciava ao
+    roteador uma imagem que ele não tinha como buscar, e o fluxo recomendado quando
+    `confirmada` vem false (mostrar a foto ao atendente) ficava impossível de construir.
+
+    401 = barrado no middleware. 404 = passou da autenticação e chegou na rota (o preview
+    em si não existe, porque nenhuma leitura rodou nestes testes) — é essa a distinção
+    que interessa aqui.
+    """
+
+    def _get(self, bico_id: int, **params):
+        from app.servidor import app
+        return TestClient(app).get(f"/api/bicos/{bico_id}/preview.jpg", params=params)
+
+    def test_sem_credencial_e_barrado(self, admin, posto):
+        assert self._get(posto["bico_id"]).status_code == 401
+
+    def test_chave_do_posto_libera(self, admin, posto):
+        chave = admin.post(f"/api/empresas/{posto['empresa_id']}/api-key").json()["api_key"]
+        r = self._get(posto["bico_id"], api_key=chave)
+        assert r.status_code == 404, "a chave do posto deveria passar do middleware"
+
+    def test_chave_errada_continua_barrada(self, admin, posto):
+        admin.post(f"/api/empresas/{posto['empresa_id']}/api-key")
+        assert self._get(posto["bico_id"], api_key="chave-errada").status_code == 401
+
+    def test_chave_de_outro_posto_nao_abre_este_bico(self, admin, posto):
+        """Escopo estreito: a chave do posto A não pode abrir o preview do posto B."""
+        ent_b = admin.post("/api/entidades", json={"nome": "Rede B"}).json()["id"]
+        emp_b = admin.post("/api/empresas", json={
+            "entidade_id": ent_b, "nome": "Posto B", "cnpj": "45723174000110"}).json()["id"]
+        chave_b = admin.post(f"/api/empresas/{emp_b}/api-key").json()["api_key"]
+        admin.post(f"/api/empresas/{posto['empresa_id']}/api-key")
+        assert self._get(posto["bico_id"], api_key=chave_b).status_code == 401
+
+    def test_posto_sem_chave_nao_fica_publico(self, admin, posto):
+        """O preview NUNCA vira público: sem chave configurada, só sessão do painel abre.
+        É o que impede voltar a dar para iterar bico_id sem autenticação nenhuma."""
+        assert self._get(posto["bico_id"]).status_code == 401
+        assert self._get(posto["bico_id"], api_key="qualquer").status_code == 401
+
+
+class TestApiKeyGlobalEHealthz:
     def test_healthz_continua_publico(self):
         from app.servidor import app
         assert TestClient(app).get("/api/healthz").status_code == 200

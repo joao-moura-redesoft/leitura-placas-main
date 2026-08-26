@@ -28,6 +28,11 @@ _DESCARTADOS = Path("testes/descartados.json")
 # a partir de uma leitura feita ANTES da primeira escrita. Um lock por arquivo (e não um
 # só) porque dataset e descartados são independentes — travar um não precisa bloquear o
 # outro.
+#
+# ORDEM: quando os dois são necessários ao mesmo tempo (só em `classificar`, que decide
+# rotular um irmão a partir da lista de descartados), adquira SEMPRE `_lock_dataset`
+# primeiro e `_lock_descartados` depois. É a única aquisição aninhada do módulo; inverter
+# a ordem em algum ponto novo criaria ciclo de espera entre as duas rotas.
 _lock_dataset = threading.Lock()
 _lock_descartados = threading.Lock()
 
@@ -182,6 +187,44 @@ def descartar_candidato(payload: dict):
     return {"ok": True, "descartados": len(d)}
 
 
+# Teto de arquivos por chamada de lote. Nao e limite de negocio, e freio: a rota grava o
+# `descartados.json` inteiro a cada chamada, e um payload de 50 mil nomes viraria um arquivo
+# de megabytes escrito sob lock enquanto a tela espera.
+MAX_DESCARTE_LOTE = 5000
+
+
+@router.post("/descartar-lote")
+def descartar_lote(payload: dict):
+    """Descarta VARIOS candidatos numa chamada.
+
+    A rota de um-por-vez existe e continua sendo a que a tela usa no clique individual. Esta
+    existe porque a fila tem 5.730 itens e ~96% deles ninguem vai rotular (3.139 sao
+    `-amostra`, que e quadro inteiro e exige cacar a placa dentro dele): limpar isso pela
+    rota unitaria seriam milhares de requisicoes HTTP.
+
+    Nao apaga arquivo — so marca em `descartados.json`, o mesmo formato e o mesmo lock da
+    rota unitaria, para o "desfazer descarte" que a tela ja tem continuar funcionando item
+    por item.
+    """
+    arquivos = payload.get("arquivos")
+    if not isinstance(arquivos, list) or not arquivos:
+        raise HTTPException(400, "arquivos: lista obrigatoria e nao vazia")
+    if len(arquivos) > MAX_DESCARTE_LOTE:
+        raise HTTPException(400, f"lote de {len(arquivos)} acima do teto de "
+                                 f"{MAX_DESCARTE_LOTE} — divida em partes")
+    nomes = [a.strip() for a in arquivos if isinstance(a, str) and a.strip()]
+    if not nomes:
+        raise HTTPException(400, "nenhum arquivo valido no lote")
+    with _lock_descartados:
+        d = _ler_descartados()
+        antes = len(d)
+        d.update(nomes)
+        _salvar_descartados(d)
+    # `novos` e nao `len(nomes)`: reenviar um lote ja descartado tem de responder 0, senao
+    # quem chama nao distingue "descartei 3.139" de "cliquei duas vezes".
+    return {"ok": True, "novos": len(d) - antes, "descartados": len(d)}
+
+
 @router.delete("/descartar")
 def restaurar_candidato(payload: dict):
     """Desfaz um descarte — devolve a captura para a fila."""
@@ -290,24 +333,31 @@ def adicionar_foto(payload: dict):
                      payload.get("obs", ""), origem)
 
         # Propaga para o irmão do par recorte/quadro: mesma detecção, mesma placa.
+        #
+        # `_lock_descartados` cobre da CHECAGEM até a GRAVAÇÃO (ver ORDEM na definição dos
+        # locks). Só ler a lista sob o lock não bastaria: um `/descartar` concorrente ainda
+        # caberia entre a checagem e o `_salvar_dataset`, e o irmão terminaria descartado E
+        # rotulado — a máquina desfazendo a recusa explícita de quem olhou a imagem, que é
+        # justamente o que o `if` abaixo existe para impedir.
         propagado = None
-        par = _irmao_do_par(arquivo)
-        if par:
-            irmao, tipo_irmao = par
-            ja_rotulado = any(f["arquivo"] == irmao for f in ds["fotos"])
-            # Um irmão já rotulado carrega o julgamento explícito de um humano, e um irmão
-            # descartado carrega a recusa explícita dele (quadro ilegível, veículo saindo).
-            # Sobrescrever qualquer um dos dois seria a máquina desfazendo a decisão de quem
-            # olhou a imagem — exatamente o que a fila existe para evitar.
-            if not ja_rotulado and irmao not in _ler_descartados():
-                # `obs` registra que NINGUÉM olhou este arquivo específico: a placa veio do
-                # irmão. Sem essa marca não daria para separar, numa medição estranha, o que
-                # foi conferido do que foi herdado.
-                _upsert_foto(ds, irmao, placa, formato, tipo_irmao,
-                             f"propagado do par ({Path(arquivo).name})", origem)
-                propagado = irmao
+        with _lock_descartados:
+            par = _irmao_do_par(arquivo)
+            if par:
+                irmao, tipo_irmao = par
+                ja_rotulado = any(f["arquivo"] == irmao for f in ds["fotos"])
+                # Um irmão já rotulado carrega o julgamento explícito de um humano, e um
+                # irmão descartado carrega a recusa explícita dele (quadro ilegível,
+                # veículo saindo). Sobrescrever qualquer um dos dois seria a máquina
+                # desfazendo a decisão de quem olhou a imagem.
+                if not ja_rotulado and irmao not in _ler_descartados():
+                    # `obs` registra que NINGUÉM olhou este arquivo específico: a placa veio
+                    # do irmão. Sem essa marca não daria para separar, numa medição estranha,
+                    # o que foi conferido do que foi herdado.
+                    _upsert_foto(ds, irmao, placa, formato, tipo_irmao,
+                                 f"propagado do par ({Path(arquivo).name})", origem)
+                    propagado = irmao
 
-        _salvar_dataset(ds)
+            _salvar_dataset(ds)
     return {"ok": True, "total": len(ds["fotos"]), "propagado": propagado}
 
 

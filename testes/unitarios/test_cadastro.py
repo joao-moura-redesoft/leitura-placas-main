@@ -163,6 +163,28 @@ class TestValidacaoDaSegundaCamera:
             "papel_camera2": "lateral"})
         assert r.status_code == 400
 
+    def test_papeis_iguais_nas_duas_cameras_sao_recusados(self, admin, posto_2cam):
+        """O papel e o NOME pelo qual a tela distingue as duas fontes ("frente nao detectou
+        placa", quadro realcado no teste). Com as duas chamadas "traseira" o diagnostico de
+        duas fontes para de responder a unica pergunta que ele existe para responder: em
+        qual das cameras mexer."""
+        r = admin.put(f"/api/bicos/{posto_2cam['bico_id']}", json={
+            "automacao_id": posto_2cam["automacao_id"], "codigo": "3",
+            "camera_id": posto_2cam["camera_id"], "camera2_id": posto_2cam["camera2_id"],
+            "papel_camera": "traseira", "papel_camera2": "traseira"})
+        assert r.status_code == 400
+        assert "mesmo lado" in r.json()["detail"]
+
+    def test_papel_repetido_sem_segunda_camera_nao_barra(self, admin, posto):
+        """Bico de uma camera: `papel_camera2` fica no default do banco e nao descreve
+        fonte nenhuma. Barrar aqui recusaria cadastro correto por causa de um campo que a
+        tela nem mostra nesse caso."""
+        r = admin.put(f"/api/bicos/{posto['bico_id']}", json={
+            "automacao_id": posto["automacao_id"], "codigo": "3",
+            "camera_id": posto["camera_id"], "camera2_id": None,
+            "papel_camera": "frente", "papel_camera2": "frente"})
+        assert r.status_code == 200
+
     def test_camera_usada_so_como_secundaria_nao_pode_ser_removida(self, admin, posto_2cam):
         """Sem casar os dois slots na consulta por câmera, apagar uma câmera usada apenas
         como segunda passaria pelo guard e quebraria o bico."""
@@ -204,3 +226,39 @@ class TestExclusaoEmCascata:
         r = admin.delete(f"/api/cameras/{posto['camera_id']}")
         assert r.status_code == 409
         assert banco.cameras_obter(posto["camera_id"]) is not None
+
+
+class TestTelaDeBicosAposentada:
+    """A tela avulsa /bicos saiu: ela cadastrava o mesmo bico que o modal da tela do posto,
+    mas sem barrar câmera repetida nos dois slots e sem avisar que trocar a segunda câmera
+    apaga a área desenhada nela. Estes testes travam o redirecionamento — sem eles, um link
+    esquecido em outro template só apareceria como erro de template em produção.
+    """
+
+    def test_sem_parametro_vai_para_a_lista_de_postos(self, admin):
+        r = admin.get("/bicos", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/postos"
+
+    def test_com_automacao_cai_no_posto_daquela_automacao(self, admin, posto):
+        """O link que existia em /automacoes passava `automacao_id`; jogar todo mundo em
+        /postos perderia o contexto que a pessoa já tinha escolhido."""
+        r = admin.get(f"/bicos?automacao_id={posto['automacao_id']}", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == f"/posto/{posto['empresa_id']}"
+
+    def test_cliente_nao_recebe_o_destino_contextual(self, cliente_logado, posto):
+        """`automacao_id` e um inteiro sequencial: devolver /posto/{empresa_id} para um
+        usuario 'cliente' revelaria, iterando o parametro e lendo o Location, a que posto
+        cada automacao pertence. A pagina que existia aqui era admin-only exatamente por
+        isso. Cliente vai para /postos, que ja mostra so o posto dele.
+        """
+        r = cliente_logado.get(f"/bicos?automacao_id={posto['automacao_id']}",
+                               follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/postos"
+
+    def test_automacao_inexistente_nao_estoura(self, admin):
+        r = admin.get("/bicos?automacao_id=99999", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/postos"

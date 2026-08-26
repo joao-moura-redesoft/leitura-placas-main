@@ -84,13 +84,35 @@ PADROES: dict[str, str] = {
     # entre frames; medido na cena real, nenhum falso positivo até 0.10.
     "tiles_conf": "0.15",
     # ocr_engine: auto | tesseract | easyocr | paddleocr | doctr | fast_plate_ocr
-    # auto = detecta formato pela faixa colorida: Mercosul→fast_plate_ocr, Antigo→easyocr
+    # auto = ensemble: TODOS os membros leem o recorte e a fusão por caractere decide a
+    # placa. Não escolhe mais um engine pelo layout — era essa escolha que, ao errar,
+    # descartava a leitura certa (ver AutoOCR em app/visao/ocr/auto.py).
     # engines não instalados são instalados automaticamente via pip na primeira inicialização
     "ocr_engine": "auto",
-    # Reforço PaddleOCR (Apache-2.0) na leitura GET ("Ler Placa"): melhora muito placa
-    # antiga borrada (UFPR-ALPR: 49%→64%). Só atua em linha única e quando o crop está
-    # borrado (nítido usa AutoOCR). Vale só no GET (tolera a latência maior). ocr_engine=auto.
+    # Membros do ensemble do fast-plate-ocr (vírgula). Vazio = o default medido, que são
+    # TRÊS modelos. Medido em 30 fotos rotuladas: 1 modelo dá carro 13/26 e moto 0/4;
+    # os três dão carro 17/26 e moto 3/4. Custam ~62 ms os três juntos.
+    "ocr_fast_modelos": "",
+    # PaddleOCR (Apache-2.0) como voto a mais na leitura GET ("Ler Placa"): +1 carro nas 30
+    # fotos (17/26 → 18/26). Caro — 747 ms por recorte — e por isso só no GET, que tolera
+    # a latência; o monitoramento contínuo fica sem ele. ocr_engine=auto.
     "ocr_leitura_paddle": "sim",
+    # EasyOCR no pool. DESLIGADA por medição, não por suspeita: nas mesmas 30 fotos ela
+    # contribui ZERO para a fusão (17/26 com e sem ela) e acerta 1/26 sozinha, custando
+    # 212 ms — mais que os três modelos do fast juntos. Era a engine PRINCIPAL do ramo
+    # sem-faixa, o que a punha à frente justamente nas placas que o sistema errava.
+    # Ligue para remedir no posto: o número vem de um dataset de 30 fotos.
+    "ocr_leitura_easyocr": "nao",
+    # Como `deteccoes.acordo` é medido. 'string' = fração das leituras que bateu EXATAMENTE
+    # com a placa emitida (histórico). 'caractere' = concordância média por POSIÇÃO, que é o
+    # que descreve a fusão: três leituras da mesma moto convergindo em `RLX2A77` medem 0,33
+    # por string exata e 0,86 por caractere, e 0,86 é o que a evidência mostra.
+    #
+    # Default 'string' DE PROPÓSITO: `leitura_acordo_minimo` está calibrado em 0,80 sobre a
+    # escala antiga, e virar a escala junto com o resto moveria o ponto de corte de TODAS as
+    # leituras do posto de uma vez, sem ninguém ter medido o novo. Ligue 'caractere' quando
+    # tiver rodada no posto para recalibrar o mínimo.
+    "acordo_metrica": "string",
     # Engines extras para votação (separados por vírgula, ex: "easyocr,fast_plate_ocr")
     # Vazio = usa somente ocr_engine (comportamento anterior)
     "ocr_engines_extra": "",
@@ -145,10 +167,26 @@ PADROES: dict[str, str] = {
     # Desligado por padrão: custa disco e enche a fila de classificação de /testes.
     "captura_dataset": "nao",
     "captura_dataset_negativos": "sim",          # vale só quando captura_dataset=sim
-    "captura_dataset_intervalo_seg": "60",       # entre amostras do quadro inteiro
-    "captura_dataset_negativo_intervalo_seg": "20",
-    # Teto de imagens na pasta de snapshots. Ao bater, a coleta PARA (não apaga: apagar
-    # arriscaria remover snapshot que uma detecção do histórico referencia). 0 = sem teto.
+    # 300 s (era 60/20) porque a taxa antiga enchia o teto em horas: medido no posto,
+    # 349 arquivos/hora, e 5.000 vagas = ~14 h de vida útil. E 349 fotos por hora de um
+    # pátio parado não informam mais que 48 espalhadas pelo mesmo período — o objetivo é
+    # pegar a moto que aparece raramente, então cobrir MAIS TEMPO vale mais que amostrar
+    # denso. Com 300 s a coleta cobre semanas em vez de horas.
+    "captura_dataset_intervalo_seg": "300",      # entre amostras do quadro inteiro
+    "captura_dataset_negativo_intervalo_seg": "300",
+    # Cota SEPARADA para negativo de MOTO, mais permissiva que a de carro de propósito.
+    # Com um relógio só, a moto chegava sempre logo depois de o negativo de carro disparar:
+    # 1.045 negativos coletados em agosto/2026 e a revisão humana não achou UMA moto.
+    "captura_dataset_moto_intervalo_seg": "60",
+    # Teto de imagens que a COLETA mantém (conta só os arquivos dela: `-amostra`,
+    # `-naolido`, `-naolido-moto`). Ao bater, apaga os mais antigos e continua coletando —
+    # nunca toca snapshot do histórico nem captura já rotulada no dataset. 0 = sem teto.
+    #
+    # Antes o teto contava TODO jpg da pasta, inclusive o histórico que `leitura.py` e
+    # `pipeline.py` gravam ali, e ao bater a coleta PARAVA. Como o histórico cresce a cada
+    # leitura e não pode ser apagado sem quebrar o link de `deteccoes.snapshot`, isso virava
+    # catraca: a coleta ficou 12 dias desligada (13/08 a 25/08) e nenhuma moto pôde ser
+    # coletada nesse período.
     "captura_dataset_max_arquivos": "5000",
     # Dias que `deteccoes`/`chamadas` (e os JPEGs de snapshot/frame) ficam guardados antes
     # de serem apagados automaticamente. 0 = nunca apaga (crescimento ilimitado — cuidado
@@ -159,6 +197,20 @@ PADROES: dict[str, str] = {
     "webhook_todas": "nao",       # sim = dispara webhook para TODA placa detectada
     "webhook_url": "",
     "log_level": "info",
+    # Arquivo de log com rotação. Vazio = só stderr, que era o comportamento único até
+    # 25/08/2026 e a razão pela qual "a aplicação caiu do nada" não tinha o que investigar:
+    # `/api/logs` lê um buffer em MEMÓRIA, que morre junto com o processo. Aqui também vai
+    # o dump do `faulthandler`, que é a única pista quando a queda é nativa (access violation
+    # do OpenCV/FFmpeg) e não deixa traceback Python nenhum.
+    # NAO e "servidor.log": esse nome ja e usado por quem sobe o servidor com
+    # `> servidor.log 2>&1`, e o handler abrindo o MESMO arquivo em append daria dois
+    # escritores no mesmo descritor - com a rotacao invalidando o do shell no meio. Nome
+    # proprio evita a colisao sem depender de ninguem mudar o jeito de subir.
+    "log_arquivo": "alpr.log",
+    # Tamanho por arquivo (MB) e quantos históricos guardar. O posto roda em disco pequeno,
+    # e log de visao é verboso: 3 x 10 MB é teto de 30 MB, o que cobre alguns dias.
+    "log_arquivo_mb": "10",
+    "log_arquivo_backups": "3",
     "implantado": "nao",
     "api_key": "",   # chave opcional para acesso à API sem cookie de sessão
     # sim = o cookie de sessão só é enviado em HTTPS (flag `Secure`). Desligado por
@@ -179,6 +231,87 @@ PADROES: dict[str, str] = {
     # dos casos, mas atrás de proxy reverso o host visto pelo servidor pode não ser o
     # público; preencha se os links saírem errados.
     "url_base": "",
+    # ── Consulta de dados do veículo (apiplacas.com.br) ────────────────────────
+    # Enriquece a resposta de /api/leitura com dados do veículo da placa lida — o que
+    # interessa ao posto é o TIPO DE COMBUSTÍVEL, para conferir o abastecimento contra o
+    # que a bomba entregou. Cada consulta custa crédito PRÉ-PAGO, então quase tudo aqui
+    # é gestão de gasto; o cache em `veiculos` é o que faz a conta fechar.
+    #
+    # DESLIGADO por padrão: ninguém deve começar a gastar por ter atualizado o sistema.
+    # Com 'nao', o payload de /api/leitura fica idêntico ao de antes desta feature (a
+    # chave `veiculo` não aparece).
+    "apiplacas_ativo": "nao",
+    # manual | automatico — QUEM pode disparar uma consulta paga.
+    #   manual     (padrão) NADA consulta sozinho. O /api/leitura serve só o que já está
+    #              em cache, e quem gasta é um humano, pelo botão no Histórico. É o padrão
+    #              porque cota curta é o caso comum e porque gastar por engano não tem
+    #              desfazer — o crédito não volta.
+    #   automatico A primeira leitura de cada placa consulta (1 crédito), as seguintes vêm
+    #              do cache. É o que faz sentido quando há volume contratado: o
+    #              enriquecimento acontece sozinho no abastecimento, que é o objetivo
+    #              final da integração.
+    # Os tetos (`apiplacas_max_por_minuto`/`_dia`), o cooldown por placa e o disjuntor
+    # valem nos DOIS modos — esta chave decide só quem INICIA a consulta.
+    # Não é um booleano de propósito: o vocabulário pode crescer (um 'agendado', um
+    # 'so_frota'), e `sim/nao` fecharia essa porta. Mesmo motivo de `STATUS_VEICULO` ser
+    # validado em Python e não por CHECK.
+    "apiplacas_modo": "manual",
+    # Token da conta na apiplacas. Vai no PATH da URL da consulta (não é header) — é
+    # segredo, está em CHAVES_SENSIVEIS (app/web/api.py) e nenhum log deste projeto pode
+    # conter a URL montada. Vazio, com ativo=sim, deixa o recurso inerte.
+    "apiplacas_token": "",
+    # Base da URL, sem o token. Configurável por dois motivos concretos: apontar para um
+    # dublê local é o único jeito de testar ponta a ponta sem gastar crédito de verdade,
+    # e o provedor já trocou de host uma vez (apiplacas.com.br → wdapi2.com.br).
+    "apiplacas_url": "https://wdapi2.com.br",
+    # Teto de espera da chamada externa. 2.5s e não 4: a doc do roteador pede timeout de
+    # 35-40s contra o orçamento de 28s da leitura, mas 28s NÃO é teto da resposta (a
+    # carga de modelo desloca o início do laço, e os imwrite de preview mais a escrita no
+    # banco vêm depois dele). Só o cache MISS paga isso — cache hit é uma query local.
+    "apiplacas_timeout_seg": "2.5",
+    # Dias até reconsultar a MESMA placa. 180 porque o que motiva a integração não muda:
+    # combustível, marca, modelo, chassi, espécie. O que muda é `situacao` (restrição/
+    # roubo), `municipio` e a FIPE — por isso não é infinito. Dá ~2 consultas por veículo
+    # por ano no pior caso. 0 = nunca reconsultar (cache eterno).
+    # ATENÇÃO: com este prazo, `veiculo.situacao` pode estar 180 dias velho e NÃO serve
+    # como checagem de roubo/restrição em tempo real.
+    "apiplacas_ttl_dias": "180",
+    # Dias até reconsultar uma placa que a API disse NÃO EXISTIR (HTTP 406). Prazo
+    # próprio, e maior que se imagina, porque a causa mais comum não é veículo novo: é
+    # OCR que leu errado — uma placa que nunca vai existir e que a cada vencimento é
+    # recomprada. 30 dias barra a recompra do erro e ainda deixa o carro recém-emplacado
+    # aparecer num mês. 0 = nunca reconsultar negativa.
+    "apiplacas_ttl_negativo_dias": "30",
+    # sim = só gasta consulta paga em leitura com consenso (`confirmada: true`). Leitura
+    # não confirmada pode ser a placa ERRADA — ou placa nenhuma (ver o falso positivo
+    # sobre asfalto documentado em app/visao/consenso.py) — e a integração já manda o
+    # roteador não cobrá-la. Pagar para enriquecer um valor que ninguém deve usar é gasto
+    # certo por benefício nenhum, e tende a virar cache negativo de placa inexistente.
+    # Mesmo com 'sim', a leitura não confirmada ainda recebe consulta CACHE-ONLY (grátis).
+    # Ponha 'nao' se o atendente usa marca/modelo/cor para conferir a placa duvidosa.
+    "apiplacas_exigir_confirmada": "sim",
+    # Teto de consultas pagas por minuto (todos os postos somados). Um posto abastece
+    # muito menos que isso; o teto existe para limitar o dano de um laço ou retry mal
+    # configurado do lado do roteador. 0 = sem teto.
+    "apiplacas_max_por_minuto": "20",
+    # Teto de consultas pagas por DIA, contado NO BANCO (`veiculos.consultado_em`) e não
+    # em memória: o freio do `limitador` zera a cada restart do processo, e um servidor
+    # que reinicia sozinho é exatamente o cenário em que se quer o teto valendo.
+    # O dia é UTC, como todo timestamp deste banco — ou seja, vira às 21h no horário de
+    # Brasília, não à meia-noite local. É teto de emergência contra gasto descontrolado,
+    # não orçamento contábil: um posto 24h pode gastar até 2x este valor entre duas
+    # meia-noites locais, e isso é aceitável para o que ele existe para evitar.
+    # 0 = sem teto.
+    "apiplacas_max_por_dia": "500",
+    # Quanto tempo PARAR de tentar depois de 402 (token inválido) ou 429 (sem saldo).
+    # Retentar essas duas não pode dar certo — só custa latência em cada abastecimento de
+    # cada posto até alguém notar. 402 usa 4x este valor (só um humano trocando o token
+    # resolve). A pausa é zerada na hora em que o token é salvo em /configuracao, senão
+    # consertar o token não surtiria efeito e o operador acharia que a tela não funciona.
+    "apiplacas_pausa_erro_seg": "900",
+    # Preço de uma consulta, só para o painel estimar gasto (consultas x este valor). É
+    # PREÇO, muda por contrato — não pode ficar cravado no código.
+    "apiplacas_custo_consulta": "0.03",
     # ByteTrack: rastreamento de veículos entre frames para reduzir chamadas OCR
     # Requer: pip install boxmot  (fallback automático para modo clássico se não instalado)
     "tracker_ativo": "sim",

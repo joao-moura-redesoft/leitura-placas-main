@@ -17,6 +17,7 @@ from app.core import banco
 from app.core import config
 from app.core import estado
 from app.seguranca import limitador
+from app.integracoes import apiplacas
 from app.visao import leitura
 from app.visao import pipeline
 
@@ -33,6 +34,41 @@ FRAME_MAX_IDADE_SEG = 2.0
 # Espera pelo primeiro frame quando o pipeline ainda está aquecendo (conexão RTSP +
 # carga dos modelos levam dezenas de segundos após o boot).
 ESPERA_PRIMEIRO_FRAME_SEG = 20.0
+
+
+def leituras_ao_vivo(camera_id: int):
+    """Provedor das leituras que o pipeline continuo JA fez desta camera, ou None.
+
+    Par do `frame_ao_vivo`, e pelo mesmo motivo de fundo: o que o pipeline tem em maos e
+    melhor do que o que a chamada do bico consegue colher sozinha. O `frame_ao_vivo` evita
+    abrir uma segunda conexao RTSP; este evita jogar fora leitura de OCR ja paga.
+
+    Em 24/08/2026, no bico 3 do ALTIPLANO, o tracker havia lido `RLX2A77` com confianca 0,96
+    e todos os char_probs >= 0,93 sete segundos antes da chamada. O GET conseguiu sondar 2
+    dos 12 frames do orcamento antes do timeout de 28 s, votou so entre esses dois, e emitiu
+    `HDX2477`. A evidencia certa estava a um atributo de distancia.
+    """
+    if camera_id not in pipeline._instancias:
+        return None
+
+    def _obter():
+        # Releitura do dicionario a cada chamada: o pipeline pode ter sido derrubado e
+        # recriado entre a montagem das fontes e o laco de leitura, e guardar a instancia
+        # aqui deixaria este provider falando com um objeto morto.
+        inst = pipeline._instancias.get(camera_id)
+        tracker = getattr(inst, "tracker", None) if inst else None
+        if tracker is None or not hasattr(tracker, "leituras_recentes"):
+            return []
+        try:
+            return tracker.leituras_recentes()
+        except Exception as e:
+            # Mesma politica do `frame_ao_vivo`: isto e conveniencia, nunca requisito. Uma
+            # falha aqui significa "sem leitura do continuo", e a chamada segue com as
+            # fotos que ela mesma tirar.
+            log.debug("cam=%s: leituras do pipeline indisponiveis (%s)", camera_id, e)
+            return []
+
+    return _obter
 
 
 def frame_ao_vivo(camera_id: int):
@@ -115,6 +151,7 @@ def montar_fontes(fontes_db: list[dict], cfg: dict) -> list[leitura.FonteLeitura
             especificacao=leitura.EspecificacaoCamera.de_camera_db(f["camera"], cfg),
             roi=json.loads(f["roi"]) if f.get("roi") else None,
             provider=frame_ao_vivo(f["camera_id"]),
+            leituras_provider=leituras_ao_vivo(f["camera_id"]),
         ))
     return fontes
 
@@ -126,6 +163,89 @@ def montar_fontes(fontes_db: list[dict], cfg: dict) -> list[leitura.FonteLeitura
 # menos que isso por minuto, mesmo com retries do roteador.
 _LIMITE_LEITURA_IP_MIN = 60
 _LIMITE_LEITURA_CNPJ_MIN = 30
+
+
+def _pode_gastar(resultado: dict, cfg: dict) -> bool:
+    """Se esta leitura merece uma consulta PAGA à apiplacas.
+
+    Separada e pura pelo mesmo motivo de `_status_da_leitura`: é a regra que gasta
+    dinheiro do cliente, e tem de ser testável sem câmera, sem rede e sem banco.
+
+    `apiplacas_modo` decide antes de tudo: em `manual` (o padrão) NADA consulta sozinho —
+    o abastecimento serve só o que já está em cache, e quem gasta é um humano pelo botão
+    do Histórico. Isto aqui só devolve True em `automatico`.
+
+    `confirmada is False` = o consenso não fechou, e a própria docs/INTEGRACAO_ROTEADOR.md
+    manda o roteador NÃO cobrar essa placa. Pagar para enriquecer um valor que ninguém
+    deve usar é gasto certo por benefício nenhum — e pior: leitura não confirmada é
+    candidata a estar ERRADA, ou a não ser placa alguma (ver o falso positivo sobre
+    asfalto documentado em `app/visao/consenso.py`), então cada uma tende a virar um 406 e
+    uma linha de cache negativo de uma placa que não existe.
+
+    `is False` e não `not`: None é consenso DESCONHECIDO (origens que não passam pelo
+    laço), e desconhecido não é o mesmo que fraco — mesma distinção que `_status_da_leitura`
+    faz logo abaixo.
+
+    Sair por timeout significa que o laço NUNCA fechou consenso, mesmo que `confirmada`
+    não tenha vindo `False`. É o caso que consome os 28s inteiros — e justamente o que não
+    vale pagar para enriquecer.
+
+    Quem quiser o contrário (mostrar marca/modelo ao atendente na leitura duvidosa)
+    desliga `apiplacas_exigir_confirmada`. Mesmo com ele ligado, a leitura não confirmada
+    AINDA recebe consulta CACHE-ONLY: se a placa já foi paga alguma vez, o dado aparece
+    de graça.
+    """
+    if not resultado.get("placa"):
+        return False
+    # O modo vem primeiro por ser o portão mais categórico: em `manual` NADA consulta
+    # sozinho, e não faz sentido avaliar consenso para uma consulta que não vai acontecer.
+    # A leitura continua entregando a placa normalmente — o que muda é só o `veiculo`, que
+    # passa a vir do cache ou não vir.
+    if (cfg.get("apiplacas_modo") or "manual").strip().lower() != "automatico":
+        return False
+    if not config.get_bool(cfg, "apiplacas_exigir_confirmada"):
+        return True
+    if resultado.get("confirmada") is False:
+        return False
+    return resultado.get("parada_motivo") != "timeout"
+
+
+def bloco_veiculo(resultado: dict, cfg: dict, decorrido: float) -> dict | None:
+    """O `veiculo{}` do payload, ou None quando não há o que acrescentar.
+
+    Mora AQUI, e não dentro de `ler_placa`, por três motivos que se somam:
+
+    - **custo**: `ler_placa` tem um segundo chamador, `bicos_ler_placa_teste`
+      (`app/web/cadastro.py`), que é o botão "Testar como o roteador" e o editor de ROI.
+      Gancho lá dentro faria cada clique de ajuste de enquadramento custar uma consulta
+      paga — e ajuste de ROI é feito em rajada.
+    - **correção**: dentro de `_ler_placa` a placa eleita ainda não é final —
+      `_mesclar_com_historico` pode trocá-la depois, revotando contra a detecção anterior
+      do mesmo bico. Consultar antes disso gravaria cache sob uma placa que a própria
+      função descarta, e entregaria ao posto os dados de outro veículo.
+    - **contrato**: `testes/unitarios/test_payload_leitura.py` congela as chaves de
+      `ler_placa` de propósito. Esta camada já acrescenta chaves fora daquele contrato
+      (entidade/cnpj/automacao/bico); `veiculo` pertence ao mesmo nível.
+
+    Devolve None quando o recurso está desligado ou não há placa — nesses casos o payload
+    sai byte a byte igual ao de antes desta feature.
+
+    `except Exception` amplo: a leitura NUNCA pode quebrar por causa da API externa. Mesmo
+    espírito do `_registrar` desta rota e do `_enviar_webhook` do pipeline.
+    """
+    if not config.get_bool(cfg, "apiplacas_ativo") or not resultado.get("placa"):
+        return None
+    try:
+        # O que sobrou do orçamento da leitura. A consulta externa não pode empurrar a
+        # resposta para além do que o roteador tolera esperar.
+        teto = config.get_float(cfg, "apiplacas_timeout_seg")
+        folga = config.get_int(cfg, "leitura_timeout_seg") + teto - decorrido
+        return apiplacas.consultar(resultado["placa"], cfg,
+                                   permitir_gasto=_pode_gastar(resultado, cfg),
+                                   orcamento_seg=max(0.0, min(teto, folga)))
+    except Exception as e:
+        log.error("Falha ao consultar dados do veículo: %s", e)
+        return None
 
 
 def _status_da_leitura(resultado: dict) -> tuple[str, str]:
@@ -160,7 +280,23 @@ def _status_da_leitura(resultado: dict) -> tuple[str, str]:
     # taxa do painel. `nao_confirmada` (e não um status novo) porque o significado é o
     # mesmo que o painel já mostra como "A conferir": devolveu placa, precisa de olho
     # humano antes de virar cobrança.
-    if resultado.get("parada_motivo") == "timeout":
+    # Timeout com `confirmada` TRUE deixou de rebaixar em 25/08/2026, e a mudanca e sutil o
+    # bastante para merecer o porque inteiro.
+    #
+    # A regra nasceu correta: enquanto a confirmacao exigia 2 FOTOS, o laco so parava por
+    # `acordo` quando fechava consenso de verdade, entao `timeout` significava mesmo "nunca
+    # fechou" e a leitura era a candidata menos ruim, nao sucesso.
+    #
+    # O que mudou e que `confirmada` passou a contar LEITURAS (o ensemble da 3-4 por foto), e
+    # com o GET conseguindo 1 foto em 28 s a parada por acordo ficou rara mesmo com evidencia
+    # sobrando. `SKU7G13` saiu com acordo 100%, confianca 95% e 4 leituras concordantes - e
+    # era rebaixada aqui por ter esgotado o tempo DEPOIS de ja ter decidido. Rebaixar isso
+    # nao protege ninguem: esconde leitura boa atras de "a conferir" e, com
+    # `apiplacas_exigir_confirmada`, impede a consulta de dados do veiculo para sempre.
+    #
+    # O que a regra defendia continua defendido: timeout SEM consenso segue rebaixando, e e
+    # o caso que de fato precisa de olho humano.
+    if resultado.get("parada_motivo") == "timeout" and not resultado.get("confirmada"):
         return "nao_confirmada", f"tempo esgotado sem consenso (acordo {acordo_txt})"
     return "ok", ""
 
@@ -255,6 +391,16 @@ def leitura_reativa(
     avisos = resultado.get("avisos") or []
     if avisos:
         motivo_chamada = "; ".join([motivo_chamada, *avisos]) if motivo_chamada else "; ".join(avisos)
+    veiculo = bloco_veiculo(resultado, cfg, time.time() - inicio)
+    if veiculo is not None and veiculo["consulta"] == apiplacas.CONSULTA_INDISPONIVEL:
+        # Vai para `motivo`, NUNCA para `status`: a placa foi lida bem, e rebaixar o
+        # status falsearia a taxa de sucesso da leitura — mesmo raciocínio já aplicado
+        # aos `avisos` acima. Mas precisa aparecer em ALGUM lugar que o operador já olha,
+        # senão "o crédito da apiplacas acabou" só é descoberto quando um posto reclama
+        # que o combustível parou de vir.
+        aviso_veiculo = f"veiculo: {veiculo['motivo']}"
+        motivo_chamada = "; ".join(filter(None, [motivo_chamada, aviso_veiculo]))
+
     _registrar(
         status_chamada, motivo_chamada,
         placa=resultado.get("placa"),
@@ -262,4 +408,5 @@ def leitura_reativa(
         tentativas=resultado.get("tentativas"),
     )
     return {"entidade": entidade, "cnpj": cnpj_norm, "automacao": automacao,
-            "bico": bico, **resultado}
+            "bico": bico, **resultado,
+            **({"veiculo": veiculo} if veiculo is not None else {})}

@@ -57,16 +57,55 @@ class TestStatusDaLeitura:
         assert status == "nao_confirmada"
         assert "?" in motivo
 
-    def test_timeout_nao_conta_como_sucesso_mesmo_confirmada(self):
-        """Sair por timeout = o loop nunca fechou consenso (o outro motivo seria
-        'acordo'). Contar como 'ok' inflava a taxa de sucesso do painel justamente
-        com as leituras que precisam de conferência antes de virar cobrança.
+    def test_timeout_sem_consenso_nao_conta_como_sucesso(self):
+        """Timeout SEM consenso continua rebaixando — é o caso que a regra defende.
+
+        Este teste dizia "timeout nunca é sucesso, nem com `confirmada`", e estava certo
+        enquanto a confirmação exigia 2 FOTOS: o laço só parava por `acordo` quando fechava
+        consenso, então timeout significava mesmo "nunca fechou".
+
+        Deixou de valer em 25/08/2026, quando `confirmada` passou a contar LEITURAS (o
+        ensemble dá 3-4 por foto) e o GET, conseguindo 1 foto em 28 s, passou a estourar o
+        tempo DEPOIS de já ter decidido. Ver o teste seguinte.
         """
+        # `confirmada: None` (consenso DESCONHECIDO), e não `False`: com `False` quem
+        # responde é o gate anterior, com "consenso insuficiente". O ramo do timeout só é
+        # alcançável quando o consenso é desconhecido — chamada antiga, ou origem que não
+        # passa pelo laço. Escrever `False` aqui testaria um estado inalcançável e passaria
+        # medindo outra coisa.
         status, motivo = _status_da_leitura(
-            {"placa": "RHO1J15", "confirmada": True, "acordo": 1.0,
+            {"placa": "RHO1J15", "confirmada": None, "acordo": 0.40,
              "parada_motivo": "timeout"})
         assert status == "nao_confirmada"
         assert "tempo esgotado" in motivo
+
+    def test_confirmada_falsa_responde_antes_do_timeout(self):
+        """Os dois gates coexistem, e a ordem importa para a MENSAGEM.
+
+        Sem consenso, o motivo tem de dizer que faltou consenso — e relatar os números —,
+        não culpar o relógio. A causa é a mesma, mas quem lê o histórico precisa saber se
+        faltou evidência ou faltou tempo.
+        """
+        status, motivo = _status_da_leitura(
+            {"placa": "RHO1J15", "confirmada": False, "acordo": 0.40,
+             "parada_motivo": "timeout"})
+        assert status == "nao_confirmada"
+        assert "consenso insuficiente" in motivo
+
+    def test_timeout_com_consenso_fechado_e_sucesso(self):
+        """Caso real `SKU7G13`: acordo 100%, confiança 95%, 4 leituras concordantes — e
+        rebaixado por ter esgotado o tempo depois de já ter decidido.
+
+        Rebaixar aqui não protege ninguém: esconde leitura boa atrás de "a conferir" e, com
+        `apiplacas_exigir_confirmada` ligado, impede a consulta de dados do veículo para
+        sempre. Timeout passou a significar "não sobrou tempo para MAIS fotos", que é
+        diferente de "não fechou consenso".
+        """
+        status, motivo = _status_da_leitura(
+            {"placa": "SKU7G13", "confirmada": True, "acordo": 1.0,
+             "parada_motivo": "timeout"})
+        assert status == "ok"
+        assert motivo == ""
 
     def test_parada_por_acordo_continua_sucesso(self):
         status, motivo = _status_da_leitura(

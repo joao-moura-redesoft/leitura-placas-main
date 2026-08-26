@@ -12,6 +12,7 @@ continua funcionando — os submódulos são detalhe interno.
   _chamadas   log das chamadas do roteador
   _acesso     usuários e sessões
   _auditoria  log de auditoria e tokens de reset/convite de senha
+  _veiculos   cache dos dados de veiculo consultados na apiplacas
 """
 from __future__ import annotations
 
@@ -38,6 +39,18 @@ from ._deteccoes import (
     stats,
     ultima_deteccao_bico,
     ultima_deteccao_camera,
+)
+from ._veiculos import (
+    CAMPOS_CURADOS,
+    STATUS_VEICULO,
+    veiculos_consultas_desde,
+    veiculos_obter,
+    veiculos_obter_varios,
+    veiculos_pendentes,
+    veiculos_remover,
+    veiculos_salvar,
+    veiculos_stats,
+    veiculos_valido,
 )
 from ._cadastro import (
     automacoes_atualizar,

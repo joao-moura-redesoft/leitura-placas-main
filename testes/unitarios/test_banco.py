@@ -135,6 +135,40 @@ class TestRetencao:
         banco.registrar_deteccao("AAA1A11", "mercosul", 0.9)
         assert banco.deteccoes_e_chamadas_antigas(dias=90)["deteccoes_removidas"] == 0
 
+    def test_nao_apaga_o_cache_de_veiculos(self, ambiente):
+        """A tabela `veiculos` fica FORA da purga, e isso é decisão, não esquecimento.
+
+        Ela é cache de consulta paga: purgá-la reintroduz exatamente o custo que ela
+        existe para eliminar — a placa voltaria a ser cobrada no abastecimento seguinte.
+        Não há imagem nem vínculo com abastecimento ali, e os dados são do veículo
+        (marca, modelo, município), não do proprietário.
+        """
+        banco.veiculos_salvar("AAA1A11", status="ok",
+                              campos={"combustivel": "Alcool / Gasolina"})
+        with banco.cursor() as c:
+            c.execute("UPDATE veiculos SET consultado_em=? WHERE placa=?",
+                      (_ts(2000), "AAA1A11"))
+
+        banco.deteccoes_e_chamadas_antigas(dias=1)
+
+        assert banco.veiculos_obter("AAA1A11") is not None
+
+
+class TestEsquemaVeiculos:
+    def test_tabela_sobrevive_a_reinicializacao(self, ambiente):
+        """Mesmo contrato do teste de idempotência acima: `inicializar()` roda em todo
+        boot, e um `CREATE TABLE` que não seja idempotente derrubaria o servidor na
+        segunda subida — ou, pior, apagaria o cache já pago."""
+        banco.veiculos_salvar("AAA1A11", status="ok", campos={"marca": "VW"})
+        banco.inicializar()
+        banco.inicializar()
+
+        with banco.cursor() as cur:
+            cols = {r[1] for r in cur.execute("PRAGMA table_info(veiculos)").fetchall()}
+        assert {"placa", "status", "consultado_em", "consultas", "combustivel",
+                "combustivel_sigla", "bruto"} <= cols
+        assert banco.veiculos_obter("AAA1A11")["marca"] == "VW"
+
 
 class TestConexao:
     def test_reusa_a_mesma_conexao_na_mesma_thread(self, ambiente):

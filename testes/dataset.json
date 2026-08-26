@@ -260,6 +260,231 @@
       "tipo": "crop",
       "obs": "classificado: confere com OCR",
       "layout": "carro"
+    },
+    {
+      "id": "1683f6b0",
+      "arquivo": "app/web/static/snapshots/20260825T184447_RLS2I66_frame.jpg",
+      "placa_correta": "RLS2I66",
+      "formato": "mercosul",
+      "tipo": "frame",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "6db03cdf",
+      "arquivo": "app/web/static/snapshots/20260825T184447_RLS2I66.jpg",
+      "placa_correta": "RLS2I66",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "propagado do par (20260825T184447_RLS2I66_frame.jpg)",
+      "layout": "carro"
+    },
+    {
+      "id": "193cb036",
+      "arquivo": "app/web/static/snapshots/20260825T184424_RLS2I66_frame.jpg",
+      "placa_correta": "RLS2I66",
+      "formato": "mercosul",
+      "tipo": "frame",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "0803f849",
+      "arquivo": "app/web/static/snapshots/20260825T184424_RLS2I66.jpg",
+      "placa_correta": "RLS2I66",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "propagado do par (20260825T184424_RLS2I66_frame.jpg)",
+      "layout": "carro"
+    },
+    {
+      "id": "2301fb3a",
+      "arquivo": "app/web/static/snapshots/20260825T183727_FDJ5342_frame.jpg",
+      "placa_correta": "PDJ5342",
+      "formato": "antigo",
+      "tipo": "frame",
+      "obs": "classificado: corrigido",
+      "layout": "carro"
+    },
+    {
+      "id": "22392f8b",
+      "arquivo": "app/web/static/snapshots/20260825T183727_FDJ5342.jpg",
+      "placa_correta": "PDJ5342",
+      "formato": "antigo",
+      "tipo": "crop",
+      "obs": "propagado do par (20260825T183727_FDJ5342_frame.jpg)",
+      "layout": "carro"
+    },
+    {
+      "id": "b8c51b28",
+      "arquivo": "app/web/static/snapshots/20260825T183722_KVW5485_frame.jpg",
+      "placa_correta": "KVW5485",
+      "formato": "antigo",
+      "tipo": "frame",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "9035f02a",
+      "arquivo": "app/web/static/snapshots/20260825T183722_KVW5485.jpg",
+      "placa_correta": "KVW5485",
+      "formato": "antigo",
+      "tipo": "crop",
+      "obs": "propagado do par (20260825T183722_KVW5485_frame.jpg)",
+      "layout": "carro"
+    },
+    {
+      "id": "e87db416",
+      "arquivo": "app/web/static/snapshots/20260825T183630_PDJ5342.jpg",
+      "placa_correta": "PDJ5342",
+      "formato": "antigo",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "7551d171",
+      "arquivo": "app/web/static/snapshots/20260825T183334_PJD8N70_frame.jpg",
+      "placa_correta": "PJD8N70",
+      "formato": "mercosul",
+      "tipo": "frame",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "e6d526f1",
+      "arquivo": "app/web/static/snapshots/20260825T183334_PJD8N70.jpg",
+      "placa_correta": "PJD8N70",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "propagado do par (20260825T183334_PJD8N70_frame.jpg)",
+      "layout": "carro"
+    },
+    {
+      "id": "ec7dbb19",
+      "arquivo": "app/web/static/snapshots/20260825T183329_PJB8H70_frame.jpg",
+      "placa_correta": "PJB8H70",
+      "formato": "mercosul",
+      "tipo": "frame",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "ced0949d",
+      "arquivo": "app/web/static/snapshots/20260825T183329_PJB8H70.jpg",
+      "placa_correta": "PJB8H70",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "propagado do par (20260825T183329_PJB8H70_frame.jpg)",
+      "layout": "carro"
+    },
+    {
+      "id": "ed7e6559",
+      "arquivo": "app/web/static/snapshots/20260825T183145_IXL5G37_frame.jpg",
+      "placa_correta": "IXL5G37",
+      "formato": "mercosul",
+      "tipo": "frame",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "252f5e4a",
+      "arquivo": "app/web/static/snapshots/20260825T183145_IXL5G37.jpg",
+      "placa_correta": "IXL5G37",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "propagado do par (20260825T183145_IXL5G37_frame.jpg)",
+      "layout": "carro"
+    },
+    {
+      "id": "d862b22c",
+      "arquivo": "app/web/static/snapshots/20260825T183141_IXL5G37_frame.jpg",
+      "placa_correta": "IXL5G37",
+      "formato": "mercosul",
+      "tipo": "frame",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "06371e26",
+      "arquivo": "app/web/static/snapshots/20260825T183141_IXL5G37.jpg",
+      "placa_correta": "IXL5G37",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "propagado do par (20260825T183141_IXL5G37_frame.jpg)",
+      "layout": "carro"
+    },
+    {
+      "id": "37fad5cd",
+      "arquivo": "app/web/static/snapshots/20260825T183043_SKU7G13.jpg",
+      "placa_correta": "SKU7G13",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "eb77ded5",
+      "arquivo": "app/web/static/snapshots/20260825T183042_SKU7G13_frame.jpg",
+      "placa_correta": "SKU7G13",
+      "formato": "mercosul",
+      "tipo": "frame",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "ebfa7842",
+      "arquivo": "app/web/static/snapshots/20260825T183014_SKU7G13_frame.jpg",
+      "placa_correta": "SKU7G13",
+      "formato": "mercosul",
+      "tipo": "frame",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "bcb112fe",
+      "arquivo": "app/web/static/snapshots/20260825T183014_SKU7G13.jpg",
+      "placa_correta": "SKU7G13",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "propagado do par (20260825T183014_SKU7G13_frame.jpg)",
+      "layout": "carro"
+    },
+    {
+      "id": "63ea3b62",
+      "arquivo": "app/web/static/snapshots/20260825T182937_SKU7G13_frame.jpg",
+      "placa_correta": "SKU7G13",
+      "formato": "mercosul",
+      "tipo": "frame",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "05ca9f14",
+      "arquivo": "app/web/static/snapshots/20260825T182937_SKU7G13.jpg",
+      "placa_correta": "SKU7G13",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "propagado do par (20260825T182937_SKU7G13_frame.jpg)",
+      "layout": "carro"
+    },
+    {
+      "id": "41e4f993",
+      "arquivo": "app/web/static/snapshots/20260824T225511_QFA6A52_frame.jpg",
+      "placa_correta": "QFA6A52",
+      "formato": "mercosul",
+      "tipo": "frame",
+      "obs": "classificado: confere com OCR",
+      "layout": "carro"
+    },
+    {
+      "id": "c548601c",
+      "arquivo": "app/web/static/snapshots/20260824T225511_QFA6A52.jpg",
+      "placa_correta": "QFA6A52",
+      "formato": "mercosul",
+      "tipo": "crop",
+      "obs": "propagado do par (20260824T225511_QFA6A52_frame.jpg)",
+      "layout": "carro"
     }
   ]
 }

@@ -112,11 +112,15 @@ const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 
-function msg(ok, txt) {
+let _msgTimer = null;
+// `segundos` maior quando a mensagem contém o próximo passo (link para a área da outra
+// câmera do bico): 6s é curto para ler e clicar.
+function msg(ok, txt, segundos = 6) {
   const el = document.getElementById('msg');
   el.className = 'alert ' + (ok ? 'alert-ok' : 'alert-err');
   el.innerHTML = txt;
-  setTimeout(() => { el.innerHTML = ''; el.className = ''; }, 6000);
+  clearTimeout(_msgTimer);
+  _msgTimer = setTimeout(() => { el.innerHTML = ''; el.className = ''; }, segundos * 1000);
 }
 
 // ── Coordenadas ──────────────────────────────────────────────────────────────
@@ -252,7 +256,8 @@ async function salvarTudo() {
   const btn = document.getElementById('btn-salvar');
   btn.disabled = true; btn.textContent = 'Salvando…';
   let n = 0, erro = null;
-  for (const b of _bicos.filter(x => x.sujo)) {
+  const salvos = _bicos.filter(x => x.sujo);
+  for (const b of salvos) {
     try {
       // Sempre com `camera_id`: um bico de 2 câmeras aparece nos DOIS editores, e sem
       // dizer de qual se trata a área desenhada aqui sobrescreveria a da outra câmera —
@@ -268,8 +273,18 @@ async function salvarTudo() {
   }
   btn.textContent = 'Salvar áreas';
   renderLista(); desenhar();
-  if (erro) msg(false, erro);
-  else msg(true, `${n} área(s) salva(s). A próxima leitura já usa a nova configuração.`);
+  if (erro) { msg(false, erro); return; }
+  // Encadeia a segunda câmera: enquanto a outra não tem área, ali a leitura analisa o
+  // quadro inteiro — é exatamente o que o recorte existe para evitar. O link para ela já
+  // existe na lista ao lado; aqui ele é promovido ao momento em que é o próximo passo.
+  const pendente = salvos.find(b => b.roi && b.outraId && !b.outraTemRoi);
+  const proximo = pendente
+    ? ` <a href="/roi-camera/${pendente.outraId}?bico=${pendente.id}"
+           style="color:#166534;font-weight:600">agora a área da
+        ${esc(pendente.outraPapel || 'outra câmera')} do bico ${esc(pendente.codigo)} →</a>`
+    : '';
+  msg(true, `${n} área(s) salva(s). A próxima leitura já usa a nova configuração.${proximo}`,
+      proximo ? 20 : 6);
 }
 
 // ── Lista de bicos ───────────────────────────────────────────────────────────

@@ -274,3 +274,75 @@ class TestPreviewPorCamera:
                               origem="teste")
         assert leitura_mod.caminho_preview_bico(BICO_ID).exists()
         assert not leitura_mod.caminho_preview_bico(BICO_ID, 7).exists()
+
+
+class TestPreviewNaoMostraQuadroDeOutraLeitura:
+    """A câmera que não entregou frame não pode exibir o preview da leitura ANTERIOR.
+
+    Visto em 25/08/2026 na tela de teste: o painel dizia `traseira · 0 foto(s),
+    0 detecção(ões)` e ao lado mostrava uma imagem carimbada com a data do DIA ANTERIOR,
+    com uma moto no quadro. Quem olha aquilo conclui que a câmera viu a moto e o OCR falhou
+    — quando a câmera não entregou frame nenhum. É o oposto do diagnóstico.
+
+    Duas causas, as duas corrigidas:
+
+    1. o laço de preview por câmera fazia `continue` quando `frame_principal is None`,
+       deixando o arquivo da leitura passada no disco. `/api/bicos/{id}/preview.jpg` o
+       servia sem saber que era velho (a rota já manda `Cache-Control: no-store`, então
+       nunca foi cache de navegador — era arquivo velho mesmo);
+    2. `frame_url` era preenchido para TODA fonte, prometendo imagem que não existia.
+    """
+
+    def _ler(self, fontes, **kw):
+        base = dict(fontes=fontes, cfg=CFG, preview_nome=f"preview_bico_{BICO_ID}",
+                    bico_id=BICO_ID, origem="teste")
+        return leitura_mod.ler_placa(**{**base, **kw})
+
+    def _viva(self, camera_id, papel):
+        return FonteLeitura(camera_id=camera_id, papel=papel,
+                            especificacao=_especificacao(), roi=None,
+                            provider=_provedor_de_frames())
+
+    def _morta(self, camera_id, papel):
+        return FonteLeitura(camera_id=camera_id, papel=papel,
+                            especificacao=_especificacao(), roi=None, provider=None)
+
+    @pytest.fixture
+    def previews(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(leitura_mod, "PREVIEW_DIR", tmp_path)
+        return tmp_path
+
+    def test_apaga_o_preview_velho_da_camera_sem_frame(self, ambiente, visao_falsa, previews):
+        visao_falsa(_DetectorFalso(), _OcrFalso())
+        velho = leitura_mod.caminho_preview_bico(BICO_ID, 8)
+        velho.parent.mkdir(parents=True, exist_ok=True)
+        velho.write_bytes(b"quadro da leitura de ontem")
+
+        r = self._ler([self._viva(7, "traseira"), self._morta(8, "frente")])
+
+        assert r["placa"] == PLACA
+        assert not velho.exists(), (
+            "o preview da leitura anterior sobreviveu: a tela vai mostrar o quadro de "
+            "outro dia ao lado de '0 foto(s)'"
+        )
+
+    def test_frame_url_e_nulo_para_a_camera_sem_frame(self, ambiente, visao_falsa, previews):
+        visao_falsa(_DetectorFalso(), _OcrFalso())
+        r = self._ler([self._viva(7, "traseira"), self._morta(8, "frente")])
+
+        por_cam = {f["camera_id"]: f for f in r["fontes"]}
+        assert por_cam[8]["frame_url"] is None, "prometeu imagem para quem não entregou frame"
+        assert por_cam[7]["frame_url"], "a câmera que entregou frame perdeu o preview"
+
+    def test_a_camera_viva_continua_com_preview_no_disco(self, ambiente, visao_falsa, previews):
+        visao_falsa(_DetectorFalso(), _OcrFalso())
+        self._ler([self._viva(7, "traseira"), self._morta(8, "frente")])
+        assert leitura_mod.caminho_preview_bico(BICO_ID, 7).exists()
+
+    def test_duas_vivas_geram_os_dois_previews(self, ambiente, visao_falsa, previews):
+        """A correção não pode apagar preview de quem entregou frame."""
+        visao_falsa(_DetectorFalso(), _OcrFalso())
+        r = self._ler([self._viva(7, "traseira"), self._viva(8, "frente")])
+        for cam in (7, 8):
+            assert leitura_mod.caminho_preview_bico(BICO_ID, cam).exists()
+        assert all(f["frame_url"] for f in r["fontes"])

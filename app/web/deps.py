@@ -75,3 +75,23 @@ def checar_acesso_empresa(request: Request, empresa_id: int | None) -> None:
     escopo = empresa_do_usuario(request)
     if escopo is not None and empresa_id != escopo:
         raise HTTPException(404, "Não encontrado")
+
+
+def chave_do_posto_do_bico(bico_id: int) -> str:
+    """api_key PRÓPRIA do posto dono deste bico ('' = posto sem chave, público).
+
+    Usada pelo `_AuthMiddleware` para liberar o preview de um bico a quem apresenta a
+    chave daquele posto — é a mesma credencial que o roteador já manda em `/api/leitura`
+    (ver app/web/leitura.py:leitura_reativa). Fica aqui, e não no middleware, para a
+    resolução bico→automação→posto não virar consulta solta no meio do pipeline HTTP.
+    """
+    from app.core import banco
+
+    bico = banco.bicos_obter(bico_id)
+    if not bico:
+        return ""
+    automacao = banco.automacoes_obter(bico["automacao_id"])
+    if not automacao:
+        return ""
+    empresa = banco.empresas_obter(automacao["empresa_id"])
+    return (empresa or {}).get("api_key") or ""

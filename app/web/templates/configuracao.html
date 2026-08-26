@@ -544,6 +544,68 @@
     </div>
   </div>
 
+
+  <div class="card">
+    <h2 style="margin-top:0;">Dados do veículo (API Placas)</h2>
+    <p style="margin-top:0;color:#64748b;font-size:14px">
+      Acrescenta à resposta do roteador o <strong>tipo de combustível</strong> e os dados do
+      veículo da placa lida, consultados na apiplacas.com.br. <strong>Cada consulta custa
+      crédito pré-pago</strong> — por isso a resposta é guardada no banco e a mesma placa só
+      é paga uma vez, valendo para todos os postos deste servidor. Desligado, o payload do
+      roteador fica exatamente como era antes.
+    </p>
+    <p id="apiplacas-estado" style="margin:0 0 12px;font-size:14px;font-weight:600;color:#64748b"></p>
+    <div class="grid-form">
+      <label>Consultar dados do veículo <span class="help" data-tip="Liga o enriquecimento. Desligado, a resposta de /api/leitura não ganha nenhum campo novo — nada muda para quem já integra.">?</span>
+        <select name="apiplacas_ativo">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Token da apiplacas <span class="help" data-tip="Token da sua conta na apiplacas.com.br (menu Painel do Usuário, no site deles). Fica mascarado depois de salvo. Vazio = recurso inerte, mesmo com a opção acima em Sim.">?</span>
+        <input type="password" name="apiplacas_token" autocomplete="new-password" placeholder="(sem alteração)">
+      </label>
+      <label>Quem dispara a consulta <span class="help" data-tip="Manual: nada consulta sozinho — o abastecimento entrega só o que já está em cache, e você gasta pelo botão no Histórico. Automático: a primeira leitura de cada placa consulta (1 crédito) e as seguintes vêm do cache. Use manual enquanto a cota for curta.">?</span>
+        <select name="apiplacas_modo">
+          <option value="manual">Manual — só quando eu pedir</option>
+          <option value="automatico">Automático — no abastecimento</option>
+        </select>
+      </label>
+      <label>Reconsultar após (dias) <span class="help" data-tip="Depois deste prazo a placa é consultada de novo, para atualizar situação e município. Combustível, marca e modelo não mudam nunca. 180 dias = cerca de 2 consultas por veículo por ano. 0 = nunca reconsultar.">?</span>
+        <input type="number" name="apiplacas_ttl_dias" min="0">
+      </label>
+      <label>Reconsultar placa inexistente após (dias) <span class="help" data-tip="Prazo para placas que a apiplacas não encontrou. A causa mais comum não é veículo novo, é leitura de OCR errada — uma placa que nunca vai existir e que seria recomprada a cada vencimento. 0 = nunca reconsultar.">?</span>
+        <input type="number" name="apiplacas_ttl_negativo_dias" min="0">
+      </label>
+      <label>Só consultar leitura confirmada <span class="help" data-tip="Sim = não gasta consulta em leitura sem consenso, que pode ser a placa errada (ou nenhuma placa). Ponha Não se o atendente usa marca/modelo/cor para conferir placas duvidosas — mesmo com Sim, a leitura duvidosa ainda mostra o dado se ele já estiver em cache.">?</span>
+        <select name="apiplacas_exigir_confirmada">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Tempo máximo da consulta (s) <span class="help" data-tip="Quanto esperar pela apiplacas antes de desistir e responder sem os dados do veículo. Só a primeira leitura de cada placa espera isso; as seguintes vêm do banco, instantâneas.">?</span>
+        <input type="text" name="apiplacas_timeout_seg">
+      </label>
+      <label>Máx. consultas por minuto <span class="help" data-tip="Freio de rajada, somando todos os postos. Existe para limitar o dano de um laço ou retry mal configurado no roteador. 0 = sem limite.">?</span>
+        <input type="number" name="apiplacas_max_por_minuto" min="0">
+      </label>
+      <label>Máx. consultas por dia <span class="help" data-tip="Teto de gasto diário, contado no banco (sobrevive a reinício do servidor). 0 = sem limite.">?</span>
+        <input type="number" name="apiplacas_max_por_dia" min="0">
+      </label>
+      <label>Pausa após erro de saldo/token (s) <span class="help" data-tip="Quando a apiplacas responde 'sem saldo' ou 'token inválido', insistir não pode dar certo — só atrasa cada abastecimento. O sistema para de tentar por este tempo. Salvar um token novo aqui libera a pausa na hora.">?</span>
+        <input type="number" name="apiplacas_pausa_erro_seg" min="0">
+      </label>
+      <label>Custo por consulta (R$) <span class="help" data-tip="Usado só para estimar o gasto mostrado abaixo. Ajuste se o seu contrato com a apiplacas tiver outro preço.">?</span>
+        <input type="text" name="apiplacas_custo_consulta">
+      </label>
+      <div style="grid-column: 1 / -1;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button type="button" onclick="verSaldoApiPlacas(this)">Consultar saldo</button>
+        <span id="apiplacas-saldo" style="color:#64748b;font-size:14px"></span>
+        <span id="apiplacas-uso" style="color:#64748b;font-size:14px;margin-left:auto"></span>
+      </div>
+    </div>
+  </div>
+
 </div><!-- /tab-sistema -->
 
 
@@ -815,6 +877,70 @@ function setValor(name, valor) {
 }
 
 /* ─── Chave de integração ──────────────────────────────────────────────── */
+// Saldo e uso da apiplacas. O saldo bate no provedor (tem freio de 6/hora no servidor);
+// o uso sai do nosso banco e mostra o que o cache economizou — a diferença entre placas
+// em cache e consultas pagas é exatamente o que não se repagou.
+async function carregarUsoApiPlacas() {
+  const alvo = document.getElementById('apiplacas-uso');
+  const estado = document.getElementById('apiplacas-estado');
+  if (!alvo) return;
+  try {
+    const r = await fetch('/api/apiplacas/uso');
+    if (!r.ok) return;
+    const u = await r.json();
+    alvo.textContent = `${u.total} placa(s) em cache · ${u.consultas} consulta(s) paga(s)`
+      + (u.custo_consulta ? ` · ~R$ ${u.gasto_estimado.toFixed(2)}` : '');
+
+    // O token é mascarado no GET, e mascarado IGUAL nos dois casos ("" tanto para salvo
+    // quanto para vazio) — sem este aviso a tela não diz se o recurso está de pé, e o modo
+    // de falha aqui é silencioso: o combustível simplesmente para de vir no payload.
+    const campo = form.querySelector('[name="apiplacas_token"]');
+    if (campo) campo.placeholder = u.token_configurado ? '(sem alteração)' : 'cole aqui o token da sua conta';
+    if (estado) {
+      if (!u.ativo) {
+        estado.textContent = 'Desligado — a resposta do roteador não inclui dados do veículo.';
+        estado.style.color = '#64748b';
+      } else if (!u.token_configurado) {
+        estado.textContent = 'Ligado, mas SEM TOKEN — nenhuma consulta será feita. Preencha o token abaixo.';
+        estado.style.color = '#f87171';
+      } else {
+        estado.textContent = 'Ativo — token configurado.';
+        estado.style.color = '#16a34a';
+      }
+    }
+  } catch { /* painel não pode quebrar por causa disto */ }
+}
+
+async function verSaldoApiPlacas(botao) {
+  const alvo = document.getElementById('apiplacas-saldo');
+
+  // O saldo é consultado pelo SERVIDOR, com o token que está no config.txt — não com o
+  // que está na tela. Como o campo sempre carrega vazio (o GET mascara), qualquer valor
+  // nele é digitação ainda não salva: consultar agora usaria o token ANTIGO e diria
+  // "não configurado" com um token visivelmente preenchido na tela.
+  const campo = form.querySelector('[name="apiplacas_token"]');
+  if (campo && campo.value.trim()) {
+    alvo.textContent = 'salve a configuração antes — o saldo usa o token já gravado';
+    alvo.style.color = '#f87171';
+    return;
+  }
+  alvo.style.color = '#64748b';
+  botao.disabled = true;
+  alvo.textContent = 'consultando...';
+  try {
+    const r = await fetch('/api/apiplacas/saldo');
+    const d = await r.json();
+    alvo.textContent = d.qtd_consultas !== null && d.qtd_consultas !== undefined
+      ? `saldo: ${d.qtd_consultas} consulta(s)`
+      : (d.erro || 'não foi possível consultar');
+  } catch {
+    alvo.textContent = 'não foi possível consultar';
+  } finally {
+    botao.disabled = false;
+  }
+  carregarUsoApiPlacas();
+}
+
 async function copiarApiKey(botao) {
   const campo = form.querySelector('[name="api_key"]');
   if (!campo.value) return avisar('Ainda não há chave — reinicie o servidor para gerá-la.', 'err');
@@ -931,6 +1057,13 @@ async function salvar() {
       return;
     }
     _iniciarPollingInstalacao();
+    // Devolve o campo de token ao estado "mascarado" em que ele carrega. Sem isto o valor
+    // digitado continua na tela depois de salvo, e o aviso "salve antes de consultar o
+    // saldo" (que usa justamente "campo preenchido = digitação não salva" como sinal)
+    // passaria a mentir. Também reavalia o indicador de token configurado.
+    const campoTokenApiPlacas = form.querySelector('[name="apiplacas_token"]');
+    if (campoTokenApiPlacas) campoTokenApiPlacas.value = '';
+    carregarUsoApiPlacas();
     if (json.pipeline_reiniciado) {
       statusEl.textContent = 'Salvo e pipeline reiniciado com sucesso.';
       statusEl.style.color = '#16a34a';
@@ -998,5 +1131,6 @@ async function testarConexao() {
 }
 
 carregar();
+carregarUsoApiPlacas();
 </script>
 {% endblock %}

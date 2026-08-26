@@ -388,5 +388,95 @@ def inicializar() -> None:
             usado     INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_reset_tokens_user ON reset_senha_tokens(user_id);
+
+        -- ── Cache dos dados de veículo consultados na apiplacas.com.br ──────────
+        -- Existe por DINHEIRO: cada consulta à API externa custa crédito pré-pago, e
+        -- marca/modelo/combustível de um veículo NUNCA mudam — o posto repete as mesmas
+        -- placas todo dia (frota, cliente fiel, aplicativo). Sem esta tabela, pagaríamos
+        -- de novo pelo mesmo dado imutável em cada abastecimento.
+        --
+        -- SEM coluna de posto/empresa DE PROPÓSITO: o cache é compartilhado por todo o
+        -- servidor. Placa não é dado de um cliente nosso, é dado do VEÍCULO, e a mesma
+        -- frota circula por vários postos da mesma rede — escopar por CNPJ multiplicaria
+        -- a conta pelo número de postos sem ganhar nada.
+        --
+        -- NÃO é purgada pela retenção (`app/operacao/retencao.py` só conhece `deteccoes`
+        -- e `chamadas`). É intencional: purgar o cache reintroduz exatamente o custo que
+        -- ele existe para eliminar. Não há imagem nem vínculo com abastecimento aqui, e
+        -- os dados são do veículo (marca, modelo, município), não do proprietário — o
+        -- `chassi` vem mascarado pelo próprio fornecedor e não é extraído para coluna.
+        CREATE TABLE IF NOT EXISTS veiculos (
+            -- NORMALIZADA (maiúscula, só alfanumérico) antes de gravar E de ler. A
+            -- comparação de TEXT PRIMARY KEY no SQLite é BINÁRIA: "abc1d23" e "ABC1D23"
+            -- seriam duas linhas e DUAS COBRANÇAS pelo mesmo veículo. Quem normaliza é
+            -- `app/integracoes/apiplacas.py`, num lugar só.
+            placa TEXT PRIMARY KEY,
+
+            -- Veredito sobre o VEÍCULO, não sobre a chamada HTTP:
+            --   'ok'          a API respondeu 200 e há dado (que pode estar incompleto)
+            --   'inexistente' a API respondeu 406 "sem resultados" — a placa não consta
+            --                 na base consultada. É resposta LEGÍTIMA e precisa ser
+            --                 cacheada: o caso comum é OCR que leu errado, uma placa que
+            --                 nunca vai existir e que sem isso seria reconsultada (e
+            --                 recobrada) em todo abastecimento daquele bico.
+            -- Falha de rede/timeout/402/429 NÃO viram linha aqui: não são respostas sobre
+            -- o veículo, e gravá-las faria uma indisponibilidade passageira "responder"
+            -- pelos próximos 180 dias. Vocabulário validado em Python (`_veiculos.py`) e
+            -- não por CHECK — mesmo motivo de `tipo_veiculo_fonte`: um CHECK não dá para
+            -- estender sem recriar a tabela.
+            status TEXT NOT NULL,
+
+            criado_em     TEXT NOT NULL,   -- 1ª vez que se pagou por esta placa
+            consultado_em TEXT NOT NULL,   -- data da resposta ARMAZENADA; base do TTL
+            -- Quantas vezes a API PAGA foi chamada para esta placa (1 na primeira, +1 a
+            -- cada reconsulta por TTL vencido). É contabilidade de gasto que sobrevive a
+            -- restart do processo, ao contrário do freio em memória do `limitador`.
+            consultas INTEGER NOT NULL DEFAULT 1,
+            http_status INTEGER,           -- 200 | 406. NULL = linha importada à mão
+
+            -- ── Bloco curado: o que vai no payload do roteador ──────────────────
+            -- TODAS nullable, e NULL significa "a API não informou" — NUNCA um valor por
+            -- omissão. A doc da apiplacas avisa que o objeto `extra` (de onde sai o
+            -- combustível) pode vir AUSENTE OU INCOMPLETO, e que `fipe` pode faltar.
+            -- Preencher 'Gasolina' por padrão seria inventar o dado mais importante da
+            -- integração — e num flex, inventá-lo errado.
+            combustivel       TEXT,   -- extra.combustivel, ex. "Alcool / Gasolina" — o alvo
+            combustivel_sigla TEXT,   -- fipe (maior score).sigla_combustivel, ex. "G"
+            marca             TEXT,
+            modelo            TEXT,
+            ano               INTEGER,
+            ano_modelo        INTEGER,
+            cor               TEXT,
+            especie           TEXT,   -- extra.especie, ex. "Passageiro"
+            -- extra.tipo_veiculo, ex. "Automovel"/"Motocicleta". VOCABULÁRIO DO
+            -- FORNECEDOR: não confundir com `deteccoes.tipo_veiculo` ('moto'/'carro'),
+            -- que é estimativa NOSSA do detector. São escalas diferentes e cruzá-las
+            -- faria alguém "corrigir" nosso detector com dado de terceiro.
+            tipo_veiculo      TEXT,
+            -- É o campo VOLÁTIL do bloco, e o que motiva o TTL não ser infinito. Com TTL
+            -- de 180 dias pode estar 180 dias velho: NÃO serve como checagem de
+            -- roubo/restrição em tempo real. Está documentado em INTEGRACAO_ROTEADOR.md.
+            situacao          TEXT,
+            municipio         TEXT,
+            uf                TEXT,
+
+            -- Resposta 200 INTEIRA, como veio. É o que permite expor amanhã chassi,
+            -- cilindradas, quantidade_passageiro, segmento ou FIPE SEM PAGAR DE NOVO
+            -- pelas placas já consultadas. Sem ele, cada campo novo pedido pelo posto
+            -- custaria uma recompra do histórico todo. NULL nas negativas (sem corpo útil).
+            bruto TEXT,
+
+            -- De qual provedor veio. Existe para o dia em que houver um segundo, ou um
+            -- import manual — para não confundir dado pago com dado digitado.
+            fonte TEXT NOT NULL DEFAULT 'apiplacas'
+        );
+        -- Serve ao teto DIÁRIO de gasto (COUNT de linhas com consultado_em >= meia-noite)
+        -- e à varredura "reconsultar as mais velhas". A busca do caminho quente é pela
+        -- PK, que já tem índice próprio. Ambos podem ficar NESTE script (e não em
+        -- `_migrar`) porque a tabela inteira nasce aqui: num banco antigo ela é criada já
+        -- completa, então não há o risco de "no such column" que manda
+        -- `idx_bicos_camera2`/`idx_deteccoes_bico` para o `_migrar`.
+        CREATE INDEX IF NOT EXISTS idx_veiculos_consultado ON veiculos(consultado_em);
+        CREATE INDEX IF NOT EXISTS idx_veiculos_status ON veiculos(status);
         """)
         _migrar(c)

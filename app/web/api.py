@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 
 from app.core import banco
+from app.integracoes import apiplacas
 from app.core import config
 from app.core import estado
 from app.operacao import supervisor as sv
@@ -231,7 +232,7 @@ def healthz():
 CHAVES_CONFIG = set(config.PADROES.keys())
 
 # Campos sensíveis — mascarados ao retornar (mas permitidos no POST).
-CHAVES_SENSIVEIS = {"intelbras_senha", "smtp_senha", "api_key"}
+CHAVES_SENSIVEIS = {"intelbras_senha", "smtp_senha", "api_key", "apiplacas_token"}
 
 
 @router.get("/config", dependencies=[Depends(deps.exigir_admin)])
@@ -687,7 +688,151 @@ def config_salvar(payload: dict, request: Request):
         log.error("Falha ao reiniciar pipeline com nova config: %s", e)
 
     sv.supervisor.atualizar_cfg(novo)
+
+    # Trocar o token tem de liberar o disjuntor da apiplacas na hora. Ele pausa por 15min
+    # (x4 no caso de token inválido) justamente para não insistir no que não pode dar
+    # certo — mas quem acabou de corrigir o token no painel esperaria efeito imediato, e
+    # sem isto concluiria, com razão, que a tela não funciona.
+    if "apiplacas_token" in mudadas:
+        try:
+            from app.integracoes import apiplacas
+            apiplacas.limpar_pausa()
+        except Exception as e:
+            log.warning("Falha ao liberar a pausa da apiplacas: %s", e)
+
     return {"salvo": True, "pipeline_reiniciado": reiniciado}
+
+
+@router.get("/apiplacas/saldo", dependencies=[Depends(deps.exigir_admin)])
+def apiplacas_saldo():
+    """Crédito restante na apiplacas.
+
+    Existe para que "o crédito acabou" seja percebido ANTES de virar sintoma. Sem isto o
+    problema chega como "o combustível parou de vir no payload", que é um diagnóstico
+    caro. Nunca é chamada do caminho da leitura, e tem freio próprio no módulo (6/hora):
+    é uma chamada externa atrás de um botão de painel, e botão de painel é clicado em
+    sequência.
+    """
+    cfg = config.carregar()
+    if not apiplacas.configurado(cfg):
+        return {"qtd_consultas": None, "erro": "consulta de veículo não configurada"}
+    qtd = apiplacas.saldo(cfg)
+    return {"qtd_consultas": qtd,
+            "erro": "" if qtd is not None else "não foi possível consultar o saldo"}
+
+
+@router.get("/apiplacas/uso", dependencies=[Depends(deps.exigir_admin)])
+def apiplacas_uso():
+    """Quanto o cache guarda e quanto já se pagou — sem depender do provedor.
+
+    `consultas` conta chamadas PAGAS; `total` conta placas distintas em cache. A diferença
+    entre os dois é exatamente o que o cache economizou.
+    """
+    cfg = config.carregar()
+    st = banco.veiculos_stats()
+    try:
+        custo = float(cfg.get("apiplacas_custo_consulta") or 0)
+    except ValueError:
+        custo = 0.0
+    return {**st, "custo_consulta": custo,
+            "gasto_estimado": round(st["consultas"] * custo, 2),
+            # `GET /api/config` mascara o token, e mascara IGUAL nos dois casos: devolve
+            # "" tanto para "salvo" quanto para "nunca preenchido". Sem este booleano a
+            # tela não tem como dizer se o recurso está de pé — e o modo de falha desta
+            # feature é silencioso (o combustível simplesmente não vem), então "parece
+            # configurado mas não está" passaria despercebido por semanas.
+            "ativo": config.get_bool(cfg, "apiplacas_ativo"),
+            "modo": (cfg.get("apiplacas_modo") or "manual").strip().lower(),
+            "token_configurado": bool((cfg.get("apiplacas_token") or "").strip())}
+
+
+# ─── Consulta de veículo sob demanda ───────────────────────────────────────
+# Com cota curta, gastar é decisão consciente: o abastecimento não consulta sozinho
+# (`apiplacas_modo=manual`) e estas rotas são o caminho deliberado. Só UMA delas gasta,
+# e é a única do painel inteiro que gasta.
+
+@router.get("/veiculos")
+def veiculos_em_cache(request: Request, placas: str = ""):
+    """Dados JÁ EM CACHE das placas informadas. NUNCA consulta a API. `{placa: bloco|null}`.
+
+    É o que pinta a coluna "Combustível" do histórico: uma requisição por página em vez de
+    uma por linha. Cache-only sem opção de gastar de propósito — esta rota é chamada em
+    toda navegação do histórico, e um gasto acidental aqui seria proporcional ao uso do
+    painel, que é exatamente o que não pode acontecer.
+    """
+    pedidas = [p.strip().upper() for p in placas.split(",") if p.strip()][:500]
+    if not pedidas:
+        return {}
+    cfg = config.carregar()
+    if not config.get_bool(cfg, "apiplacas_ativo"):
+        return {}
+    saida: dict[str, dict | None] = {}
+    for placa in pedidas:
+        try:
+            bloco = apiplacas.consultar(placa, cfg, permitir_gasto=False)
+        except Exception as e:
+            log.warning("Falha ao ler cache de veículo de %s: %s", placa, e)
+            bloco = None
+        # Só devolve o que EXISTE no cache: `indisponivel` aqui significa "não consultado
+        # ainda", e a tela precisa distinguir isso de "consultado e sem dados" para saber
+        # se oferece o botão de consultar.
+        saida[placa] = bloco if bloco and bloco["consulta"] != apiplacas.CONSULTA_INDISPONIVEL else None
+    return saida
+
+
+@router.get("/veiculos/pendentes", dependencies=[Depends(deps.exigir_admin)])
+def veiculos_pendentes(request: Request, limit: int = Query(20, ge=1, le=200)):
+    """Placas mais vistas que ainda não têm dados, com o custo estimado de consultá-las.
+
+    É o que a consulta em lote propõe. Devolve o custo junto para a confirmação poder
+    mostrar quanto vai gastar ANTES de gastar — pedir confirmação sem dizer o preço não é
+    confirmação.
+    """
+    cfg = config.carregar()
+    pendentes = banco.veiculos_pendentes(limit=limit, empresa_id=deps.empresa_do_usuario(request))
+    try:
+        custo = float(cfg.get("apiplacas_custo_consulta") or 0)
+    except ValueError:
+        custo = 0.0
+    return {"placas": pendentes, "custo_consulta": custo,
+            "custo_total": round(len(pendentes) * custo, 2)}
+
+
+@router.post("/veiculos/{placa}/consultar", dependencies=[Depends(deps.exigir_admin)])
+def veiculo_consultar(placa: str, request: Request):
+    """Consulta PAGA de uma placa, disparada por um humano. **Gasta 1 crédito.**
+
+    É a única rota do painel que gasta, e gasta independentemente de `apiplacas_modo`:
+    manual é manual, e o modo governa apenas quem consulta SOZINHO.
+
+    Admin, e não operador: ver o combustível é operar, gastar crédito é administrar — a
+    mesma divisão que o projeto já faz entre usar o sistema e configurá-lo. Auditada pelo
+    mesmo motivo: ação que custa dinheiro precisa ter dono.
+
+    Todos os freios do módulo continuam valendo (disjuntor, tetos, cooldown por placa). O
+    cooldown fica de propósito: é ele que impede um clique duplo de virar dois créditos.
+    """
+    cfg = config.carregar()
+    if not apiplacas.configurado(cfg):
+        raise HTTPException(400, "Consulta de veículo não configurada — falta o token em Configuração.")
+
+    placa_norm = apiplacas.normalizar_placa(placa)
+    if not apiplacas.placa_consultavel(placa_norm):
+        raise HTTPException(400, f"Placa '{placa}' fora dos formatos AAA0000/AAA0A00.")
+
+    ja_tinha = banco.veiculos_obter(placa_norm) is not None
+    bloco = apiplacas.consultar(placa_norm, cfg, permitir_gasto=True)
+
+    # Audita só quando houve chamada externa de verdade: um clique que caiu no cache não
+    # gastou nada e não precisa virar linha permanente de auditoria.
+    if bloco["origem"] == "api":
+        quem_id, quem_nome = deps.quem_pede(request)
+        banco.auditoria_registrar(
+            usuario_id=quem_id, usuario_nome=quem_nome, acao="veiculo_consultado",
+            alvo_tipo="placa", alvo_id=placa_norm,
+            detalhe=f"consulta paga ({bloco['consulta']})" + ("" if ja_tinha else " — placa nova"),
+        )
+    return {"placa": placa_norm, "veiculo": bloco}
 
 
 @router.post("/setup/concluir", dependencies=[Depends(deps.exigir_admin)])

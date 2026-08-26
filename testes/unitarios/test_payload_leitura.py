@@ -8,6 +8,9 @@ deles, e só falha em produção — no meio de um abastecimento.
 Não mede acurácia (isso é o harness em `testes/`, não a suíte unitária): detector e OCR
 são substituídos por dublês determinísticos, e o que se verifica é o ENVELOPE — quais
 chaves saem, com que tipo, e nos dois desfechos possíveis (leu / não leu).
+
+O bloco `veiculo` (dados da apiplacas) NÃO sai daqui: ele é acrescentado por
+`app/web/leitura.py`, a jusante — ver `test_nao_consulta_a_api_externa` abaixo.
 """
 from __future__ import annotations
 
@@ -25,6 +28,15 @@ CHAVES_COM_PLACA = {
     "total_snapshots", "votos_ocr", "total_engines", "detalhes_ocr", "snapshot",
     "frame_url", "tentativas", "acordo", "confirmada", "parada_motivo", "tipo_veiculo",
     "n_cameras_votando", "fontes", "avisos",
+    # `votos_leitura` entrou em 25/08/2026 AO LADO de `votos_snapshot`, nunca no lugar
+    # dele: os dois contam coisas diferentes e os dois importam.
+    #   votos_snapshot -> FOTOS desta chamada que bateram com a placa (contrato publicado
+    #                     em docs/INTEGRACAO_ROTEADOR.md, o sidecar Java já lê)
+    #   votos_leitura  -> LEITURAS que apoiam a placa. Com o ensemble, uma foto rende 3-4
+    #                     leituras de modelos diferentes, e é este número que decide
+    #                     `confirmada` — "2 fotos" era inalcançável com o GET conseguindo
+    #                     1 foto em 28 s, e por isso NADA era confirmado.
+    "votos_leitura",
 }
 
 # Chaves do retorno sem placa. Conjunto DIFERENTE de propósito: sem leitura não há
@@ -41,7 +53,21 @@ CFG = {
     "deteccao_automatica": "sim",
     "snapshots_votacao": "3",
     "leitura_max_tentativas": "6",
-    "leitura_timeout_seg": "10",
+    # 120 s, e nao 10: o que este arquivo mede e "o laco para por CONSENSO antes de gastar
+    # o orcamento de TENTATIVAS", e esse orcamento e `leitura_max_tentativas`, que nao
+    # depende de relogio. Com 10 s o teto virava relogio de parede: as tres primeiras
+    # rodadas do laco (`snapshots_votacao`) levam milissegundos com a maquina livre, mas
+    # numa maquina ocupada podem passar de 10 s, e ai `parada_motivo` vem "timeout" e as
+    # assercoes de contrato caem sem nada de errado no codigo de producao.
+    #
+    # Observado em 25/08/2026: cinco testes deste arquivo falharam duas vezes, as duas com o
+    # servidor do posto VIVO em paralelo (2 cameras em deteccao continua). Nao consegui
+    # reproduzir com carga controlada depois que o servidor parou, entao a causa nao esta
+    # PROVADA - mas a dependencia de relogio esta no codigo (`leitura.py`: `if time.time() -
+    # inicio > timeout_seg`) e nao serve a nada que este arquivo queira medir. Nenhum teste
+    # daqui exercita o caminho de timeout: o unico que o menciona so aceita qualquer um dos
+    # tres motivos de parada.
+    "leitura_timeout_seg": "120",
     "leitura_acordo_minimo": "0.80",
     "cooldown_seg": "120",
     "salvar_frame_deteccao": "nao",
@@ -137,6 +163,21 @@ class TestPayloadComPlaca:
         visao_falsa(_DetectorFalso(), _OcrFalso())
         r = _ler()
         assert set(r) == CHAVES_COM_PLACA
+
+    def test_nao_consulta_a_api_externa(self, ambiente, visao_falsa):
+        """O enriquecimento com dados do veículo (apiplacas, consulta PAGA) mora na camada
+        web, não aqui — e este teste existe para que continue assim.
+
+        `ler_placa` tem um segundo chamador: `bicos_ler_placa_teste`, que é o botão
+        "Testar como o roteador" e o editor de ROI, clicados em rajada ao ajustar
+        enquadramento. Mover o gancho para dentro desta função faria cada clique custar
+        crédito pré-pago. Além disso, aqui a placa eleita ainda pode mudar
+        (`_mesclar_com_historico`), e consultar antes disso gravaria cache sob uma placa
+        que a própria função descarta.
+        """
+        visao_falsa(_DetectorFalso(), _OcrFalso())
+        r = _ler()
+        assert "veiculo" not in r
 
     def test_valores_do_contrato(self, ambiente, visao_falsa):
         """Os campos que o roteador de fato consulta para decidir se cobra a placa."""

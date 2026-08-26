@@ -17,6 +17,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from app.visao.contexto_log import ContadorDeFalhas
+
 log = logging.getLogger(__name__)
 
 INPUT_SIZE = 640
@@ -337,6 +339,7 @@ class OpenImageDetector:
         self.conf = conf
         self.sess = None      # InferenceSession subjacente (p/ estado.modelo_carregado)
         self._det = None
+        self._falhas = ContadorDeFalhas("open-image-models")
 
     def carregar(self) -> None:
         if self._det is not None:
@@ -364,8 +367,11 @@ class OpenImageDetector:
         try:
             results = self._det.predict(frame)
         except Exception as e:
-            log.warning("open-image-models: falha na inferência (%s)", e)
+            # Uma falha isolada e DEBUG; dez seguidas viram um ERROR unico. Ver
+            # `ContadorDeFalhas` - 849 WARNINGs iguais num processo nao informaram nada.
+            self._falhas.falhou(e)
             return []
+        self._falhas.funcionou()
         boxes: list[tuple[int, int, int, int, float]] = []
         for r in results:
             bb = r.bounding_box
@@ -414,6 +420,7 @@ class VehicleDetector:
         self.sess = None
         self.input_name: str | None = None
         self._grids, self._strides_exp = self._gerar_grids()
+        self._falhas = ContadorDeFalhas("VehicleDetector")
 
     @classmethod
     def _gerar_grids(cls):
@@ -460,10 +467,12 @@ class VehicleDetector:
         if self.sess is None or frame is None or frame.size == 0:
             return []
         try:
-            return self._inferir(frame)
+            veiculos = self._inferir(frame)
         except Exception as e:
-            log.warning("VehicleDetector: falha na inferência (%s)", e)
+            self._falhas.falhou(e)
             return []
+        self._falhas.funcionou()
+        return veiculos
 
     def _inferir(self, frame) -> list[tuple[int, int, int, int, float, int]]:
         h0, w0 = frame.shape[:2]
