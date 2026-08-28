@@ -371,7 +371,17 @@ function abrirModal(cam = null) {
   document.getElementById('cam-subtype').value = cam ? cam.intelbras_subtype : '1';
   document.getElementById('cam-formato').value = cam ? cam.intelbras_formato : 'padrao';
   document.getElementById('cam-indice').value = cam ? cam.camera_indice : '0';
-  document.getElementById('cam-rtsp-url').value = cam ? (cam.rtsp_url_custom || '') : '';
+  // A URL RTSP carrega usuário e senha embutidos, então /api/cameras a devolve MASCARADA
+  // (app/web/redacao.py). Campo em branco com aviso no placeholder, mesma convenção do
+  // campo de senha: em branco = "não mexi", e o servidor preserva o valor atual
+  // (`cameras_atualizar`). Encher o campo com "********" faria o operador achar que essa
+  // é a URL, e obrigaria a limpar antes de digitar a nova.
+  const urlRtsp = document.getElementById('cam-rtsp-url');
+  const temUrl = cam && cam.rtsp_url_custom === '********';
+  urlRtsp.value = (cam && !temUrl) ? (cam.rtsp_url_custom || '') : '';
+  urlRtsp.placeholder = temUrl
+    ? 'URL já configurada — deixe em branco para manter, ou digite uma nova'
+    : 'rtsp://admin:senha@10.0.200.15:554/stream1';
   document.getElementById('cam-ativo').checked = cam ? !!cam.ativo : true;
   document.getElementById('teste-resultado').textContent = '';
   document.getElementById('teste-snapshot').style.display = 'none';

@@ -13,6 +13,8 @@ arquivo, que é exatamente o tipo de rótulo falso que corrompe a medição.
 """
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 import pytest
 
@@ -219,6 +221,47 @@ class TestColetorNaoDisputaCameraComOPipeline:
 
     def test_coleta_quando_nao_ha_pipeline_algum(self, dir_snap, monkeypatch):
         assert self._rodar_uma_volta(monkeypatch, None, dir_snap) is True
+
+
+class TestIniciarColetorConcorrente:
+    """Achado do review de 28/08/2026: duas chamadas de `iniciar_coletor` rodando ao
+    mesmo tempo (dois saves rápidos da tela de config, cada um numa thread de fundo
+    própria desde o achado A6) podiam intercalar `_parar.set()`/`_coletores.clear()` de
+    uma com as threads recém-criadas da outra. `_ciclo_lock` serializa o ciclo inteiro."""
+
+    def test_chamadas_concorrentes_nao_deixam_estado_inconsistente(self, ambiente, posto, monkeypatch):
+        import app.visao.captura_dataset as mod
+        from app.core import config
+
+        def _coletor_fake(cam_id, intervalo):
+            while not mod._parar.wait(0.01):
+                pass
+
+        monkeypatch.setattr(mod, "_coletar_de_camera", _coletor_fake)
+        cfg = {**config.carregar(), "captura_dataset": "sim",
+              "captura_dataset_intervalo_seg": "60"}
+        erros = []
+
+        def chamar():
+            try:
+                mod.iniciar_coletor(cfg)
+            except Exception as e:
+                erros.append(e)
+
+        try:
+            threads_teste = [threading.Thread(target=chamar) for _ in range(10)]
+            for t in threads_teste:
+                t.start()
+            for t in threads_teste:
+                t.join(timeout=5)
+
+            assert not erros, f"exceção durante a concorrência: {erros}"
+            # Nenhuma thread órfã (já morta) escondida em `_coletores` — todas as que
+            # sobraram são da geração que "venceu" e ainda estão de fato rodando.
+            assert all(t.is_alive() for t in mod._coletores)
+        finally:
+            mod.parar_coletor()
+            assert mod._coletores == []
 
 
 class _PipelineFalso:

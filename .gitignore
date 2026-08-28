@@ -62,3 +62,11 @@ testes/cenas_reais.json
 # Fila de classificação: quais capturas um operador recusou. É estado local, casado
 # com os snapshots desta máquina (que também não são versionados).
 testes/descartados.json
+
+# Recortes reais que testes de aceitação abrem por nome (test_moto_duas_linhas_real.py).
+# Vivem AQUI, e não em app/web/static/snapshots/, porque aquela pasta agora tem teto de
+# contagem (retencao_max_imagens) e a purga apagaria a entrada do teste — que passaria a
+# ser pulado em silêncio, deixando a regressão invisível. Fora de SNAPSHOT_DIR eles estão
+# fora do alcance da purga por construção, não por lista de exceção.
+# Continuam gitignored: são placa e veículo de cliente real, mesma política dos snapshots.
+testes/reais/

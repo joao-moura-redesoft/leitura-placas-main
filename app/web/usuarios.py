@@ -22,6 +22,8 @@ from app.seguranca import sessao as auth_mod
 from app.web import deps
 
 router = APIRouter()
+
+
 templates = Jinja2Templates(directory="app/web/templates")
 
 _PAPEIS_VALIDOS = ("admin", "operador", "cliente")
@@ -135,7 +137,7 @@ def criar(payload: dict, request: Request):
     if papel == "cliente":
         if not empresa_id:
             raise HTTPException(400, "empresa_id é obrigatório para papel 'cliente'")
-        if not banco.empresas_obter(int(empresa_id)):
+        if not banco.empresas_obter(deps.inteiro_ou_400(empresa_id, 'empresa_id')):
             raise HTTPException(400, f"Empresa {empresa_id} não encontrada")
 
     cfg = config.carregar()
@@ -182,6 +184,20 @@ def criar(payload: dict, request: Request):
     return {"id": uid}
 
 
+def _como_bool(valor, padrao: bool) -> bool:
+    """Interpreta o que veio no JSON como booleano, com o valor atual como default.
+
+    `bool("false")` é True — e um formulário HTML manda exatamente essa string. Aceita as
+    mesmas grafias que `config.get_bool` para o sistema inteiro concordar sobre o que é
+    "não".
+    """
+    if valor is None:
+        return bool(padrao)
+    if isinstance(valor, str):
+        return valor.strip().lower() in ("sim", "true", "1", "yes", "on")
+    return bool(valor)
+
+
 @router.put("/api/usuarios/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def atualizar(id_: int, payload: dict, request: Request):
     atual = banco.buscar_usuario_id(id_)
@@ -190,9 +206,16 @@ def atualizar(id_: int, payload: dict, request: Request):
 
     nome = (payload.get("nome") or atual["nome"]).strip()
     email = (payload.get("email") or atual["email"]).strip().lower()
-    papel = payload.get("papel") or "cliente"
-    empresa_id = payload.get("empresa_id")
-    ativo = bool(payload.get("ativo", True))
+    # O default de CADA campo é o valor ATUAL, nunca uma constante. Antes era
+    # `payload.get("papel") or "cliente"`: um PUT parcial — `{"nome": "X", "empresa_id": 3}`,
+    # que a tela manda ao editar só o nome — REBAIXAVA um admin a cliente em silêncio.
+    # Mesma coisa em `ativo`, que voltava a True e ressuscitava conta desativada.
+    # (Auditoria 27/08/2026, achado M6.)
+    papel = payload.get("papel") or atual["papel"]
+    empresa_id = payload["empresa_id"] if "empresa_id" in payload else atual["empresa_id"]
+    # `_como_bool` e não `bool(...)`: com `bool`, a string "false" vinda de um form vira
+    # True — o oposto do que quem enviou pediu.
+    ativo = _como_bool(payload.get("ativo"), atual["ativo"])
     senha = payload.get("senha") or ""
 
     if papel not in _PAPEIS_VALIDOS:
@@ -200,7 +223,7 @@ def atualizar(id_: int, payload: dict, request: Request):
     if papel == "cliente":
         if not empresa_id:
             raise HTTPException(400, "empresa_id é obrigatório para papel 'cliente'")
-        if not banco.empresas_obter(int(empresa_id)):
+        if not banco.empresas_obter(deps.inteiro_ou_400(empresa_id, 'empresa_id')):
             raise HTTPException(400, f"Empresa {empresa_id} não encontrada")
     if senha:
         erro = auth_mod.senha_fraca(senha)

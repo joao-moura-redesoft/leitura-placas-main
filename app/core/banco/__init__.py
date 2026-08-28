@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from ._base import (
     caminho,
+    inicio_do_dia_local,
     conexao,
     cursor,
     definir_caminho,
@@ -27,12 +28,15 @@ from ._esquema import inicializar
 from ._deteccoes import (
     ORIGENS_FILTRO,
     atualizar_deteccao,
+    contagem_com_imagem,
     contar_deteccoes_placa,
     deteccoes_e_chamadas_antigas,
+    imagens_excedentes,
     listar_deteccoes,
     listas_buscar,
     listas_inserir,
     listas_listar,
+    listas_obter,
     listas_remover,
     registrar_deteccao,
     remover_deteccao,
@@ -115,7 +119,7 @@ from ._auditoria import (
     auditoria_listar,
     auditoria_registrar,
     reset_token_criar,
-    reset_token_marcar_usado,
+    reset_token_consumir,
     reset_token_resolver,
     reset_tokens_limpar_expirados,
 )

@@ -300,6 +300,39 @@
   </div>
 
   <div class="card">
+    <h2 style="margin-top:0;">Modo de captura rápida</h2>
+    <p style="margin-top:0;color:#64748b;font-size:.85rem">
+      Perfil opcional que o sistema do posto aciona por chamada, com
+      <code>?rapido=1</code> em <code>/api/leitura</code>. Ele responde em poucos segundos
+      em vez de dezenas, usando os mesmos modelos do stream ao vivo: uma foto, sem
+      varredura em janelas e sem o reforço de OCR para placa borrada. <strong>Lê menos</strong>
+      — placa borrada e moto de longe tendem a não sair — e por isso é escolha de quem
+      chama, não o padrão. A concordância mínima acima continua valendo igual nos dois
+      perfis: o que muda é a chance de a leitura sair "a conferir".
+    </p>
+    <div class="grid-form">
+      <label>Permitir o modo rápido <span class="help" data-tip="Desligar faz o servidor ignorar o parâmetro `rapido=1` e rodar a leitura completa, avisando quem chamou. É o interruptor para um posto onde o perfil leve se mostrou ruim demais, sem precisar mexer no sistema do posto.">?</span>
+        <select name="rapido_ativo">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Timeout do modo rápido (s) <span class="help" data-tip="Tempo máximo do loop quando a chamada pede o modo rápido. Recomendado: 5.">?</span>
+        <input type="number" step="0.5" min="1" max="60" name="rapido_timeout_seg">
+      </label>
+      <label>Máximo de fotos (rápido) <span class="help" data-tip="Limite de fotos no modo rápido. Duas, e não uma: é a segunda que permite o loop parar por concordância em vez de por tempo esgotado. Recomendado: 2.">?</span>
+        <input type="number" name="rapido_max_tentativas" min="1" max="10">
+      </label>
+      <label>Fotos mínimas (rápido) <span class="help" data-tip="Mínimo de fotos antes de o modo rápido poder parar. Recomendado: 1.">?</span>
+        <input type="number" name="rapido_snapshots_votacao" min="1" max="5">
+      </label>
+      <label>Espera pelo 1º frame (s) <span class="help" data-tip="Quanto esperar a câmera ao vivo publicar um quadro antes de desistir. É a maior economia do modo: no perfil completo são 20 segundos, e essa espera acontece ANTES do loop, fora do timeout. Recomendado: 2.">?</span>
+        <input type="number" step="0.5" min="0.5" max="30" name="rapido_espera_frame_seg">
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
     <h2 style="margin-top:0;">Filtros e Validação</h2>
     <div class="grid-form">
       <label>Frames consenso <span class="help" data-tip="Leituras idênticas consecutivas necessárias para registrar uma placa. Aumentar reduz falsos positivos mas atrasa o registro. Recomendado: 3.">?</span>
@@ -420,10 +453,16 @@
 <div class="tab-pane" id="tab-saidas">
 
   <div class="card">
-    <h2 style="margin-top:0;">Snapshot</h2>
+    <h2 style="margin-top:0;">Snapshot e retenção de imagens</h2>
     <div class="grid-form">
-      <label>Salvar snapshot <span class="help" data-tip="Grava uma imagem JPEG do recorte da placa a cada detecção confirmada. Arquivos salvos em static/snapshots/ com nome TIMESTAMP_PLACA.jpg.">?</span>
+      <label>Salvar snapshot <span class="help" data-tip="Grava uma imagem JPEG do recorte da placa a cada detecção confirmada. Arquivos salvos em static/snapshots/ com nome TIMESTAMP_PLACA.jpg. Custa cerca de 2,6 KB por leitura.">?</span>
         <select name="salvar_snapshot">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Salvar quadro inteiro <span class="help" data-tip="Guarda também a foto do quadro inteiro da câmera, com a placa marcada — permite conferir depois se pegou o veículo certo e se a área do bico está bem posicionada. É o MAIOR consumidor de disco do sistema: cerca de 376 KB por leitura, 145x o recorte da placa. Desligue em produção se o espaço importar mais que a conferência visual.">?</span>
+        <select name="salvar_frame_deteccao">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
         </select>
@@ -431,7 +470,18 @@
       <label>Qualidade JPEG <span class="help" data-tip="Qualidade da imagem snapshot (10 = mínima, 100 = máxima). Valores entre 75 e 85 oferecem boa legibilidade com arquivo menor.">?</span>
         <input type="number" name="snapshot_qualidade" min="10" max="100">
       </label>
+      <label>Leituras com foto <span class="help" data-tip="Quantas leituras recentes continuam guardando imagem. Ao passar do teto, a mais antiga perde as fotos e a LINHA CONTINUA no histórico — placa, hora, bico e confiança seguem disponíveis, só a coluna de imagem fica vazia. Fotos já classificadas em Testes nunca são apagadas. 0 = sem teto. Referência: 2000 leituras ocupam ~760 MB com o quadro inteiro ligado, ~5 MB sem ele.">?</span>
+        <input type="number" name="retencao_max_imagens" min="0" step="100">
+      </label>
+      <label>Dias de retenção <span class="help" data-tip="Dias que uma leitura e uma chamada do roteador ficam guardadas antes de serem apagadas POR INTEIRO (linha e imagens). É a política de privacidade — cada posto pode ter prazo próprio em Empresas. 0 = nunca apaga.">?</span>
+        <input type="number" name="retencao_dias" min="0">
+      </label>
     </div>
+    <p style="margin:10px 0 0;color:#64748b;font-size:.85rem">
+      São duas políticas diferentes: <strong>dias de retenção</strong> apaga a leitura inteira
+      (privacidade); <strong>leituras com foto</strong> apaga só a imagem e preserva o
+      histórico (disco). A imagem é quase todo o custo — a linha ocupa ~200 bytes.
+    </p>
   </div>
 
   <div class="card">
@@ -1057,12 +1107,15 @@ async function salvar() {
       return;
     }
     _iniciarPollingInstalacao();
-    // Devolve o campo de token ao estado "mascarado" em que ele carrega. Sem isto o valor
-    // digitado continua na tela depois de salvo, e o aviso "salve antes de consultar o
-    // saldo" (que usa justamente "campo preenchido = digitação não salva" como sinal)
-    // passaria a mentir. Também reavalia o indicador de token configurado.
-    const campoTokenApiPlacas = form.querySelector('[name="apiplacas_token"]');
-    if (campoTokenApiPlacas) campoTokenApiPlacas.value = '';
+    // Devolve TODOS os campos sensíveis (token, senhas, chave) ao estado mascarado —
+    // `GET /api/config` agora devolve a máscara de verdade (achado A7), então recarregar
+    // a tela inteira é o que repõe cada um no estado certo (mascarado se continua
+    // configurado, vazio se acabou de ser limpo de propósito), em vez do reset manual de
+    // UM campo que já ficava errado assim que outro segredo mudasse de estado. Sem isto
+    // o valor digitado continuaria na tela depois de salvo, e o aviso "salve antes de
+    // consultar o saldo" (que usa "campo preenchido = digitação não salva" como sinal)
+    // passaria a mentir.
+    await carregar();
     carregarUsoApiPlacas();
     if (json.pipeline_reiniciado) {
       statusEl.textContent = 'Salvo e pipeline reiniciado com sucesso.';

@@ -4,6 +4,7 @@ import logging
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -13,11 +14,14 @@ from app.core import banco
 from app.integracoes import apiplacas
 from app.core import config
 from app.core import estado
+from app.core import rotulos
+from app.operacao import retencao as ret_mod
 from app.operacao import supervisor as sv
 from app.visao import camera as camera_mod
 from app.visao import leitura
 from app.visao import pipeline
 from app.web import deps
+from app.web import redacao
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +33,14 @@ def _iniciar_camera_bg(camera_db_id: int, cam_cfg: dict) -> None:
         pipeline.iniciar_camera(camera_db_id, cam_cfg)
     except Exception as e:
         log.error("Falha ao iniciar câmera %d: %s", camera_db_id, e)
+
+
+def _iniciar_coletor_bg(cfg: dict) -> None:
+    try:
+        from app.visao import captura_dataset as cap_mod
+        cap_mod.iniciar_coletor(cfg)
+    except Exception as e:
+        log.error("Falha ao aplicar a nova config no coletor de dataset: %s", e)
 
 
 def _empresa_efetiva(request: Request, empresa_id: int | None) -> int | None:
@@ -46,7 +58,7 @@ def listar_deteccoes(
     desde: str | None = None,
     ate: str | None = None,
     limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=200_000),
     empresa_id: int | None = None,
     bico_id: int | None = None,
     incluir_testes: bool = False,
@@ -89,8 +101,27 @@ def chamadas_resumo(request: Request, horas: int = Query(24, ge=1, le=720)):
 
 @router.delete("/deteccoes/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def remover_deteccao(id_: int):
-    if not banco.remover_deteccao(id_):
+    # `is None` e não `if not`: a lista de arquivos vem VAZIA quando a detecção existia mas
+    # não tinha foto (snapshot desligado, ou o teto de contagem já a tirou), e `not []` é
+    # verdadeiro — com `if not` essa remoção legítima virava 404 depois de já ter apagado
+    # a linha.
+    arquivos = banco.remover_deteccao(id_)
+    if arquivos is None:
         raise HTTPException(404, "Detecção não encontrada")
+    # Mesma proteção que `_purgar_por_contagem` (retencao.py) já aplica em lote: um
+    # snapshot também rotulado em testes/dataset.json não pode ser apagado — a pasta é
+    # gitignored e não tem cópia. `apagar_orfaos` não checa rótulo por padrão de
+    # propósito (só é seguro para a absorção do pipeline, com janela curta) — aqui é
+    # remoção manual de uma linha do histórico, sem essa janela de segurança.
+    intocaveis = rotulos.protegidos()
+    if intocaveis is None:
+        log.warning("Remoção da detecção %d: dataset ilegível — snapshots preservados", id_)
+        apagaveis: list[str] = []
+    else:
+        apagaveis = [a for a in arquivos if Path(a).name not in intocaveis]
+    # Sem isto o JPEG ficava em disco para sempre: nenhuma limpeza automática o alcança
+    # depois, porque todas partem do banco e a linha acabou de sumir.
+    ret_mod.apagar_orfaos(apagaveis)
     return {"removido": True}
 
 
@@ -98,10 +129,13 @@ def remover_deteccao(id_: int):
 def stats():
     cfg = config.carregar()
     return {
-        **banco.stats(),
-        "fps": estado.fps_atual,
+        **banco.stats(fuso=cfg.get("fuso_horario", "America/Sao_Paulo")),
+        "fps": estado.fps_atual(),
         "uptime_seg": estado.uptime_segundos(),
-        "pipeline": estado.pipeline_rodando,
+        "pipeline": estado.pipeline_rodando(),
+        # Por câmera, além do agregado: com várias câmeras, um booleano só não diz qual
+        # parou — e era o que a tela mostrava (achado M9).
+        "por_camera": estado.cameras_no_ar(),
         "deteccao_automatica": cfg.get("deteccao_automatica", "sim").lower() in ("sim", "true", "1"),
         "streaming_modo": cfg.get("streaming_modo", "mjpeg"),
     }
@@ -125,7 +159,7 @@ def limpar_logs():
 @router.get("/auditoria", dependencies=[Depends(deps.exigir_admin)])
 def auditoria(
     limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=200_000),
     acao: str | None = None,
     usuario_id: int | None = None,
 ):
@@ -157,7 +191,7 @@ def consultar_placa(placa: str, request: Request):
     # aparecia com total "50", nunca o número real.
     total = banco.contar_deteccoes_placa(placa, empresa_id=escopo)
 
-    lista_entry = banco.listas_buscar(placa)
+    lista_entry = banco.listas_buscar(placa, empresa_id=escopo)
 
     ultima = deteccoes[0] if deteccoes else None
     if ultima and ultima.get("bbox") and isinstance(ultima["bbox"], str):
@@ -180,26 +214,44 @@ def consultar_placa(placa: str, request: Request):
 
 
 @router.get("/listas")
-def listas_listar(tipo: str | None = None):
-    return banco.listas_listar(tipo=tipo)
+def listas_listar(request: Request, tipo: str | None = None,
+                  limit: int = Query(1000, ge=1, le=5000)):
+    """Listas branca/negra visíveis para quem pede.
+
+    Escopada por posto: um `cliente` vê as entradas GLOBAIS (do sistema) mais as do próprio
+    posto — nunca as de outro. Antes devolvia a tabela inteira a qualquer papel, com a
+    descrição em texto livre junto (auditoria 27/08/2026, achado A3).
+    """
+    return banco.listas_listar(tipo=tipo, empresa_id=deps.empresa_do_usuario(request),
+                               limit=limit)
 
 
 @router.post("/listas", dependencies=[Depends(deps.exigir_admin)])
-def listas_inserir(payload: dict):
+def listas_inserir(payload: dict, request: Request):
     placa = (payload.get("placa") or "").upper().strip()
     tipo = payload.get("tipo")
     descricao = payload.get("descricao", "")
     if not placa or tipo not in ("branca", "negra"):
         raise HTTPException(400, "placa e tipo (branca/negra) obrigatórios")
+    # Admin de escopo cadastra para o próprio posto; admin global cadastra entrada GLOBAL
+    # (empresa_id None), que é como todas as linhas antigas se comportam.
     try:
-        id_ = banco.listas_inserir(placa, tipo, descricao)
+        id_ = banco.listas_inserir(placa, tipo, descricao,
+                                   empresa_id=deps.empresa_do_usuario(request))
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"Placa {placa} já cadastrada")
     return {"id": id_}
 
 
 @router.delete("/listas/{id_}", dependencies=[Depends(deps.exigir_admin)])
-def listas_remover(id_: int):
+def listas_remover(id_: int, request: Request):
+    # Escopo também na remoção: sem isto, um admin de posto apagaria entrada de outro só
+    # sabendo o id (inteiro sequencial).
+    escopo = deps.empresa_do_usuario(request)
+    if escopo is not None:
+        alvo = banco.listas_obter(id_)
+        if alvo is None or alvo.get("empresa_id") != escopo:
+            raise HTTPException(404, "Não encontrado")
     if not banco.listas_remover(id_):
         raise HTTPException(404, "Não encontrado")
     return {"removido": True}
@@ -232,17 +284,19 @@ def healthz():
 CHAVES_CONFIG = set(config.PADROES.keys())
 
 # Campos sensíveis — mascarados ao retornar (mas permitidos no POST).
+#
+# Usa a mesma convenção de `redacao.MASCARA`/`descartar_mascara` que `/api/cameras` e
+# `/api/empresas` já usam, em vez de mascarar como "" (que era indistinguível de "nunca
+# configurado" e tornava IMPOSSÍVEL limpar um destes 4 campos de propósito pela tela —
+# a ambiguidade que motivou o endpoint paralelo `/api/apiplacas/uso`, abaixo). (Achado
+# A7, review de 28/08/2026.)
 CHAVES_SENSIVEIS = {"intelbras_senha", "smtp_senha", "api_key", "apiplacas_token"}
 
 
 @router.get("/config", dependencies=[Depends(deps.exigir_admin)])
 def config_obter():
-    cfg = config.carregar()
-    saida = {}
-    for k, v in cfg.items():
-        if k not in CHAVES_CONFIG:
-            continue
-        saida[k] = "" if k in CHAVES_SENSIVEIS and v else v
+    cfg = redacao.redigir(config.carregar(), tuple(CHAVES_SENSIVEIS))
+    saida = {k: v for k, v in cfg.items() if k in CHAVES_CONFIG}
     saida["_padroes"] = config.PADROES
     return saida
 
@@ -283,7 +337,9 @@ def camera_teste(payload: dict):
 
 @router.get("/cameras")
 def cameras_listar(request: Request, empresa_id: int | None = None):
-    return banco.cameras_listar(empresa_id=_empresa_efetiva(request, empresa_id))
+    # `redacao.cameras` tira a senha do DVR: esta rota é aberta a `cliente` e `operador`
+    # de propósito (é a tela de câmeras do posto), e o `SELECT *` trazia a credencial junto.
+    return redacao.cameras(banco.cameras_listar(empresa_id=_empresa_efetiva(request, empresa_id)))
 
 
 def _validar_camera(payload: dict) -> dict:
@@ -291,13 +347,16 @@ def _validar_camera(payload: dict) -> dict:
     `local` diz onde ela está fisicamente instalada — sem o vínculo, num servidor central
     a lista de câmeras vira uma lista global sem dono.
     """
+    # Campo que voltou mascarado = campo que a tela não mexeu: descarta para não gravar
+    # "********" por cima do segredo real. Ver `redacao.descartar_mascara`.
+    payload = redacao.descartar_mascara(payload)
     nome = (payload.get("nome") or "").strip()
     if not nome:
         raise HTTPException(400, "nome é obrigatório")
     empresa_id = payload.get("empresa_id")
     if not empresa_id:
         raise HTTPException(400, "empresa_id é obrigatório — toda câmera pertence a um posto")
-    if not banco.empresas_obter(int(empresa_id)):
+    if not banco.empresas_obter(deps.inteiro_ou_400(empresa_id, 'empresa_id')):
         raise HTTPException(400, f"Empresa {empresa_id} não encontrada")
     return {**payload, "nome": nome, "local": (payload.get("local") or "").strip()}
 
@@ -308,7 +367,10 @@ def cameras_inserir(payload: dict):
     try:
         id_ = banco.cameras_inserir(payload)
     except Exception as e:
-        raise HTTPException(500, str(e))
+        # A mensagem interna da exceção (texto do SQLite, caminho de arquivo) fica no
+        # LOG, não na resposta ao cliente. (Auditoria 27/08/2026.)
+        log.error("Falha em câmera: %s" % e, exc_info=True)
+        raise HTTPException(500, "Operação falhou — veja o log do servidor.")
     # Inicia pipeline em background sem bloquear a resposta
     cam = banco.cameras_obter(id_)
     if cam and cam["ativo"]:
@@ -326,9 +388,15 @@ def cameras_atualizar(id_: int, payload: dict):
     try:
         ok = banco.cameras_atualizar(id_, payload)
     except Exception as e:
-        raise HTTPException(500, str(e))
+        # A mensagem interna da exceção (texto do SQLite, caminho de arquivo) fica no
+        # LOG, não na resposta ao cliente. (Auditoria 27/08/2026.)
+        log.error("Falha em câmera: %s" % e, exc_info=True)
+        raise HTTPException(500, "Operação falhou — veja o log do servidor.")
     if not ok:
         raise HTTPException(404, "Câmera não encontrada")
+    # empresa_id pode ter mudado — o HLS não pode continuar servindo pela permissão velha
+    # até o cache expirar sozinho (não expira: só invalidação explícita, ver deps.py).
+    deps.descartar_cache_camera(id_)
     # Reinicia o pipeline com a nova configuração. O cadastro JÁ foi gravado, mas o
     # pipeline pode continuar rodando a config antiga: `reiniciar_camera`/`parar_camera`
     # devolvem False quando a thread anterior não confirmou morte, e nesse caso elas se
@@ -362,6 +430,7 @@ def cameras_remover(id_: int):
         # A checagem acima e o DELETE não são atômicos — se um bico foi cadastrado
         # nessa câmera bem no meio da janela entre as duas, o RESTRICT dispara aqui.
         raise HTTPException(409, "Câmera passou a estar em uso por um bico durante a remoção — tente novamente.")
+    deps.descartar_cache_camera(id_)
     # A linha já saiu do banco; o pipeline pode não ter parado. `parar_camera` devolve
     # False quando a thread não confirmou morte — e nesse caso ela NÃO desregistra a
     # instância nem fecha a câmera, de propósito (senão uma próxima chamada acharia a
@@ -371,6 +440,28 @@ def cameras_remover(id_: int):
     # `_tentar_reiniciar`), então aqui basta ser honesto sobre o que ficou pendente.
     liberado = pipeline.parar_camera(id_)
     return {"removido": True, "pipeline_liberado": liberado}
+
+
+@router.get("/cameras/{id_}/credenciais", dependencies=[Depends(deps.exigir_admin)])
+def cameras_credenciais(id_: int, request: Request):
+    """As credenciais REAIS da câmera, para o admin que vai editá-las.
+
+    Existe porque `/api/cameras` e `/api/cameras/{id}/detalhe` passaram a redigir a senha
+    do DVR (auditoria 27/08, K3) — e o formulário de edição precisa de algum caminho para
+    preencher o campo. A diferença é que este tem gate de admin explícito e devolve SÓ os
+    segredos, então nunca vira a rota conveniente que alguém usa por engano numa listagem.
+
+    Continua valendo a checagem por posto: admin de escopo não abre credencial de outro.
+    """
+    cam = banco.cameras_obter(id_)
+    if not cam:
+        raise HTTPException(404, "Câmera não encontrada")
+    deps.checar_acesso_empresa(request, cam.get("empresa_id"))
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(
+        usuario_id=quem_id, usuario_nome=quem_nome, acao="camera_credenciais_lidas",
+        alvo_tipo="camera", alvo_id=id_, detalhe=f"nome={cam.get('nome', '?')}")
+    return {campo: cam.get(campo, "") for campo in redacao.SEGREDOS_CAMERA}
 
 
 @router.get("/cameras/{id_}/detalhe")
@@ -383,6 +474,10 @@ def cameras_detalhe(id_: int, request: Request):
 
     emp = banco.empresas_obter(cam["empresa_id"]) if cam.get("empresa_id") else None
     ent = banco.entidades_obter(emp["entidade_id"]) if emp else None
+    # A partir daqui as duas linhas viram JSON: redige antes de qualquer uso na resposta.
+    # `cam` cru já foi consumido acima para a checagem de acesso, que precisa do empresa_id.
+    cam = redacao.camera(cam)
+    emp = redacao.empresa(emp)
 
     automacoes = {a["id"]: a for a in banco.automacoes_listar()}
     bicos = []
@@ -448,15 +543,20 @@ def cameras_snapshot(id_: int, request: Request):
     """
     import cv2
 
-    cam_check = banco.cameras_obter(id_)
-    if cam_check:
-        deps.checar_acesso_empresa(request, cam_check.get("empresa_id"))
+    # Uma consulta só, e o 404 ANTES de qualquer leitura de `estado`. O `if cam_check:`
+    # anterior deixava a checagem de acesso ser PULADA quando a linha não existia — e esse
+    # estado é alcançável: quando `Pipeline.parar()` não confirma, a thread zumbi segue
+    # publicando em `estado.frames_cameras` e o `pop` nunca roda, enquanto
+    # `DELETE /api/cameras/{id}` já respondeu `{"removido": true, "pipeline_liberado": false}`
+    # com a linha apagada. Resultado: apagada a câmera 9 do posto 7, QUALQUER usuário logado
+    # recebia o JPEG ao vivo daquele pátio. (Auditoria 27/08/2026, achado K4.)
+    cam = banco.cameras_obter(id_)
+    if not cam:
+        raise HTTPException(404, "Câmera não encontrada")
+    deps.checar_acesso_empresa(request, cam.get("empresa_id"))
 
     frame = estado.obter_frame_camera(id_)
     if frame is None:
-        cam = banco.cameras_obter(id_)
-        if not cam:
-            raise HTTPException(404, "Câmera não encontrada")
         cfg = config.carregar()
         with leitura.lock_camera(id_):     # respeita o limite de 1 conexão RTSP por câmera
             frame = camera_mod.capturar_frame_unico(
@@ -661,10 +761,15 @@ def config_salvar(payload: dict, request: Request):
     if invalidas:
         raise HTTPException(400, f"chaves desconhecidas: {invalidas}")
 
+    # Campo sensível que voltou MASCARADO = a tela não mexeu — descarta antes de mesclar,
+    # para não gravar "********" por cima do segredo real (mesmo mecanismo de
+    # /api/cameras). "" deixa de significar "preservar" e passa a significar "limpar de
+    # propósito", igual a rtsp_url_custom em /api/cameras — antes desta mudança era
+    # IMPOSSÍVEL limpar um destes 4 campos pela tela. (Achado A7.)
+    payload = redacao.descartar_mascara(payload, tuple(CHAVES_SENSIVEIS))
+
     novo = dict(atual)
     for k, v in payload.items():
-        if k in CHAVES_SENSIVEIS and (v is None or v == ""):
-            continue
         novo[k] = str(v) if v is not None else ""
 
     # Filtra só as chaves conhecidas (descarta lixo herdado, ex.: _padroes).
@@ -688,6 +793,33 @@ def config_salvar(payload: dict, request: Request):
         log.error("Falha ao reiniciar pipeline com nova config: %s", e)
 
     sv.supervisor.atualizar_cfg(novo)
+
+    # Coletor de dataset: sem isto, LIGAR `captura_dataset` pela tela era no-op até
+    # reiniciar o processo — justamente no modo `deteccao_automatica=nao`, onde ele é o
+    # ÚNICO mecanismo de coleta. Desligar já funcionava (o laço relê a config a cada volta),
+    # e essa assimetria tornava o bug ainda mais confuso. `iniciar_coletor` é idempotente:
+    # ele para o que estiver rodando antes de subir, então salvar dez vezes não empilha dez
+    # coletores por câmera. (Auditoria 27/08/2026, achado A10.)
+    #
+    # EM THREAD: `iniciar_coletor` chama `parar_coletor()` primeiro, que faz `join`
+    # SEQUENCIAL de uma thread por câmera (até 5s cada) — síncrono aqui, o pior caso
+    # (N câmeras × 5s) travava a resposta HTTP desta rota. Mesmo padrão de
+    # `_iniciar_camera_bg`, que já sobe o pipeline em background por este motivo.
+    # (Achado A6, review de 28/08/2026.)
+    threading.Thread(target=_iniciar_coletor_bg, args=(novo,), daemon=True,
+                     name="alpr-coletor-cfg").start()
+
+    # Mesma classe de problema, mesmo remédio: `streaming_modo` também só era lido no boot,
+    # então trocar MJPEG↔HLS no painel não fazia nada até reiniciar.
+    if "streaming_modo" in mudadas:
+        try:
+            from app.streaming import hls_encoder as _hls
+            _hls.hls_manager.parar()
+            if novo.get("streaming_modo", "mjpeg") == "hls":
+                if not _hls.hls_manager.iniciar(banco.cameras_listar()):
+                    log.warning("HLS não subiu — a tela cai para MJPEG")
+        except Exception as e:
+            log.error("Falha ao aplicar streaming_modo: %s", e)
 
     # Trocar o token tem de liberar o disjuntor da apiplacas na hora. Ele pausa por 15min
     # (x4 no caso de token inválido) justamente para não insistir no que não pode dar

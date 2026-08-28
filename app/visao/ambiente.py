@@ -264,7 +264,13 @@ class AjustadorAmbiente:
             return frame
         try:
             self._frames += 1
-            if self._lut is None or self._frames % self.recalc_n == 1:
+            # `(n - 1) % k == 0` e não `n % k == 1`: com `recalc_n == 1` o resto de
+            # `% 1` é SEMPRE 0, nunca 1, então o recálculo nunca acontecia e só o primeiro
+            # frame (via `_lut is None`) era classificado. Quem configurava 1 esperando o
+            # modo mais responsivo recebia o oposto: subia às 14h com sol forte e ficava com
+            # aquela LUT a noite inteira, com o painel exibindo "sol_forte" de madrugada.
+            # (Auditoria 27/08/2026, achado A8.)
+            if self._lut is None or (self._frames - 1) % self.recalc_n == 0:
                 self._recalcular(frame)
 
             trabalho = frame

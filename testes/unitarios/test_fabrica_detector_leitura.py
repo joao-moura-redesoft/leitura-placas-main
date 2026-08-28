@@ -11,7 +11,7 @@ import pytest
 
 from app.visao import detector as det_mod
 from app.visao.detector import (BuscaEmTiles, DetectorDoisEstagios, OpenImageDetector,
-                                obter_detector_leitura)
+                                obter_detector_leitura, obter_detector_rapido)
 
 BASE = {
     "detector_backend": "open_image_models",
@@ -52,6 +52,8 @@ def _sem_cache_nem_modelo(monkeypatch):
 
     monkeypatch.setattr(det_mod, "_detector_leitura", None, raising=False)
     monkeypatch.setattr(det_mod, "_detector_leitura_id", None, raising=False)
+    monkeypatch.setattr(det_mod, "_detector_rapido", None, raising=False)
+    monkeypatch.setattr(det_mod, "_detector_rapido_id", None, raising=False)
     yield
 
 
@@ -153,3 +155,65 @@ class TestCarregarEIdempotente:
         n = len(_construcoes)
         d.carregar()
         assert len(_construcoes) == n, "segunda chamada reconstruiu o modelo"
+
+
+class TestPerfilRapido:
+    """O detector do perfil rapido (`GET /api/leitura?rapido=1`).
+
+    Ele existe em slots PROPRIOS justamente porque a alternativa obvia — passar um `cfg`
+    alterado para `obter_detector_leitura` — despejaria a instancia de alta precisao e a
+    recarregaria na chamada completa seguinte. Esse thrashing custa dezenas de segundos
+    por alternancia, exatamente o que o modo rapido existe para evitar, e e silencioso:
+    a leitura continua correta, so fica lenta.
+    """
+
+    def test_nao_despeja_o_detector_completo(self):
+        completo = obter_detector_leitura(dict(BASE))
+        obter_detector_rapido(dict(BASE))
+        assert obter_detector_leitura(dict(BASE)) is completo,             "o perfil rapido despejou o detector completo — alternar os dois recarrega modelo"
+
+    def test_nao_e_despejado_pelo_completo(self):
+        rapido = obter_detector_rapido(dict(BASE))
+        obter_detector_leitura(dict(BASE))
+        assert obter_detector_rapido(dict(BASE)) is rapido
+
+    def test_alternar_nao_constroi_de_novo(self):
+        """A prova direta: quantos modelos foram CONSTRUIDOS ao alternar os perfis."""
+        obter_detector_leitura(dict(BASE))
+        obter_detector_rapido(dict(BASE))
+        antes = len(_construcoes)
+        for _ in range(3):
+            obter_detector_leitura(dict(BASE))
+            obter_detector_rapido(dict(BASE))
+        assert len(_construcoes) == antes,             f"alternar perfis reconstruiu modelo {len(_construcoes) - antes}x"
+
+    def test_sao_instancias_diferentes(self):
+        """Compartilhar a instancia significaria compartilhar tambem o ponto de operacao —
+        e o perfil rapido deixaria de ser rapido."""
+        assert obter_detector_leitura(dict(BASE)) is not obter_detector_rapido(dict(BASE))
+
+    def test_usa_o_modelo_leve_e_sem_varredura_em_janelas(self):
+        """As duas economias que definem o perfil: modelo do stream ao vivo (`oim_modelo`,
+        nao `oim_modelo_leitura`) e nenhuma `BuscaEmTiles` — a varredura custa ate 6
+        passadas extras de detector por foto."""
+        _construcoes.clear()
+        d = obter_detector_rapido(dict(BASE))
+        assert not isinstance(d, BuscaEmTiles)
+        assert BASE["oim_modelo"] in _construcoes
+        assert BASE["oim_modelo_leitura"] not in _construcoes
+
+    @pytest.mark.parametrize("chave,novo", [
+        ("oim_modelo", "outro"),
+        ("conf_threshold", "0.15"),
+        ("veiculo_conf", "0.40"),
+        ("veiculo_max_veiculos", "12"),
+        ("veiculo_dois_estagios_live", "nao"),
+    ])
+    def test_mudar_a_chave_reconstroi(self, chave, novo):
+        """Mesma exigencia da fabrica completa: toda config que a construcao CONGELA tem de
+        entrar na identidade, senao o ajuste salvo nunca chega ao perfil rapido."""
+        cfg = {**BASE, "veiculo_dois_estagios_live": "sim"}
+        assert obter_detector_rapido(cfg) is not obter_detector_rapido({**cfg, chave: novo}),             f"mexer em {chave} nao chegou ao detector rapido"
+
+    def test_config_igual_reusa_a_instancia(self):
+        assert obter_detector_rapido(dict(BASE)) is obter_detector_rapido(dict(BASE))

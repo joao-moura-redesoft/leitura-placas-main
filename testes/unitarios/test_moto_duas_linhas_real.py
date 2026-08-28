@@ -12,10 +12,16 @@ e emitiu `HDX2477`; e emitiu `OSL2855`, string que engine NENHUM produziu, com a
 Este é o teste de aceitação da mudança para ensemble + fusão por caractere. Ele roda os
 modelos de verdade, então é lento e depende dos `.onnx` em cache — por isso o `skipif`.
 
-Os recortes vivem em `app/web/static/snapshots/`, que é gitignored de propósito (contém
-placa e pessoas de clientes reais). Mesmo padrão de `testes/avalia_cenas_reais.py`: o teste
-lê do disco local e nunca copia nada para dentro do repositório. Em máquina que não tem os
-arquivos ele é pulado, e não falha.
+Os recortes vivem em `testes/reais/`, gitignored de propósito (contém placa e veículo de
+clientes reais). Mesmo padrão de `testes/avalia_cenas_reais.py`: o teste lê do disco local
+e nunca copia nada para dentro do repositório. Em máquina que não tem os arquivos ele é
+pulado, e não falha.
+
+`testes/reais/` e não `app/web/static/snapshots/`, que é onde eles nasceram: aquela pasta
+passou a ter teto de contagem (`retencao_max_imagens`), e a purga apagaria a entrada deste
+teste. O `skipif` abaixo é o que torna isso perigoso — o teste não ficaria vermelho, ele
+sumiria em silêncio, e a regressão de moto voltaria a passar despercebida. Aqui os arquivos
+estão fora do alcance da purga por construção, não por lista de exceção.
 """
 from __future__ import annotations
 
@@ -23,14 +29,23 @@ from pathlib import Path
 
 import pytest
 
-SNAPSHOTS = Path("app/web/static/snapshots")
+REAIS = Path("testes/reais")
+# Fallback para o lugar antigo: numa máquina que ainda não moveu os arquivos o teste
+# continua rodando em vez de sumir. `testes/reais/` tem precedência — é o único dos dois
+# que a purga não alcança.
+_LEGADO = Path("app/web/static/snapshots")
 
 CASOS = [
     ("20260824T205314_HDX2477.jpg", "RLX2A77", "Mercosul de moto (faixa azul)"),
     ("20260824T205425_OSL2855.jpg", "OSL2659", "antiga de moto (cinza metalica)"),
 ]
 
-_faltando = [n for n, _, _ in CASOS if not (SNAPSHOTS / n).exists()]
+
+def caminho(nome: str) -> Path:
+    return REAIS / nome if (REAIS / nome).exists() else _LEGADO / nome
+
+
+_faltando = [n for n, _, _ in CASOS if not caminho(n).exists()]
 pytestmark = pytest.mark.skipif(
     bool(_faltando),
     reason="recortes reais ausentes (gitignored): %s" % ", ".join(_faltando),
@@ -58,7 +73,7 @@ def ocr():
 def test_le_a_placa_de_moto_de_duas_linhas(ocr, arquivo, esperada, descricao):
     import cv2
 
-    crop = cv2.imread(str(SNAPSHOTS / arquivo))
+    crop = cv2.imread(str(caminho(arquivo)))
     assert crop is not None, "recorte ilegível: %s" % arquivo
 
     d = ocr.ler_detalhado(crop)
@@ -80,7 +95,7 @@ def test_a_fusao_e_o_que_acerta_e_nao_um_modelo_sortudo(ocr):
 
     houve_discordancia = False
     for arquivo, esperada, _ in CASOS:
-        crop = cv2.imread(str(SNAPSHOTS / arquivo))
+        crop = cv2.imread(str(caminho(arquivo)))
         d = ocr.ler_detalhado(crop)
         lidas = {x["placa"] for x in d["detalhes"] if x["placa"]}
         if len(lidas) > 1:

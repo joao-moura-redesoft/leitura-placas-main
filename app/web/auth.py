@@ -16,12 +16,26 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/web/templates")
 
 
-def _cookie_sessao(resp, token: str, cfg: dict) -> None:
-    """`secure=True` só quando `cookie_secure=sim` (config) — servidor atrás de TLS.
-    Desligado por padrão pra não quebrar o acesso local (http://localhost:14000)."""
+def _cookie_sessao(resp, token: str, cfg: dict, request=None) -> None:
+    """Marca o cookie de sessão como `Secure` sempre que a conexão for HTTPS.
+
+    Antes valia só `cookie_secure=sim`, que é `nao` por padrão — e o default existe por um
+    bom motivo (ligar sempre quebraria http://localhost:14000 no primeiro boot). O efeito
+    colateral era que uma instalação atrás de TLS, mas sem ninguém ter mexido no config,
+    servia o cookie de sessão SEM a flag. (Auditoria 27/08/2026.)
+
+    Detectar por requisição resolve os dois casos sem escolha manual: em HTTP local o
+    cookie sai sem `Secure` e o acesso continua funcionando; em HTTPS ele sai com. O
+    config vira um FORÇAR, para quem está atrás de proxy que termina TLS e encaminha em
+    HTTP puro sem `X-Forwarded-Proto`.
+    """
+    seguro = config.get_bool(cfg, "cookie_secure")
+    if not seguro and request is not None:
+        proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+        seguro = proto == "https" or request.url.scheme == "https"
     resp.set_cookie(
         "sessao", token, httponly=True, samesite="lax", max_age=86400 * 7,
-        secure=config.get_bool(cfg, "cookie_secure"),
+        secure=seguro,
     )
 
 
@@ -92,7 +106,7 @@ async def criar_admin_post(
     # Cai em /postos: é onde o trabalho começa (implantação e diagnóstico por cliente).
     # "Ao Vivo" só é útil com o pipeline contínuo, que o servidor central não usa.
     resp = RedirectResponse("/postos", status_code=303)
-    _cookie_sessao(resp, token, cfg)
+    _cookie_sessao(resp, token, cfg, request)
     return resp
 
 
@@ -139,9 +153,16 @@ async def login_post(request: Request, email: str = Form(...), senha: str = Form
         })
 
     user = banco.buscar_usuario_email(email_norm)
+    # Verifica a senha SEMPRE, mesmo sem usuário ou com conta desativada. O curto-circuito
+    # anterior (`not user or ... or verificar_senha(...)`) nunca chegava ao bcrypt nesses
+    # dois casos, e com `_BCRYPT_ROUNDS = 12` isso é ~5 ms contra ~200 ms: uma diferença de
+    # 40× visível a olho nu no DevTools, que dizia ao atacante quais e-mails existem e quais
+    # contas estão ativas. O texto da resposta já era idêntico; o oráculo estava no relógio.
+    # (Auditoria 27/08/2026, achado M7.)
+    senha_ok = auth_mod.verificar_senha(senha, user["senha"] if user else auth_mod.HASH_DUMMY)
     # `not user["ativo"]`: antes um usuário desativado (banco.usuarios_atualizar) ainda
     # conseguia logar normalmente — nada checava esse campo no fluxo de login.
-    if not user or not user["ativo"] or not auth_mod.verificar_senha(senha, user["senha"]):
+    if not user or not user["ativo"] or not senha_ok:
         tentativas.registrar_falha(email_norm, ip)
         banco.auditoria_registrar(
             usuario_id=None, usuario_nome="", acao="login_falha",
@@ -160,7 +181,7 @@ async def login_post(request: Request, email: str = Form(...), senha: str = Form
                               alvo_tipo="usuario", alvo_id=user["id"], detalhe=f"ip={ip}")
     token = auth_mod.criar_sessao(user["id"])
     resp = RedirectResponse("/postos", status_code=303)
-    _cookie_sessao(resp, token, config.carregar())
+    _cookie_sessao(resp, token, config.carregar(), request)
     return resp
 
 
@@ -191,13 +212,16 @@ async def esqueci_senha_post(request: Request, email: str = Form(...)):
             "email_configurado": False, "enviado": False, "email": email_norm,
         })
 
-    espera = tentativas.segundos_de_bloqueio(f"reset:{email_norm}", ip)
+    espera = tentativas.segundos_de_bloqueio(email_norm, ip, escopo="reset")
     if espera > 0:
         return templates.TemplateResponse(request, "esqueci_senha.html", {
             "email_configurado": True, "enviado": False, "email": email_norm,
             "erro": f"Muitos pedidos — aguarde {espera}s e tente de novo.",
         })
-    tentativas.registrar_falha(f"reset:{email_norm}", ip)
+    # Escopo próprio: este balde não pode conversar com o do login (achado A6). O nome do
+    # fluxo vai em `escopo`, e não grudado no e-mail, porque a chave de IP também precisa
+    # dele — era exatamente ela que vazava entre os dois fluxos.
+    tentativas.registrar_falha(email_norm, ip, escopo="reset")
 
     # Mesma resposta ("enviado") exista ou não a conta — não confirma e-mail
     # cadastrado (enumeration). Só envia de verdade quando a conta existe e está ativa.
@@ -246,10 +270,19 @@ async def redefinir_senha_post(token: str, request: Request,
             "token": token, "valido": True, "erro": erro,
         })
 
+    # CONSOME o token (resolve + marca usado num único UPDATE) antes de mexer na senha.
+    # Resolver e marcar em chamadas separadas deixava dois POSTs simultâneos com o mesmo
+    # token passarem os dois. A validação lá em cima continua valendo para montar a tela;
+    # esta é a que decide. (Auditoria 27/08/2026.)
+    dados_token = banco.reset_token_consumir(token)
+    if dados_token is None:
+        return templates.TemplateResponse(request, "redefinir_senha.html", {
+            "token": token, "valido": False, "erro": None,
+        })
+
     user_id = dados_token["user_id"]
     user = banco.buscar_usuario_id(user_id)
     banco.usuarios_definir_senha(user_id, auth_mod.hash_senha(senha))
-    banco.reset_token_marcar_usado(token)
     # Sessões antigas não sobrevivem a uma troca de senha por link (o cenário típico
     # é "acho que perdi acesso" — uma sessão aberta em outro lugar não deveria continuar).
     auth_mod.remover_sessoes_usuario(user_id)
@@ -262,7 +295,7 @@ async def redefinir_senha_post(token: str, request: Request,
     cfg = config.carregar()
     novo_token = auth_mod.criar_sessao(user_id)
     resp = RedirectResponse("/postos", status_code=303)
-    _cookie_sessao(resp, novo_token, cfg)
+    _cookie_sessao(resp, novo_token, cfg, request)
     return resp
 
 

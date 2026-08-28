@@ -137,6 +137,14 @@
 const EMPRESA_ID = {{ empresa_id }};
 let _d = null, _modal = null;
 
+// A URL RTSP vem mascarada quando tem credencial embutida (app/web/redacao.py). Mostrar
+// "********" na coluna Endereço não diz nada a quem opera; "URL personalizada" diz.
+function enderecoCamera(c) {
+  if (c.intelbras_host) return c.intelbras_host;
+  if (c.rtsp_url_custom === '********') return 'URL personalizada (oculta)';
+  return c.rtsp_url_custom || '—';
+}
+
 let _msgTimer = null;
 // `segundos` maior quando a mensagem CONTÉM o próximo passo (link para desenhar a área):
 // 6s é curto para ler e clicar. O timer é guardado porque, sem isso, o timeout de uma
@@ -464,7 +472,7 @@ function renderCameras() {
     return `<tr>
       <td>${esc(c.local || '—')}</td>
       <td>${esc(c.nome)}</td>
-      <td style="font-family:monospace;font-size:13px">${esc(c.intelbras_host || c.rtsp_url_custom || '—')}</td>
+      <td style="font-family:monospace;font-size:13px">${esc(enderecoCamera(c))}</td>
       <td>${bs.length ? `${bs.length}${semArea ? ` <span class="badge badge-warn">${semArea} sem área</span>` : ''}` : '—'}</td>
       <td>${c.ativo ? '<span class="badge badge-ok">Ativa</span>' : '<span class="badge badge-err">Inativa</span>'}</td>
       <td style="white-space:nowrap">
@@ -774,8 +782,9 @@ function paramsTeste() {
 }
 function mostrarUrl() {
   const q = paramsTeste();
+  // `api_key` chega mascarada (segredo); o que importa aqui é só SE existe chave.
   const chave = _d.empresa.api_key
-    ? ' (com cabeçalho X-API-Key — este posto tem chave própria)' : '';
+    ? ' (o roteador precisa mandar X-API-Key — este posto tem chave própria)' : '';
   document.getElementById('teste-url').textContent = q ? `GET /api/leitura?${q}${chave}` : '';
 }
 // Um quadro por câmera do bico, cada um rotulado com o papel e o que ela contribuiu.
@@ -876,11 +885,15 @@ async function testarLeitura() {
     res.innerHTML = `<span style="color:#94a3b8">Conectando à câmera e analisando (${s}s de até ~30s)…</span>`;
   }, 250);
   try {
-    // Postos com chave própria (empresa.api_key) exigem X-API-Key em /api/leitura —
-    // ver app/web/leitura.py:leitura_reativa. Sem isso este teste cai sempre no 404
-    // "Cadastro não encontrado no nível 'empresa'", mesmo com o cadastro certo.
-    const headers = _d.empresa.api_key ? { 'X-API-Key': _d.empresa.api_key } : {};
-    const r = await fetch('/api/leitura?' + q, { headers });
+    // SEM X-API-Key: o painel autentica por SESSÃO. `/api/leitura` aceita a sessão de
+    // quem tem acesso ao posto como alternativa à chave dele
+    // (app/web/leitura.py:_sessao_autoriza).
+    //
+    // Antes daqui saía `X-API-Key: _d.empresa.api_key`. A chave deixou de vir no JSON de
+    // /api/empresas (é segredo — app/web/redacao.py), então isso passaria a mandar a
+    // máscara e receber 404. Mandar o segredo ao navegador só para ele devolver era a
+    // parte errada; a sessão já diz quem é.
+    const r = await fetch('/api/leitura?' + q);
     const d = await r.json();
     if (!r.ok) res.innerHTML = `<span style="color:#b91c1c">✗ ${esc(d.detail || 'falha')}</span>
         ${jsonDoTeste(d, r.status)}`;

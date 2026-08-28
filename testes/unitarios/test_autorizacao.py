@@ -157,6 +157,16 @@ class TestPreviewComChaveDoPosto:
         admin.post(f"/api/empresas/{posto['empresa_id']}/api-key")
         assert self._get(posto["bico_id"], api_key="chave-errada").status_code == 401
 
+    def test_chave_errada_repetida_e_barrada_por_rate_limit(self, admin, posto):
+        """Achado A5: a chave global já tinha rate limit desde a auditoria de 27/08 — a
+        do posto, comparada dez linhas abaixo com o mesmo `compare_digest`, tinha ficado
+        sem nenhum teto de tentativas."""
+        admin.post(f"/api/empresas/{posto['empresa_id']}/api-key")
+        for _ in range(30):
+            self._get(posto["bico_id"], api_key="chave-errada")
+        r = self._get(posto["bico_id"], api_key="chave-errada")
+        assert r.status_code == 429
+
     def test_chave_de_outro_posto_nao_abre_este_bico(self, admin, posto):
         """Escopo estreito: a chave do posto A não pode abrir o preview do posto B."""
         ent_b = admin.post("/api/entidades", json={"nome": "Rede B"}).json()["id"]

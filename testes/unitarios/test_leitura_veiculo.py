@@ -311,9 +311,17 @@ class TestSaldo:
 
 class TestSegredo:
     def test_token_e_mascarado_no_get(self, cenario):
+        from app.web import redacao
         cfg = cenario.admin.get("/api/config").json()
-        assert cfg["apiplacas_token"] == "", "token pago não pode sair em texto claro"
+        assert cfg["apiplacas_token"] == redacao.MASCARA, \
+            "token pago não pode sair em texto claro"
 
-    def test_post_vazio_nao_apaga_o_token(self, cenario):
-        cenario.admin.post("/api/config", json={"apiplacas_token": ""})
+    def test_post_com_mascara_nao_apaga_o_token(self, cenario):
+        """Achado A7: a tela reenvia a MÁSCARA quando não mexeu no campo (não mais vazio)."""
+        from app.web import redacao
+        cenario.admin.post("/api/config", json={"apiplacas_token": redacao.MASCARA})
         assert config.carregar()["apiplacas_token"] == "TOKEN-SECRETO"
+
+    def test_post_vazio_agora_apaga_o_token_de_proposito(self, cenario):
+        cenario.admin.post("/api/config", json={"apiplacas_token": ""})
+        assert config.carregar()["apiplacas_token"] == ""

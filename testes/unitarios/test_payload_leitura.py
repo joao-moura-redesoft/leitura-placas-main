@@ -37,13 +37,17 @@ CHAVES_COM_PLACA = {
     #                     `confirmada` — "2 fotos" era inalcançável com o GET conseguindo
     #                     1 foto em 28 s, e por isso NADA era confirmado.
     "votos_leitura",
+    # `modo` sai nos DOIS desfechos e sempre preenchido ("completo" | "rapido"), nunca
+    # ausente: um campo que só existisse no perfil novo obrigaria o sidecar Java a tratar
+    # ausência como um terceiro estado.
+    "modo",
 }
 
 # Chaves do retorno sem placa. Conjunto DIFERENTE de propósito: sem leitura não há
 # consenso nem crop, e `bboxes_detectadas` separa "não vi placa" de "vi e não li".
 CHAVES_SEM_PLACA = {
     "placa", "mensagem", "frame_url", "camera_id", "bico_id", "bboxes_detectadas",
-    "snapshots_analisados", "tentativas", "parada_motivo", "fontes", "avisos",
+    "snapshots_analisados", "tentativas", "parada_motivo", "fontes", "avisos", "modo",
 }
 
 BICO_ID, CAMERA_ID = 1, 7
@@ -129,6 +133,11 @@ def visao_falsa(monkeypatch, tmp_path):
     def instalar(detector, ocr_inst):
         monkeypatch.setattr(det, "obter_detector_leitura", lambda _cfg: detector)
         monkeypatch.setattr(ocr, "obter_ocr_leitura", lambda _cfg: ocr_inst)
+        # O perfil rapido tem fabricas PROPRIAS (`obter_*_rapido`), e nao um cfg alterado
+        # passado para as de cima. Sem dublar as duas, um teste do perfil rapido carregaria
+        # modelo de verdade e a suite unitaria deixaria de rodar sem GPU/rede.
+        monkeypatch.setattr(det, "obter_detector_rapido", lambda _cfg: detector)
+        monkeypatch.setattr(ocr, "obter_ocr_rapido", lambda _cfg: ocr_inst)
 
     return instalar
 
@@ -227,3 +236,63 @@ class TestPayloadSemPlaca:
         assert r["placa"] is None
         assert r["bboxes_detectadas"] > 0
         assert "recorte" in r["mensagem"]
+
+
+class TestPerfilRapido:
+    """`GET /api/leitura?rapido=1` — o perfil que troca acuracia por tempo de resposta.
+
+    O que estes testes protegem nao e a velocidade (nao da para medir latencia de modelo
+    com dubles), e sim as duas propriedades de CONTRATO que fazem o modo ser honesto: o
+    envelope nao muda, e o orcamento realmente encolhe.
+    """
+
+    def test_envelope_identico_ao_completo(self, ambiente, visao_falsa):
+        """Mesmas chaves nos dois perfis. Um payload diferente por modo obrigaria o
+        sidecar Java a ter dois parsers, que e exatamente o custo que `modo` evita."""
+        visao_falsa(_DetectorFalso(), _OcrFalso())
+        assert set(_ler(perfil=leitura_mod.PERFIL_RAPIDO)) == CHAVES_COM_PLACA
+
+    def test_declara_o_modo_nos_dois_desfechos(self, ambiente, visao_falsa):
+        visao_falsa(_DetectorFalso(), _OcrFalso())
+        assert _ler(perfil=leitura_mod.PERFIL_RAPIDO)["modo"] == "rapido"
+        assert _ler()["modo"] == "completo"
+
+        visao_falsa(_DetectorFalso(com_bbox=False), _OcrFalso())
+        assert _ler(perfil=leitura_mod.PERFIL_RAPIDO)["modo"] == "rapido"
+
+    def test_orcamento_encolhe_de_verdade(self, ambiente, visao_falsa):
+        """O ganho do modo vem das chaves `rapido_*` chegarem ao laco — se elas forem
+        ignoradas, o modo vira so um rotulo no payload e continua levando 28 s.
+
+        Mede `total_snapshots` (fotos que o laco chegou a tirar) e nao relogio de parede:
+        com dubles a inferencia e instantanea, entao tempo aqui nao mediria nada.
+        """
+        visao_falsa(_DetectorFalso(), _OcrFalso())
+        cfg = {**CFG, "rapido_max_tentativas": "2", "rapido_snapshots_votacao": "1",
+               "rapido_timeout_seg": "120"}
+        rapido = _ler(cfg=cfg, perfil=leitura_mod.PERFIL_RAPIDO)
+        completo = _ler(cfg=cfg)
+        # Comparacao entre os perfis, e nao um numero magico: e a comparacao que falha se
+        # `_cfg_perfil` parar de consultar as chaves `rapido_*`.
+        assert rapido["total_snapshots"] < completo["total_snapshots"]
+        assert rapido["total_snapshots"] <= int(cfg["rapido_max_tentativas"])
+
+    def test_cai_no_orcamento_completo_sem_as_chaves_rapidas(self, ambiente, visao_falsa):
+        """Instalacao antiga, sem as chaves `rapido_*` no config.txt: o modo perde o
+        ganho naquele eixo, mas NAO explode nem devolve payload diferente."""
+        visao_falsa(_DetectorFalso(), _OcrFalso())
+        sem_chaves = {k: v for k, v in CFG.items() if not k.startswith("rapido_")}
+        r = _ler(cfg=sem_chaves, perfil=leitura_mod.PERFIL_RAPIDO)
+        assert set(r) == CHAVES_COM_PLACA
+        assert r["modo"] == "rapido"
+
+    def test_mesmo_limiar_de_confirmada(self, ambiente, visao_falsa):
+        """O modo rapido le MENOS, e isso tem de aparecer como `confirmada: false` — nunca
+        como um limiar mais frouxo. Se algum dia alguem afrouxar `leitura_acordo_minimo`
+        no perfil rapido para "melhorar o numero", o posto passa a cobrar em cima de
+        leitura que o modo completo recusaria."""
+        visao_falsa(_DetectorFalso(), _OcrFalso())
+        completo = _ler()
+        rapido = _ler(perfil=leitura_mod.PERFIL_RAPIDO)
+        # Mesma evidencia (dubles deterministicos) -> mesmo veredito.
+        assert rapido["confirmada"] == completo["confirmada"]

@@ -66,9 +66,27 @@ def reset_token_resolver(token: str) -> dict | None:
     return dict(r)
 
 
-def reset_token_marcar_usado(token: str) -> None:
+def reset_token_consumir(token: str) -> dict | None:
+    """Resolve e marca como usado ATOMICAMENTE. None se inválido, expirado ou já usado.
+
+    `resolver` + `marcar_usado` em chamadas separadas é uma janela de corrida: dois POSTs
+    simultâneos com o mesmo token passavam os DOIS pelo `resolver` antes de qualquer um
+    marcar, e ambos redefiniam a senha. O `UPDATE ... WHERE usado=0` decide no banco —
+    `rowcount == 1` só para quem chegou primeiro. (Auditoria 27/08/2026.)
+    """
+    agora = time.time()
     with cursor() as c:
-        c.execute("UPDATE reset_senha_tokens SET usado=1 WHERE token=?", (token,))
+        cur = c.execute(
+            "UPDATE reset_senha_tokens SET usado=1 "
+            "WHERE token=? AND usado=0 AND expira_em >= ?",
+            (token, agora),
+        )
+        if cur.rowcount != 1:
+            return None
+        r = c.execute(
+            "SELECT * FROM reset_senha_tokens WHERE token=?", (token,)
+        ).fetchone()
+        return dict(r) if r else None
 
 
 def reset_tokens_limpar_expirados(agora: float) -> int:

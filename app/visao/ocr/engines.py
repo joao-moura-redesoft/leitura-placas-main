@@ -917,6 +917,17 @@ class OCR:
         if len(caixas) == 1:
             return maior[3], maior[4]
 
+        # Sem geometria (`rec_boxes`/`rec_polys` ausentes), TODA área vale 0.0 e o filtro
+        # `>= maior * FRACAO_LINHA` vira `>= 0.0`: nada é filtrado, e "BRASIL", cidade e UF
+        # entram concatenados no texto da placa. Sem geometria não dá para decidir o que é
+        # linha da placa, então fica com a caixa de MAIOR confiança em vez de juntar tudo.
+        # (Auditoria 27/08/2026.)
+        if maior[2] <= 0.0:
+            melhor = max(caixas, key=lambda c: c[4])
+            log.debug("PaddleOCR sem geometria de caixa: usando a de maior confiança (%r)",
+                      melhor[3])
+            return melhor[3], melhor[4]
+
         linhas = [c for c in caixas if c[2] >= maior[2] * self.FRACAO_LINHA]
         linhas.sort(key=lambda c: (c[0], c[1]))
         texto = "".join(c[3] for c in linhas)
@@ -971,7 +982,13 @@ class OCR:
                 return LeituraOCR("", 0.0)
             pred = result[0]
             texto = re.sub(r"[^A-Z0-9]", "", pred.plate.upper())
-            conf = float(pred.char_probs.mean()) if pred.char_probs is not None else 0.8
+            # Média sobre os `len(texto)` primeiros slots, não sobre o vetor inteiro. O
+            # modelo devolve 9-10 valores (um por slot) e o texto sai com 7 depois de tirar
+            # o padding — incluir os slots de padding fazia o escalar e o vetor
+            # (`_alinhar_por_char`, que corta em `len(texto)`) descreverem populações
+            # diferentes, então "a confiança" da leitura dependia de quanto padding o modelo
+            # produziu. (Auditoria 27/08/2026.)
+            conf = _conf_escalar(texto, pred.char_probs)
             if pred.char_probs is not None:
                 por_char = " ".join(f"{c:.2f}" for c in pred.char_probs)
                 log.debug("fast-plate-ocr[%s]: %r conf=%.2f [%s]", nome, texto, conf, por_char)
@@ -1031,6 +1048,16 @@ class LeituraOCR(tuple):
         obj = super().__new__(cls, (texto, float(conf)))
         obj.por_char = por_char
         return obj
+
+
+def _conf_escalar(texto: str, char_probs) -> float:
+    """Confiança média da leitura, sobre os slots que de fato viraram caractere."""
+    if char_probs is None:
+        return 0.8
+    uteis = list(char_probs)[:len(texto)] if texto else list(char_probs)
+    if not uteis:
+        return 0.8
+    return float(sum(float(v) for v in uteis) / len(uteis))
 
 
 def _alinhar_por_char(texto: str, char_probs, nome: str):

@@ -35,7 +35,7 @@ def pasta(tmp_path, monkeypatch):
     snaps = tmp_path / "snapshots"
     snaps.mkdir()
     monkeypatch.setattr(cap_mod, "SNAPSHOT_DIR", snaps)
-    monkeypatch.chdir(tmp_path)          # `_rotulados` lê "testes/dataset.json" relativo
+    monkeypatch.chdir(tmp_path)          # `rotulos.protegidos` lê "testes/dataset.json" relativo
     (tmp_path / "testes").mkdir()
     (tmp_path / "testes" / "dataset.json").write_text('{"fotos": []}', encoding="utf-8")
     return snaps

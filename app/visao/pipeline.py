@@ -31,6 +31,10 @@ SNAPSHOT_DIR = Path("app/web/static/snapshots")
 # Por isso: padding só nas laterais e na base, NUNCA para cima.
 BBOX_PADDING = 0.05
 
+# Quantas vezes a altura detectada o recorte pode crescer quando a caixa vem achatada
+# (só o header da placa antiga). Ver `_expandir_bbox`.
+_MAX_EXPANSAO_ACHATADO = 4
+
 
 def _expandir_bbox(x: int, y: int, w: int, h: int, frame_w: int, frame_h: int,
                    fator: float = BBOX_PADDING) -> tuple[int, int, int, int]:
@@ -41,9 +45,21 @@ def _expandir_bbox(x: int, y: int, w: int, h: int, frame_w: int, frame_h: int,
     w2 = min(frame_w - x2, w + 2 * dx)
 
     # Bbox muito achatado (w/h > 4): YOLO detectou só o header da placa antiga
-    # (ex: "UF-CIDADE"). Estende até o final do frame para incluir os caracteres.
+    # (ex: "UF-CIDADE"). Estende para baixo para alcançar os caracteres — mas com TETO
+    # proporcional à própria caixa, nunca até o rodapé do quadro.
+    #
+    # `frame_h - y2` seco era um penhasco: não depende de `w` nem de `h`, é a distância até
+    # a base do frame INTEIRO. Uma Mercosul de carro cortada rente aos caracteres
+    # (400x95 em 720p, w/h = 4,21) virava um recorte de 400x370 em vez de ~400x105. O
+    # aspecto caía de 4,2 para 1,08, `_layout_do_crop` passava a classificar como MOTO, e o
+    # caminho do ensemble (`_preparar_fast`) não chama `_focar_caracteres` — a imagem ia
+    # crua e a placa virava uma faixa fina no topo. Um erro de 5 px na altura da caixa
+    # invertia o comportamento. (Auditoria 27/08/2026, achado A7.)
+    #
+    # `_MAX_EXPANSAO_ACHATADO` = 4x a altura detectada: a placa antiga de 2 linhas tem o
+    # corpo com cerca de 3x a altura do header, e 4 dá folga sem chegar perto do rodapé.
     if w / max(h, 1) > 4:
-        h2 = frame_h - y2
+        h2 = min(frame_h - y2, h * _MAX_EXPANSAO_ACHATADO)
     else:
         h2 = min(frame_h - y2, h + dy)   # expande só para baixo
     return x2, y2, w2, h2
@@ -132,6 +148,15 @@ def _consenso_janela(janela: list[str], placa: str) -> tuple[float, int]:
 
 
 class Pipeline:
+    # Default de CLASSE, não só de `__init__`. Três arquivos de teste constroem instâncias
+    # com `Pipeline.__new__` (padrão estabelecido: preenchem só o que o método sob teste
+    # toca), e um atributo que só nasce no `__init__` faz esses dublês estourarem
+    # `AttributeError` num caminho que nada tem a ver com o que eles medem. `None` é o valor
+    # correto para "sem escopo de posto", que é o comportamento global de antes.
+    empresa_id: int | None = None
+    # Mesmo motivo do `empresa_id` acima: dublês construídos com `Pipeline.__new__`.
+    acordo_metrica: str = "string"
+
     def __init__(self, cfg: dict[str, str], camera_db_id: int = 0):
         self.camera_db_id = camera_db_id
         self.cfg = cfg
@@ -181,6 +206,18 @@ class Pipeline:
         # registra leitura bem-sucedida e por isso nunca captura o que falha.
         from app.visao.captura_dataset import CapturaDataset
         self.captura_dataset = CapturaDataset(cfg, self.camera_db_id)
+        # `or None` de propósito: string vazia (câmera sem posto vinculado) tem de virar
+        # None, que em `listas_buscar` significa "sem escopo" — o comportamento global de
+        # antes, que é o certo para uma câmera órfã.
+        self.empresa_id = int(cfg["empresa_id"]) if cfg.get("empresa_id") else None
+        # MESMA métrica da leitura reativa. As duas origens gravam em `deteccoes.acordo` e
+        # são comparadas contra o mesmo `leitura_acordo_minimo` — com escalas diferentes, o
+        # mesmo veículo saía do bico com 0,86 (confirmada) e do contínuo com 0,33 (não
+        # confirmada), e `confirmada` deixava de significar qualquer coisa para quem julga
+        # uma cobrança contestada. (Auditoria 27/08/2026, achado A11.)
+        self.acordo_metrica = ("caractere"
+                               if str(cfg.get("acordo_metrica", "string")).strip().lower()
+                               == "caractere" else "string")
         self.votos_minimos = max(1, int(cfg.get("ocr_votos_minimos", "1")))
         self.frames_consenso = int(cfg["frames_consenso"])
         # Mesmo limiar da leitura reativa, de propósito: as duas origens caem na MESMA
@@ -242,10 +279,10 @@ class Pipeline:
             try:
                 with lock_camera(self.camera_db_id):
                     self.camera.abrir()
-                estado.camera_conectada = True
+                estado.marcar_conexao(self.camera_db_id, True)
             except Exception as e:
                 log.error("Câmera não encontrada ao iniciar (%s) — pipeline aguardará reconexão", e)
-                estado.camera_conectada = False
+                estado.marcar_conexao(self.camera_db_id, False)
         self.detector.carregar()
         estado.modelo_carregado = self.detector.sess is not None
         self.ocr.carregar()
@@ -256,7 +293,7 @@ class Pipeline:
         self._thread = threading.Thread(target=self._loop, daemon=True, name="alpr-pipeline")
         self._thread.start()
         self.iniciando = False
-        estado.pipeline_rodando = True
+        estado.marcar_pipeline(self.camera_db_id, True)
         log.info("Pipeline iniciado (modo=%s)", "automático" if self.deteccao_automatica else "manual")
 
     def parar(self) -> bool:
@@ -299,8 +336,8 @@ class Pipeline:
                 self.camera_db_id,
             )
             return False
-        estado.pipeline_rodando = False
-        estado.camera_conectada = False
+        estado.marcar_pipeline(self.camera_db_id, False)
+        estado.marcar_conexao(self.camera_db_id, False)
         log.info("Pipeline parado")
         return True
 
@@ -344,7 +381,7 @@ class Pipeline:
                         log.warning("Câmera %d sem frame — aguardando...", self.camera_db_id)
                     elif agora - sem_frame_desde >= 3.0:
                         log.warning("Câmera %d sem resposta por 3s — tentando reconectar...", self.camera_db_id)
-                        estado.camera_conectada = False
+                        estado.marcar_conexao(self.camera_db_id, False)
                         # Mesmo lock de `iniciar()` acima — a reconexão também abre RTSP
                         # do zero, e pode coincidir com uma leitura reativa da mesma
                         # câmera caindo para conexão direta nesse exato momento instável.
@@ -352,7 +389,7 @@ class Pipeline:
                         with lock_camera(self.camera_db_id):
                             reconectou = self.camera.reconectar()
                         if reconectou:
-                            estado.camera_conectada = True
+                            estado.marcar_conexao(self.camera_db_id, True)
                             sem_frame_desde = None
                             log.info("Câmera %d reconectada", self.camera_db_id)
                         else:
@@ -383,7 +420,8 @@ class Pipeline:
                 estado.incrementar_frame()
                 agora = time.time()
                 if agora - ultimo_fps >= 1.0:
-                    estado.atualizar_fps(frames_count / (agora - ultimo_fps))
+                    estado.atualizar_fps(frames_count / (agora - ultimo_fps),
+                                         camera_id=self.camera_db_id)
                     frames_count = 0
                     ultimo_fps = agora
 
@@ -402,13 +440,18 @@ class Pipeline:
                         # Câmera não entregou frame novo desde o último tick (comum
                         # quando ela é mais lenta que `camera_fps`, ou reconectando).
                         # Reprocessar (ajuste + YOLO + OCR) sobre o MESMO array daria
-                        # byte a byte o mesmo resultado — pula o trabalho pesado, mas
-                        # REPUBLICA, pra `ultimo_frame_ts` continuar andando exatamente
-                        # como antes: os checks de frescor (app/web/leitura.py,
-                        # supervisor) não podem enxergar diferença entre "câmera
-                        # parada" e "tick sem novidade".
+                        # byte a byte o mesmo resultado — pula o trabalho pesado e
+                        # republica, para o stream/HLS não piscar num buraco de frame.
+                        #
+                        # Mas republica com o RELÓGIO DA FONTE, não com `time.time()`. Antes
+                        # esta chamada carimbava agora, e o comentário dizia que os checks de
+                        # frescor "não podem enxergar diferença entre câmera parada e tick sem
+                        # novidade" — o que é exatamente o contrário do que o watchdog precisa.
+                        # Com a fonte parada, o carimbo parava de andar aqui e o supervisor
+                        # continuava enxergando a câmera como saudável para sempre.
                         estado.registrar_frame(ultimo_saida)
-                        estado.registrar_frame_camera(self.camera_db_id, ultimo_saida)
+                        estado.registrar_frame_camera(self.camera_db_id, ultimo_saida,
+                                                      ts=self.camera.ultimo_frame_em())
                     else:
                         ultimo_bruto = frame
                         if self.ajustador.ativo:
@@ -423,7 +466,16 @@ class Pipeline:
                         self._processar_frame(frame_saida, frame)
                         ultimo_saida = frame_saida
                         estado.registrar_frame(frame_saida)
-                        estado.registrar_frame_camera(self.camera_db_id, frame_saida)
+                        # Mesmo relógio da fonte do branch de republicação acima — não
+                        # `time.time()` daqui. `Camera.ultimo_frame_em()` já sabe a hora
+                        # exata em que ESTE frame chegou; carimbar "agora" (depois de
+                        # ajuste+detecção+OCR, ~2,3s medidos) faria o relógio de frescor
+                        # andar mais devagar que a câmera sob carga alta, sem qualquer
+                        # câmera parada de verdade. (Achado do review de 28/08/2026 —
+                        # `Camera.ultimo_frame_em` já documenta esta regra para "quem
+                        # publica frescor", e este branch era a exceção que não seguia.)
+                        estado.registrar_frame_camera(self.camera_db_id, frame_saida,
+                                                      ts=self.camera.ultimo_frame_em())
 
                 # Trava a taxa do loop à frequência real da câmera — a detecção de
                 # câmera morta e o contador de fps dependem de rodar nessa cadência.
@@ -534,7 +586,8 @@ class Pipeline:
             # nenhuma das strings lidas, e sem passa-la o acordo gravado seria sobre a
             # string mais votada -- outra placa que não a que foi emitida.
             votos, total = self.tracker.consenso(track_id, placa)
-            acordo = votos / total if total else 0.0
+            acordo = self._acordo(placa, self.tracker.leituras_do_track(track_id),
+                                   votos, total)
             self.tracker.marcar_emitido(track_id)
             self._desenhar_bbox(frame, x, y, w, h, placa, conf)
             self._emitir(placa, padrao, conf, frame_limpo, (x, y, w, h),
@@ -741,7 +794,7 @@ class Pipeline:
             "tipo_veiculo": tipo_veiculo,
         })
 
-        entrada_lista = banco.listas_buscar(placa)
+        entrada_lista = banco.listas_buscar(placa, empresa_id=self.empresa_id)
         lista = entrada_lista["tipo"] if entrada_lista else None
         bc.broadcaster.push({
             "tipo": "deteccao", "placa": placa, "padrao": padrao,
@@ -773,10 +826,25 @@ class Pipeline:
             daemon=True, name="alpr-webhook",
         ).start()
 
+    def _acordo(self, placa: str, leituras: list[tuple[str, float]],
+                votos: int, total: int) -> float:
+        """`acordo` na métrica configurada — a mesma que a leitura reativa usa.
+
+        'string' é a contagem de casamento exato (`votos/total`), que é o comportamento
+        histórico. 'caractere' mede a concordância média por posição, e é o que descreve a
+        realidade desde que a placa passou a sair de uma FUSÃO: três leituras da mesma moto
+        (`RLT2477`, `NLX2A77`, `RLX2A77`) fundem em `RLX2A77` e dão 0,33 por string exata
+        contra 0,86 por caractere — sendo que as três concordavam em 5 das 7 posições.
+        """
+        if self.acordo_metrica == "caractere" and leituras:
+            from app.visao.consenso import acordo_por_caractere
+            return acordo_por_caractere(placa, leituras)
+        return votos / total if total else 0.0
+
     def _verificar_alerta(self, placa: str, padrao: str) -> None:
         if not self.cfg.get("alerta_lista_negra", "").lower() in ("sim", "true", "1"):
             return
-        entrada = banco.listas_buscar(placa)
+        entrada = banco.listas_buscar(placa, empresa_id=self.empresa_id)
         if not entrada or entrada["tipo"] != "negra":
             return
         url = self.cfg.get("webhook_url", "").strip()
@@ -852,6 +920,10 @@ def _cfg_para_camera(global_cfg: dict, cam: dict) -> dict:
     if cam.get("rtsp_url_custom"):
         merged["camera_indice"] = str(cam["rtsp_url_custom"])
         merged["intelbras_host"] = ""   # força uso de camera_indice em _origem_rtsp
+    # Dono da câmera. Vai junto para o alerta de lista negra saber a QUEM a placa detectada
+    # pertence: com as listas escopadas por posto (achado A3), uma entrada do posto A não
+    # pode disparar alerta numa câmera do posto B.
+    merged["empresa_id"] = str(cam.get("empresa_id") or "")
     # Identificação do ponto de abastecimento
     merged["bomba"] = str(cam.get("bomba", "0"))
     merged["lado"] = str(cam.get("lado", "0"))
@@ -988,17 +1060,32 @@ def reiniciar_camera(camera_db_id: int, cfg: dict[str, str]) -> bool:
         return _reiniciar_camera_travado(camera_db_id, cfg)
 
 
+# Resultado de uma tentativa de reinício. `OCUPADO` é o caso TRANSITÓRIO e precisa ser
+# distinguível de falha: a thread anterior ainda está viva porque `cap.read()` está no meio
+# de um bloqueio, e esse bloqueio tem teto de ~30 s (o interrupt callback do OpenCV, medido
+# em 27/08/2026 — as propriedades CAP_PROP_*_TIMEOUT_MSEC são RECUSADAS nesta build e não
+# adiantam). Quem trata isso como falha aplica backoff exponencial e transforma 30 s de
+# indisponibilidade em minutos. Ver `WorkerSupervisor._tentar_reiniciar`.
+REINICIO_OK = "ok"
+REINICIO_OCUPADO = "ocupado"
+
+
 def _reiniciar_camera_travado(camera_db_id: int, cfg: dict[str, str]) -> bool:
+    return reiniciar_camera_status(camera_db_id, cfg) == REINICIO_OK
+
+
+def reiniciar_camera_status(camera_db_id: int, cfg: dict[str, str]) -> str:
+    """Como `reiniciar_camera`, mas devolve o MOTIVO — ver `REINICIO_OCUPADO`."""
     if not parar_camera(camera_db_id):
-        log.error(
-            "Câmera %d: reinício ABORTADO — thread do pipeline anterior ainda viva; "
-            "NÃO abrindo uma segunda conexão RTSP concorrente. Tentativa seguinte "
-            "(supervisor/backoff) pode ter sucesso quando a thread antiga morrer.",
+        log.warning(
+            "Câmera %d: reinício adiado — a thread anterior ainda está numa leitura "
+            "(teto de ~30 s). NÃO abrindo uma segunda conexão RTSP concorrente; nova "
+            "tentativa no próximo ciclo, sem escalar o backoff.",
             camera_db_id,
         )
-        return False
+        return REINICIO_OCUPADO
     iniciar_camera(camera_db_id, cfg)
-    return True
+    return REINICIO_OK
 
 
 def parar_todas() -> bool:

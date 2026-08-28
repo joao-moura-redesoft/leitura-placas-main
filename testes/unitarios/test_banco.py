@@ -220,6 +220,73 @@ class TestListas:
         banco.listas_inserir("BBB2B22", "negra")
         assert len(banco.listas_listar(tipo="negra")) == 1
 
+    def _posto(self, nome: str) -> int:
+        ent = banco.entidades_inserir({"nome": "Rede " + nome})
+        return banco.empresas_inserir({"entidade_id": ent, "cnpj": nome.zfill(14), "nome": nome})
+
+    def test_mesma_placa_em_postos_diferentes_e_permitida(self, ambiente):
+        """Achado A2: a constraint era GLOBAL — o posto B não conseguia bloquear a
+        própria placa só porque o posto A já tinha bloqueado a dele."""
+        emp_a = self._posto("A")
+        emp_b = self._posto("B")
+        id_a = banco.listas_inserir("ABC1D23", "branca", empresa_id=emp_a)
+        id_b = banco.listas_inserir("ABC1D23", "branca", empresa_id=emp_b)
+        assert id_a and id_b and id_a != id_b
+
+    def test_placa_duplicada_no_mesmo_posto_e_rejeitada(self, ambiente):
+        import sqlite3
+        emp = self._posto("A")
+        banco.listas_inserir("ABC1D23", "branca", empresa_id=emp)
+        try:
+            banco.listas_inserir("ABC1D23", "negra", empresa_id=emp)
+            assert False, "deveria violar o UNIQUE por posto"
+        except sqlite3.IntegrityError:
+            pass
+
+    def test_placa_global_e_de_posto_coexistem(self, ambiente):
+        """O mesmo veredito pode existir GLOBAL e, separadamente, para UM posto — é o
+        que `listas_buscar` usa para dar precedência ao override do posto."""
+        emp = self._posto("A")
+        banco.listas_inserir("ABC1D23", "branca")   # global
+        assert banco.listas_inserir("ABC1D23", "negra", empresa_id=emp) is not None
+
+    def test_banco_com_unique_antigo_e_migrado_sem_perder_dado(self, tmp_path, monkeypatch):
+        """Simula uma instalação existente (schema pré-multitenant, UNIQUE de coluna) e
+        confirma que `banco.inicializar()` migra sem perder linha e sem deixar a
+        constraint antiga viva."""
+        import sqlite3
+        from app.core import config
+
+        monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.txt")
+        db_path = tmp_path / "antigo.db"
+        banco.definir_caminho(db_path)
+
+        con = sqlite3.connect(db_path)
+        con.execute("""CREATE TABLE listas_placas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            placa TEXT NOT NULL UNIQUE, tipo TEXT NOT NULL,
+            descricao TEXT, criado_em TEXT NOT NULL)""")
+        con.execute("INSERT INTO listas_placas (placa, tipo, criado_em) VALUES (?,?,?)",
+                    ("XYZ9A87", "branca", "2026-01-01T00:00:00+00:00"))
+        con.commit()
+        con.close()
+
+        banco.inicializar()   # roda _migrar contra o schema antigo
+
+        try:
+            assert [l["placa"] for l in banco.listas_listar()] == ["XYZ9A87"]
+            emp = self._posto("A")
+            assert banco.listas_inserir("XYZ9A87", "negra", empresa_id=emp) is not None
+
+            with banco.cursor() as c:
+                idx = c.execute("PRAGMA index_list(listas_placas)").fetchall()
+            assert not any(row["origin"] == "u" for row in idx), \
+                "o UNIQUE de coluna antigo não pode sobreviver à migração"
+            nomes_idx = {row["name"] for row in idx}
+            assert {"idx_listas_placa_global", "idx_listas_placa_posto"} <= nomes_idx
+        finally:
+            banco.fechar_conexao()
+
 
 class TestAcordoEConfirmacao:
     """Uma leitura devolvida por timeout, sem consenso, não pode ficar indistinguível

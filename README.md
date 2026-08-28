@@ -205,6 +205,11 @@ leria.
 
 ## API REST
 
+Guia completo para **outro sistema se acoplar ao nosso** — autenticação, o que enviar, o
+que volta em cada desfecho, consulta de histórico, webhook/WebSocket e checklist de
+integração: [docs/API_INTEGRACAO.md](docs/API_INTEGRACAO.md). É o documento para entregar
+a quem vai desenvolver o outro lado.
+
 O contrato do endpoint que o roteador do posto chama — `GET /api/leitura` — está
 documentado à parte, com todos os formatos de resposta e recomendações para quem for
 desenvolver esse lado: [docs/INTEGRACAO_ROTEADOR.md](docs/INTEGRACAO_ROTEADOR.md).

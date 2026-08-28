@@ -13,8 +13,11 @@ from __future__ import annotations
 import secrets
 import threading
 import time
+import logging
 
 import bcrypt
+
+log = logging.getLogger(__name__)
 
 from app.core import banco
 from app.seguranca import limitador
@@ -53,6 +56,16 @@ def senha_fraca(senha: str) -> str | None:
 
 def hash_senha(senha: str) -> str:
     return bcrypt.hashpw(senha.encode(), bcrypt.gensalt(_BCRYPT_ROUNDS)).decode()
+
+
+# Hash de uma senha que ninguém tem, para o login gastar o MESMO tempo quando o e-mail não
+# existe ou a conta está desativada. Sem ele, esses dois casos saíam por curto-circuito em
+# ~5 ms contra os ~200 ms do bcrypt e viravam um oráculo de enumeração de usuários
+# (auditoria 27/08/2026, achado M7).
+#
+# Calculado na importação, uma vez, com o MESMO custo das senhas reais — um literal fixo com
+# outro número de rounds não igualaria o tempo, que é o ponto inteiro.
+HASH_DUMMY = bcrypt.hashpw(b"senha-que-ninguem-usa", bcrypt.gensalt(_BCRYPT_ROUNDS)).decode()
 
 
 def verificar_senha(senha: str, hashed: str) -> bool:
@@ -103,20 +116,24 @@ def limpar_sessoes_expiradas() -> int:
 
 
 def _cleanup_loop() -> None:
+    """Limpeza periódica de sessão, rate-limit e tentativas.
+
+    Cada tarefa é isolada para uma falha não parar as outras — mas com LOG. Engolir em
+    silêncio fazia um erro persistente (banco em disco cheio, por exemplo) parar a limpeza
+    de sessão para sempre sem deixar rastro nenhum. (Auditoria 27/08/2026.)
+    """
+    tarefas = (
+        ("sessões expiradas", limpar_sessoes_expiradas),
+        ("contadores de rate limit", limitador.limpar_antigos),
+        ("tentativas de login", tentativas.limpar_expiradas),
+    )
     while True:
         time.sleep(_CLEANUP_INTERVAL)
-        try:
-            limpar_sessoes_expiradas()
-        except Exception:
-            pass
-        try:
-            limitador.limpar_antigos()
-        except Exception:
-            pass
-        try:
-            tentativas.limpar_expiradas()
-        except Exception:
-            pass
+        for nome, fn in tarefas:
+            try:
+                fn()
+            except Exception as e:
+                log.warning("Limpeza de %s falhou: %s", nome, e)
 
 
 def iniciar_cleanup() -> None:

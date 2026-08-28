@@ -60,11 +60,52 @@ def cameras_inserir(dados: dict) -> int:
 
 
 def cameras_atualizar(id_: int, dados: dict) -> bool:
-    # Preserva senha armazenada quando o campo vier vazio (UI mascara)
-    senha = dados.get("intelbras_senha") or ""
-    if not senha:
-        atual = cameras_obter(id_)
-        senha = atual["intelbras_senha"] if atual else ""
+    """Atualiza a câmera. Campo de segredo AUSENTE do payload preserva o valor atual.
+
+    A distinção é entre "não veio" e "veio vazio":
+
+      ausente         não mexer — é o que a camada web produz quando a tela devolveu a
+                      máscara (`redacao.descartar_mascara`), ou quando o campo de senha
+                      ficou em branco no formulário.
+      presente vazio  limpar de propósito — quem apagou o campo quis apagar.
+
+    `intelbras_senha` já preservava (só que por "vazio", não por "ausente"), e é por isso
+    que a senha sobreviveu à redação do achado K3. `rtsp_url_custom` NÃO preservava por
+    "vazio": o formulário (`cameras.html`) trata os dois campos IGUAL — zera o input
+    quando o valor vem mascarado e sempre reenvia o campo no submit —, então editar só o
+    nome de uma câmera com URL customizada apagava a URL de conexão em silêncio. Corrigido
+    estendendo a mesma exceção de `intelbras_senha` para `rtsp_url_custom`.
+    """
+    atual = None
+
+    # Campos que a tela sempre devolve MASCARADOS/zerados (ver app/web/redacao.SEGREDOS_CAMERA)
+    # — para eles, "presente e vazio" significa "a tela zerou o campo, não mexi", igual a
+    # ausente. Cópia curta e não import de app.web.redacao: a camada de banco não deve
+    # depender da web.
+    _CAMPOS_PRESERVAR_SE_VAZIO = ("intelbras_senha", "rtsp_url_custom")
+
+    def _preservar(campo: str) -> str:
+        nonlocal atual
+        valor = dados.get(campo)
+        # `is not None` antes do `str(...).strip()`: um `null` JSON explícito
+        # (`{"rtsp_url_custom": null}`, payload válido de qualquer cliente não-browser)
+        # virava `str(None).strip()` == "None" — truthy — e caía no ramo de "valor
+        # novo", gravando o literal `None` na coluna `NOT NULL`. Tratado aqui como
+        # "nenhum valor veio", igual a ausente: mesmo destino conservador de
+        # `_CAMPOS_PRESERVAR_SE_VAZIO`, nunca gravar NULL por engano. (Achado do
+        # review de 28/08/2026.)
+        if valor is not None and str(valor).strip():
+            return valor
+        if campo in dados and valor is not None and campo not in _CAMPOS_PRESERVAR_SE_VAZIO:
+            # Presente e vazio (string vazia, não null), e não é um campo mascarado:
+            # limpar é a intenção.
+            return ""
+        if atual is None:
+            atual = cameras_obter(id_) or {}
+        return atual.get(campo, "")
+
+    senha = _preservar("intelbras_senha")
+    url_custom = _preservar("rtsp_url_custom")
     with cursor() as c:
         cur = c.execute(
             """UPDATE cameras SET
@@ -86,7 +127,7 @@ def cameras_atualizar(id_: int, dados: dict) -> bool:
                 dados.get("intelbras_canal", "1"),
                 dados.get("intelbras_subtype", "1"),
                 dados.get("intelbras_formato", "padrao"),
-                dados.get("rtsp_url_custom", ""),
+                url_custom,
                 1 if dados.get("ativo", True) else 0,
                 id_,
             ),

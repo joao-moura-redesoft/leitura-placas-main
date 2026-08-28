@@ -28,6 +28,7 @@ import numpy as np
 
 from app.core import banco
 from app.core import estado
+from app.operacao import retencao as ret_mod
 from app.visao import contexto_log
 from app.visao import camera as camera_mod
 from app.visao.camera import Camera
@@ -63,6 +64,80 @@ SNAPSHOT_DIR = Path("app/web/static/snapshots")
 # grava (fora do escopo desta correção); exigem timestamp+placa para adivinhar, bem menos
 # trivial que iterar um inteiro pequeno. Risco residual, registrado conscientemente.
 PREVIEW_DIR = Path("app/web/dados_privados/snapshots")
+
+
+# ── Perfis de leitura ────────────────────────────────────────────────────────────────
+# Dois pontos de operação da MESMA leitura, não dois algoritmos. O que muda é o par de
+# modelos e o orçamento do laço; a eleição da placa, o consenso e o limiar de `confirmada`
+# são idênticos — ver `_ler_placa`.
+PERFIL_COMPLETO = "completo"
+PERFIL_RAPIDO = "rapido"
+
+# Chaves de orçamento que o perfil rápido sobrescreve, e o prefixo onde ele as procura.
+# Tabela em vez de `if perfil == ...` espalhado: cada chave nova de orçamento entra aqui e
+# passa a valer nos dois perfis de uma vez.
+_CFG_RAPIDO = {
+    "snapshots_votacao":      "rapido_snapshots_votacao",
+    "leitura_max_tentativas": "rapido_max_tentativas",
+    "leitura_timeout_seg":    "rapido_timeout_seg",
+}
+
+# A espera pelo primeiro frame no perfil rápido mora em `config.PADROES`, e é lida de lá
+# em vez de repetida aqui: um segundo literal com o mesmo número vira duas fontes de
+# verdade que ninguém lembra de manter iguais — e a divergência só apareceria num cfg
+# incompleto, que é justamente o caso raro em que ninguém está olhando.
+
+
+def _cfg_perfil(cfg: dict, perfil: str, chave: str, padrao: str) -> str:
+    """Valor de `chave` respeitando o perfil: no rápido, a versão `rapido_*` quando existe.
+
+    Cai no valor do perfil completo se a chave rápida não estiver na config — bancos e
+    `config.txt` de instalações antigas não a têm, e o modo simplesmente não fica mais
+    rápido nesse eixo em vez de explodir.
+    """
+    if perfil == PERFIL_RAPIDO and chave in _CFG_RAPIDO:
+        valor = cfg.get(_CFG_RAPIDO[chave])
+        if valor not in (None, ""):
+            return str(valor)
+    return str(cfg.get(chave, padrao))
+
+
+def espera_frame_do_perfil(cfg: dict, perfil: str, padrao_completo: float) -> float:
+    """Quanto esperar pelo PRIMEIRO frame do pipeline neste perfil.
+
+    É a maior economia isolada do modo rápido, e a menos óbvia: essa espera acontece na
+    sondagem (`_sondar_pipeline`), ANTES do laço, então `leitura_timeout_seg` não a
+    alcança — uma chamada podia gastar 20 s aqui e só então começar a contar o orçamento.
+    """
+    from app.core import config
+
+    if perfil != PERFIL_RAPIDO:
+        return padrao_completo
+    padrao = config.PADROES["rapido_espera_frame_seg"]
+    try:
+        return float(cfg.get("rapido_espera_frame_seg") or padrao)
+    except (TypeError, ValueError):
+        return float(padrao)
+
+
+def _componentes_do_perfil(perfil: str):
+    """(fábrica de detector, lock do detector, fábrica de OCR, lock do OCR) deste perfil.
+
+    Import tardio porque `app.visao.detector`/`app.visao.ocr` carregam pilha nativa pesada
+    — o módulo de leitura é importado pela camada web no boot, muito antes de existir
+    leitura para fazer. Os dois perfis têm instâncias E locks separados: ver o comentário
+    de `obter_detector_rapido` sobre por que compartilhar qualquer um dos dois anularia o
+    modo.
+    """
+    from app.visao.detector import (obter_detector_leitura, detector_leitura_lock,
+                                    obter_detector_rapido, detector_rapido_lock)
+    from app.visao.ocr import (obter_ocr_leitura, ocr_leitura_lock,
+                               obter_ocr_rapido, ocr_rapido_lock)
+    if perfil == PERFIL_RAPIDO:
+        return (obter_detector_rapido, detector_rapido_lock,
+                obter_ocr_rapido, ocr_rapido_lock)
+    return (obter_detector_leitura, detector_leitura_lock,
+            obter_ocr_leitura, ocr_leitura_lock)
 
 
 def caminho_preview_bico(bico_id: int, camera_db_id: int | None = None) -> Path:
@@ -407,8 +482,15 @@ def _mesclar_com_historico(
             # `_id=` amarra o valor AGORA: sem o argumento padrão, todas as lambdas do
             # laço compartilhariam o mesmo `pipeline_anterior` e apagariam a última linha
             # várias vezes em vez de uma linha por câmera.
-            _com_retry_lock(lambda _id=pipeline_anterior["id"]: banco.remover_deteccao(_id),
-                            "remover detecção anterior absorvida")
+            orfaos = _com_retry_lock(
+                lambda _id=pipeline_anterior["id"]: banco.remover_deteccao(_id),
+                "remover detecção anterior absorvida")
+            # A linha absorvida leva os JPEGs dela junto. `_mesclar_com_anterior` parte de
+            # `dict(melhor)` e nunca copia `snapshot`/`frame` do anterior, então esses
+            # arquivos não são referenciados por mais ninguém — e órfão aqui é invisível
+            # para o teto de contagem, que parte do banco.
+            if orfaos:
+                ret_mod.apagar_orfaos(orfaos)
     return melhor, None
 
 
@@ -501,6 +583,11 @@ class FonteLeitura:
 
     # Preenchidos na abertura (`_abrir_fontes`: sonda o pipeline, pega o lock, conecta)
     usar_pipeline: bool = False
+    # True quando a sondagem CHEGOU a chamar o provider do pipeline. Distingue "o pipeline
+    # existe e não entregou frame" de "não há pipeline nesta câmera" — os dois deixam
+    # `usar_pipeline` False, mas só no primeiro a conexão RTSP direta está condenada
+    # (a Intelbras aceita uma conexão só, e o pipeline está com ela). Ver `_abrir_fontes`.
+    pipeline_sondado: bool = False
     camera_direta: Camera | None = None
     ajustador: object | None = None
     lock: threading.Lock | None = None
@@ -531,19 +618,42 @@ class FonteLeitura:
 def _adquirir_locks(fontes: list[FonteLeitura], espera_seg: float) -> None:
     """Adquire o lock das fontes que abrem conexão direta, em ordem de `camera_id`.
 
-    Com UMA fonte a espera é bloqueante, exatamente como sempre foi. Com duas, esperar
-    indefinidamente pelos dois locks faria um bico de duas câmeras travar um bico vizinho
-    que só compartilha a SECUNDÁRIA — a feature pioraria quem não a usa. Então cada lock
-    tem um teto de espera e, estourando, aquela fonte sai da leitura (a outra resolve).
-    Se nenhuma for adquirida, volta ao comportamento bloqueante de sempre em vez de
-    desistir: uma leitura lenta ainda é melhor que erro.
+    Com UMA fonte a espera TAMBÉM tem teto (achado M10) — não bloqueia mais indefinidamente
+    como antes: os detentores deste lock seguram por muito tempo (coletor de dataset até
+    15s, reconexão do pipeline com dois `sleep(5)`), e bloquear aqui comia o orçamento do
+    ROTEADOR (28s) antes mesmo do `leitura_timeout_seg` da própria leitura começar a
+    contar. Estourando o teto, a fonte sai da leitura em vez de travar — a leitura
+    degradada (que pode cair no frame do pipeline, sem abrir RTSP) ainda é melhor que
+    devolver erro ao bico.
+
+    Com duas fontes, o mesmo teto por lock evita que um bico de duas câmeras trave um bico
+    vizinho que só compartilha a SECUNDÁRIA — mas aqui, se NENHUMA das duas for adquirida
+    dentro do teto, volta ao comportamento bloqueante de sempre em vez de desistir de vez:
+    uma leitura lenta ainda é melhor que nenhuma fonte disponível. Essa rede de segurança
+    não existe no caminho de uma fonte só — lá, estourar o teto já é o fim da tentativa
+    para aquela fonte.
     """
     diretas = sorted([f for f in fontes if f.lock is not None], key=lambda f: f.camera_id)
     if not diretas:
         return
     if len(diretas) == 1:
-        diretas[0].lock.acquire()
-        diretas[0].lock_adquirido = True
+        # Com teto, como o caminho de duas câmeras. Bloquear para sempre aqui era o caso
+        # NORMAL (a maioria dos bicos tem uma câmera só), e os outros detentores deste lock
+        # seguram por muito tempo: o coletor de dataset cobre `capturar_frame_unico` inteiro
+        # (até 15 s esperando o 1º frame + 6 s de join ao fechar) e a reconexão do pipeline
+        # faz duas tentativas com `sleep(5)` entre elas. A request ficava ~21 s parada ANTES
+        # de começar a contar o próprio `leitura_timeout_seg` de 28 s, e o roteador desistia
+        # antes — abastecimento sem placa. O próprio arquivo previa esta mitigação e a tinha
+        # aplicado só ao outro ramo. (Auditoria 27/08/2026, achado M10.)
+        if diretas[0].lock.acquire(timeout=espera_seg):
+            diretas[0].lock_adquirido = True
+        else:
+            # Segue SEM o lock em vez de abortar: a leitura degradada (que pode cair no
+            # frame do pipeline, sem abrir RTSP) ainda é melhor que devolver erro ao bico.
+            diretas[0].ativa = False
+            diretas[0].erro = "câmera ocupada por outra leitura em andamento"
+            log.warning("%s: lock não adquirido em %.1fs — seguindo sem conexão direta",
+                        diretas[0].rotulo, espera_seg)
         return
 
     for f in diretas:
@@ -579,6 +689,7 @@ def _sondar_pipeline(f: FonteLeitura, cfg: dict) -> None:
     f.usar_pipeline = f.provider is not None and deteccao_auto
     if not f.usar_pipeline:
         return
+    f.pipeline_sondado = True
     try:
         f.frame_inicial = f.provider()
     except Exception as e:
@@ -697,7 +808,8 @@ def _em_paralelo(fontes: list[FonteLeitura], etapa, cfg: dict) -> None:
             fut.result()
 
 
-def _abrir_fontes(fontes: list[FonteLeitura], cfg: dict, espera_lock: float) -> None:
+def _abrir_fontes(fontes: list[FonteLeitura], cfg: dict, espera_lock: float,
+                  perfil: str = PERFIL_COMPLETO) -> None:
     """Prepara todas as fontes para o laço, em duas fases separadas pelo lock.
 
     A ordem importa e é a razão de existirem duas fases: só depois de sondar o pipeline se
@@ -708,8 +820,21 @@ def _abrir_fontes(fontes: list[FonteLeitura], cfg: dict, espera_lock: float) -> 
     """
     _em_paralelo(fontes, _sondar_pipeline, cfg)
 
+    # No perfil rápido, fonte cujo pipeline foi sondado e não entregou frame sai da leitura
+    # em vez de cair na conexão direta. Essa conexão não é um plano B: o pipeline está com
+    # a única conexão que a Intelbras aceita, então a tentativa só pode falhar — e falha
+    # depois de gastar o timeout de rede inteiro, que num orçamento de 5s é a chamada
+    # toda. No perfil completo ela continua valendo: lá o tempo existe, e o pipeline pode
+    # de fato ter morrido e soltado a câmera.
+    if perfil == PERFIL_RAPIDO:
+        for f in fontes:
+            if f.pipeline_sondado and not f.usar_pipeline:
+                f.ativa = False
+                f.erro = "pipeline sem frame novo dentro do orçamento do modo rápido"
+                log.info("%s: fora desta leitura rápida — %s", f.rotulo, f.erro)
+
     for f in fontes:
-        if not f.usar_pipeline:
+        if f.ativa and not f.usar_pipeline:
             f.lock = _obter_lock_camera(f.camera_id)
     _adquirir_locks(fontes, espera_seg=espera_lock)
 
@@ -789,6 +914,7 @@ def _ler_placa(
     bico_id: int | None = None,
     origem: str = "roteador",
     avisos: list[str] | None = None,
+    perfil: str = PERFIL_COMPLETO,
 ) -> dict:
     """Loop de leitura por confiança ("reject-retry", padrão de mercado ALPR): tira fotos
     incrementalmente e para assim que o consenso entre as leituras ficar forte o bastante
@@ -801,17 +927,23 @@ def _ler_placa(
 
     `avisos` traz o que já se sabia antes de começar (ex.: uma das câmeras desativada no
     cadastro); o que falhar durante a abertura é acrescentado aqui dentro.
-    """
-    from app.visao.detector import obter_detector_leitura, detector_leitura_lock
-    from app.visao.ocr import obter_ocr_leitura, ocr_leitura_lock
 
+    `perfil` escolhe entre acurácia e tempo de resposta — ver `PERFIL_RAPIDO`. Ele troca
+    DUAS coisas de uma vez, e as duas juntas é que dão o ganho: os modelos (leves, os
+    mesmos do stream ao vivo) e o orçamento do laço (uma foto, poucos segundos). O resto
+    do corpo desta função não sabe qual perfil está rodando — a eleição, o consenso e o
+    limiar de `confirmada` são idênticos nos dois, de propósito: o modo rápido lê menos, e
+    isso tem de aparecer como leitura não confirmada, nunca como um limiar mais frouxo.
+    """
     if not fontes:
         raise LeituraError(503, "Nenhuma câmera configurada para este bico.")
 
+    obter_detector, det_lock, obter_ocr, ocr_lock = _componentes_do_perfil(perfil)
+
     avisos = list(avisos or [])
-    n_min = max(1, int(cfg.get("snapshots_votacao", "3")))
-    n_max = max(n_min, int(cfg.get("leitura_max_tentativas", "12")))
-    timeout_seg = float(cfg.get("leitura_timeout_seg", "6"))
+    n_min = max(1, int(_cfg_perfil(cfg, perfil, "snapshots_votacao", "3")))
+    n_max = max(n_min, int(_cfg_perfil(cfg, perfil, "leitura_max_tentativas", "12")))
+    timeout_seg = float(_cfg_perfil(cfg, perfil, "leitura_timeout_seg", "6"))
     acordo_min = float(cfg.get("leitura_acordo_minimo", "0.80"))
     # Lido UMA vez por leitura: a parada antecipada e a decisao final tem de usar a MESMA
     # metrica, senao o loop para com um numero e o banco grava outro.
@@ -842,7 +974,7 @@ def _ler_placa(
     # ponta pode passar bem além do configurado sem o laço perceber.
     inicio_absoluto = time.time()
 
-    _abrir_fontes(fontes, cfg, espera_lock=min(5.0, timeout_seg / 4))
+    _abrir_fontes(fontes, cfg, espera_lock=min(5.0, timeout_seg / 4), perfil=perfil)
 
     for f in fontes:
         if f.erro:
@@ -873,12 +1005,16 @@ def _ler_placa(
 
     try:
         # ── Detector e OCR ────────────────────────────────────────────────────
-        # Leitura sob demanda usa componentes de ALTA PRECISÃO, independentes do stream ao
-        # vivo: detecção 2 estágios veículo→placa (obter_detector_leitura) + OCR com reforço
-        # PaddleOCR (obter_ocr_leitura). Ambos toleram a latência maior do fluxo sob demanda.
+        # No perfil completo, componentes de ALTA PRECISÃO independentes do stream ao vivo:
+        # detecção 2 estágios veículo→placa + varredura em janelas + OCR com reforço
+        # PaddleOCR. Ambos toleram a latência maior do fluxo sob demanda.
+        #
+        # No perfil rápido, exatamente os componentes do stream ao vivo — que é o ponto de
+        # operação já conhecido em produção para "ler em tempo real". Ver
+        # `_componentes_do_perfil`.
         t_antes_modelo = time.time()
-        det_inst = obter_detector_leitura(cfg)
-        ocr_inst = obter_ocr_leitura(cfg)
+        det_inst = obter_detector(cfg)
+        ocr_inst = obter_ocr(cfg)
         tempo_carga_modelo = time.time() - t_antes_modelo
 
         # Desloca a referência do orçamento só pelo tempo de CARGA DE MODELO: na primeira
@@ -959,7 +1095,7 @@ def _ler_placa(
             # podem travar/crashar — o lock serializa só a chamada individual, não o loop
             # inteiro, pra não bloquear um bico pela duração toda da leitura do outro.
             with contexto_log.usar(camera=f.camera_id):
-                bboxes = _detectar(det_inst, frame, f.roi, detector_leitura_lock)
+                bboxes = _detectar(det_inst, frame, f.roi, det_lock)
                 bboxes_total += len(bboxes)
                 f.bboxes += len(bboxes)
                 f_h, f_w = frame.shape[:2]
@@ -973,7 +1109,7 @@ def _ler_placa(
                         continue
 
                     if hasattr(ocr_inst, "ler_detalhado"):
-                        with ocr_leitura_lock:
+                        with ocr_lock:
                             ocr_res = ocr_inst.ler_detalhado(crop)
                         if not ocr_res["placa"]:
                             continue
@@ -984,7 +1120,7 @@ def _ler_placa(
                         total_eng  = ocr_res["total_engines"]
                         det_ocr    = ocr_res["detalhes"]
                     else:
-                        with ocr_leitura_lock:
+                        with ocr_lock:
                             texto, conf_ocr = ocr_inst.ler(crop)
                         resultado = validar(texto)
                         if not resultado:
@@ -1083,7 +1219,12 @@ def _ler_placa(
     # porque `_mesclar_com_anterior` remonta o dict a partir da leitura anterior e pode
     # não trazer a chave; gravar None quebraria o cruzamento com o pipeline na chamada
     # seguinte.
-    camera_eleita = (melhor or {}).get("camera_db_id") or fontes[0].camera_id
+    # `is None` e não `or`: `or` trata o id 0 como ausente. Os ids vêm de AUTOINCREMENT
+    # (começam em 1), mas `camera_db_id: int = 0` é o default de `Pipeline` e de
+    # `AjustadorAmbiente` — um dublê ou um caminho de teste com id 0 atribuiria a leitura à
+    # fonte errada em silêncio. (Auditoria 27/08/2026.)
+    _eleita = (melhor or {}).get("camera_db_id")
+    camera_eleita = _eleita if _eleita is not None else fontes[0].camera_id
     fonte_eleita = next((f for f in fontes if f.camera_id == camera_eleita), fontes[0])
 
     anterior_id: int | None = None
@@ -1187,7 +1328,8 @@ def _ler_placa(
         return {"placa": None, "mensagem": mensagem, "frame_url": frame_url,
                 "camera_id": fonte_nitida.camera_id, "bico_id": bico_id,
                 "bboxes_detectadas": bboxes_total, "fontes": _resumo_fontes(), "avisos": avisos,
-                "snapshots_analisados": tentativas, "tentativas": tentativas, "parada_motivo": parada_motivo}
+                "snapshots_analisados": tentativas, "tentativas": tentativas,
+                "parada_motivo": parada_motivo, "modo": perfil}
 
     n_votos_snap = melhor.pop("n_votos_snap")
     # `.pop` com default: `_mesclar_com_anterior`/`_mesclar_com_historico` remontam o dict a
@@ -1244,6 +1386,10 @@ def _ler_placa(
             acordo=acordo_final, confirmada=confirmada, tipo_veiculo=tipo_veiculo,
             veiculo_classe=veiculo_classe, veiculo_conf=veiculo_conf,
             tipo_veiculo_fonte=tipo_veiculo_fonte,
+            # A câmera da fonte ELEITA nesta chamada — o mesmo valor que o ramo de INSERT
+            # abaixo grava, e pelo mesmo motivo que o comentário de lá explica. Sem isto a
+            # linha mesclada ficava com a câmera da chamada anterior.
+            camera_db_id=camera_eleita,
         ), "atualizar detecção")
         det_id = anterior_id
     else:
@@ -1275,8 +1421,12 @@ def _ler_placa(
     n_cameras_votando = len({c["camera_db_id"] for c in candidatos
                              if c["placa"] == melhor["placa"] and c.get("camera_db_id")})
 
-    log.info("Ler-placa: %s (%s, conf=%.2f, acordo=%.2f%s, tipo=%s, tentativas=%d/%d, parada=%s, "
+    # `modo` no log, e não só no payload: sem ele uma leitura fraca do perfil rápido é
+    # indistinguível de uma leitura fraca do completo, e as duas pedem investigações
+    # opostas (a primeira é o preço esperado do modo, a segunda é problema de câmera).
+    log.info("Ler-placa[%s]: %s (%s, conf=%.2f, acordo=%.2f%s, tipo=%s, tentativas=%d/%d, parada=%s, "
              "ocr=%d/%d, camera_id=%d, bico_id=%s, fontes=[%s])",
+             perfil,
              melhor["placa"], melhor["padrao"], melhor["confianca"], acordo_final,
              "" if confirmada else " NAO-CONFIRMADA",
              tipo_veiculo or "nao-estimado",
@@ -1312,4 +1462,8 @@ def _ler_placa(
         "n_cameras_votando":   n_cameras_votando,
         "fontes":              _resumo_fontes(),
         "avisos":              avisos,
+        # Sai nos DOIS desfechos (com e sem placa) e sempre preenchido, inclusive
+        # "completo": um campo que só aparece no modo novo obrigaria o consumidor a tratar
+        # ausência como um terceiro estado.
+        "modo":                perfil,
     }

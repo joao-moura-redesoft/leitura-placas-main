@@ -25,7 +25,7 @@ from app.core import nativo    # noqa: E402  (tem de vir antes de qualquer impor
 nativo.aplicar()
 
 import uvicorn
-from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -47,6 +47,7 @@ from app.web import api, paginas
 from app.web import auth as auth_rotas
 from app.web import cadastro as cadastro_rotas
 from app.web import deps as web_deps
+from app.seguranca import limitador
 from app.web import leitura as leitura_rotas
 from app.web import stream as stream_rotas
 from app.web import testes as testes_rotas
@@ -82,13 +83,63 @@ _PUBLICAS = frozenset({"/login", "/criar-admin", "/favicon.ico", "/ws",
 _RE_PREVIEW_BICO = re.compile(r"^/api/bicos/(\d+)/preview\.jpg$")
 
 
+# Tentativas de api_key global por IP, por minuto. Generoso para não atrapalhar integração
+# legítima (que acerta a chave e nem chega a contar duas vezes), e baixo o bastante para que
+# adivinhar deixe de ser gratuito.
+_LIMITE_APIKEY_MIN = 30
+
+
+def _limite_ou_429(bucket: str, ip: str, rotulo_log: str) -> JSONResponse | None:
+    """Aplica o freio de `_LIMITE_APIKEY_MIN`/min a `bucket`+`ip`. `None` = liberado;
+    senão, a resposta 429 pronta para devolver.
+
+    Compartilhado entre a `api_key` global e a chave de preview por posto — os dois
+    bloqueios de `_AuthMiddleware.dispatch` faziam a mesma checagem, log e resposta,
+    com só o nome do bucket/rótulo do log mudando. (Achado A5, review de 28/08/2026.)
+    """
+    if limitador.permitido(bucket, ip, _LIMITE_APIKEY_MIN, 60):
+        return None
+    log.warning("%s: limite de tentativas excedido para o IP %s", rotulo_log, ip)
+    return JSONResponse({"detail": "Muitas tentativas — aguarde um instante."},
+                        status_code=429)
+
+
+def _ampliar_threadpool(total: int) -> None:
+    """Aumenta o limite de threads que as rotas síncronas compartilham.
+
+    O AnyIO expõe isso por um `CapacityLimiter` de processo. A API é semi-privada e mudou
+    entre versões, então a falha aqui NUNCA pode derrubar o boot: sem o ajuste o servidor
+    roda com os 40 do default, que é o comportamento anterior.
+    """
+    if total <= 0:
+        return
+    try:
+        import anyio.to_thread
+        anyio.to_thread.current_default_thread_limiter().total_tokens = total
+        log.info("Threadpool de rotas síncronas: %d threads", total)
+    except Exception as e:
+        log.warning("Não foi possível ampliar o threadpool (%s) — seguindo com o default "
+                    "do AnyIO (40). Streams MJPEG simultâneos podem esgotá-lo.", e)
+
+
 class _AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
-        # Arquivos estáticos e streams sempre públicos
-        if (path.startswith("/static/") or path.startswith("/testes/fotos/")
-                or path.startswith("/testes/resultados/")
+        # Assets do painel (CSS, JS, fontes, ícones) são públicos — não têm dado de cliente.
+        #
+        # `/static/snapshots/` NÃO entra: são fotos de veículo de cliente real, nomeadas
+        # `{timestamp}_{PLACA}.jpg`. Quem soubesse a placa e a janela de tempo varria a pasta
+        # por força bruta, sem login, sem rate limit. O projeto já registrava o risco em
+        # comentário (`app/visao/leitura.py`), e a mitigação aplicada ao preview — mover para
+        # `dados_privados/` — nunca foi estendida ao histórico. Mesma coisa para
+        # `/testes/fotos/` e `/testes/resultados/`: o router `/api/testes` é admin-only, mas
+        # o conteúdo que ele grava estava sendo servido a anônimos, e ali há recorte de ROI
+        # de bico de cliente. (Auditoria 27/08/2026, achado A4.)
+        publico_estatico = (
+            path.startswith("/static/") and not path.startswith("/static/snapshots/")
+        )
+        if (publico_estatico
                 # /redefinir-senha/{token}: quem chega aqui, por definição, não tem
                 # como estar logado (perdeu a senha) — o token no caminho É a prova
                 # de identidade desta rota, não a sessão.
@@ -114,24 +165,50 @@ class _AuthMiddleware(BaseHTTPMiddleware):
                     request.state.user = user
                     return await call_next(request)
 
-        # Autenticação via api_key (para integrações externas sem browser)
-        cfg = config.carregar()
-        api_key = cfg.get("api_key", "").strip()
-        if api_key:
-            h = request.headers.get("X-API-Key", "")
-            q = request.query_params.get("api_key", "")
-            if h == api_key or q == api_key:
+        # Autenticação via api_key (para integrações externas sem browser).
+        #
+        # Três correções da auditoria de 27/08/2026 (achado A5), todas no mesmo ponto:
+        #
+        # 1. `secrets.compare_digest` no lugar de `==`. Esta chave vale para TUDO, inclusive
+        #    /api/config e /api/usuarios — e dez linhas abaixo a chave do POSTO, de escopo
+        #    muito menor, já era comparada assim. O padrão existia e não tinha sido aplicado
+        #    justamente à mais poderosa.
+        # 2. Rate limit por IP. Não havia NENHUM freio aqui: dava para martelar chaves
+        #    candidatas de graça, e cada tentativa ainda custava um `config.carregar()` (I/O
+        #    de disco) ao servidor. O módulo `limitador` já existia e só era usado em
+        #    /api/leitura.
+        # 3. O `carregar()` só acontece depois do freio, para a tentativa recusada não pagar
+        #    o disco.
+        ip_req = request.client.host if request.client else "?"
+        enviada_global = (request.headers.get("X-API-Key", "")
+                          or request.query_params.get("api_key", ""))
+        if enviada_global:
+            recusa = _limite_ou_429("api_key_global", ip_req, "api_key")
+            if recusa is not None:
+                return recusa
+            cfg = config.carregar()
+            api_key = cfg.get("api_key", "").strip()
+            if api_key and secrets.compare_digest(enviada_global, api_key):
                 return await call_next(request)
 
         # Chave PRÓPRIA do posto, só para o preview daquele bico (escopo estreito de
         # propósito: a chave do posto A nunca abre o preview do posto B).
         m = _RE_PREVIEW_BICO.match(path)
         if m:
+            bico_id = int(m.group(1))
             enviada = (request.headers.get("X-API-Key", "")
                        or request.query_params.get("api_key", ""))
-            chave_posto = web_deps.chave_do_posto_do_bico(int(m.group(1)))
-            if chave_posto and enviada and secrets.compare_digest(enviada, chave_posto):
-                return await call_next(request)
+            if enviada:
+                # Mesmo freio da api_key global (achado A5): sem isto dava para martelar
+                # candidatas de graça contra a chave do posto — ela tinha a comparação em
+                # tempo constante, mas nenhum teto de tentativas.
+                recusa = _limite_ou_429(f"preview_bico_{bico_id}", ip_req,
+                                        f"preview do bico {bico_id}")
+                if recusa is not None:
+                    return recusa
+                chave_posto = web_deps.chave_do_posto_do_bico(bico_id)
+                if chave_posto and secrets.compare_digest(enviada, chave_posto):
+                    return await call_next(request)
 
         # Não autenticado
         if path.startswith("/api/") or path.startswith("/stream/"):
@@ -189,13 +266,22 @@ def _aquecer_modelos_bg(cfg: dict) -> None:
     """
     import time as _t
     try:
-        from app.visao.detector import obter_detector_leitura
-        from app.visao.ocr import obter_ocr_leitura
+        from app.visao.detector import obter_detector_leitura, obter_detector_rapido
+        from app.visao.ocr import obter_ocr_leitura, obter_ocr_rapido
         t0 = _t.time()
         obter_detector_leitura(cfg)
         obter_ocr_leitura(cfg)
         log.info("Modelos de leitura prontos em %.1fs — primeira leitura já sai rápida",
                  _t.time() - t0)
+        # O perfil rápido tem par PRÓPRIO de modelos, e sem aquecê-los aqui a primeira
+        # chamada com `rapido=1` pagaria a carga inteira — a latência que o modo existe
+        # para evitar, no pior momento possível. Depois do par completo de propósito:
+        # este é o perfil opcional, e o completo é o que atende quem não pediu nada.
+        if config.get_bool(cfg, "rapido_ativo"):
+            t1 = _t.time()
+            obter_detector_rapido(cfg)
+            obter_ocr_rapido(cfg)
+            log.info("Modelos do perfil rápido prontos em %.1fs", _t.time() - t1)
     except Exception as e:
         # Falhar aqui não pode derrubar o servidor: a leitura recarrega sob demanda.
         log.warning("Não foi possível pré-carregar os modelos (%s) — serão carregados "
@@ -337,11 +423,31 @@ async def lifespan(_app: FastAPI):
 
     _tarefa_visao = asyncio.ensure_future(_subir_visao())
 
+    # Threadpool do AnyIO: 40 (o default) é pouco para este servidor.
+    #
+    # Medido: 114 rotas são `def` síncrono contra 5 `async`, então TODA requisição consome
+    # um token. Pior, cada viewer de MJPEG segura o seu quase 100% do tempo — o gerador é
+    # síncrono e dorme dentro do passo (`app/streaming/stream.py`). Somando abas de painel
+    # abertas com `POST /api/config` (que reinicia o pipeline na própria thread da request)
+    # e `ler-placa-teste` (28 s cada), o pool esgotava e o servidor inteiro parava de
+    # responder — inclusive `/api/leitura`, que é o faturamento, e `/api/healthz`, o que
+    # fazia o orquestrador reiniciar o container no meio de um restart de câmera.
+    # (Auditoria 27/08/2026, achado K5.)
+    #
+    # Ampliar o pool é a metade barata da correção; a outra metade é `_LIMITE_LER_PLACA_MIN`
+    # em `app/web/cadastro.py`, que impede uma única sessão de consumir tudo sozinha.
+    _ampliar_threadpool(config.get_int(cfg, "threadpool_max"))
+
     # Supervisor monitora threads de câmera e reinicia com backoff exponencial
     sv.supervisor.iniciar(cfg)
 
-    # Retenção de dados: apaga deteccoes/chamadas/JPEGs antigos (retencao_dias=0 desativa)
-    ret_mod.retencao.iniciar(config.get_int(cfg, "retencao_dias"))
+    # Retenção de dados, duas políticas no mesmo worker: por PRAZO apaga deteccoes/chamadas/
+    # JPEGs antigos (retencao_dias=0 desativa); por CONTAGEM tira só a foto das leituras que
+    # passaram do teto, mantendo a linha (retencao_max_imagens=0 desativa).
+    ret_mod.retencao.iniciar(
+        config.get_int(cfg, "retencao_dias"),
+        config.get_int(cfg, "retencao_max_imagens"),
+    )
 
     # Coleta de imagens para o dataset de testes (captura_dataset=nao desativa). Vive
     # fora do Pipeline de propósito: com `deteccao_automatica=nao` — o caso comum, já que
@@ -366,8 +472,17 @@ async def lifespan(_app: FastAPI):
 
     dns_mod.dns_server.parar()
     hls_mod.hls_manager.parar()
+    # O supervisor ANTES do pipeline, e com join: ele é o único que pode CRIAR pipeline
+    # enquanto tudo desce. Parado só por `Event.set()`, um `reiniciar_camera` em voo
+    # registrava a instância depois de `pipeline.parar()` e o processo saía com `cap.read()`
+    # em andamento — o access violation que `Camera.fechar()` existe para evitar.
     sv.supervisor.parar()
     ret_mod.retencao.parar()
+    # O coletor abre RTSP por conta própria e segura `lock_camera`: tem de morrer ANTES de
+    # `pipeline.parar()`, senão ele reabre a câmera que o pipeline acabou de fechar.
+    # `parar_coletor` não era chamado em lugar nenhum do projeto, nem aqui.
+    from app.visao import captura_dataset as _cap
+    _cap.parar_coletor()
     pipeline.parar()
     # Uma tarefa só agora: aquecer-modelos e subir-pipeline viraram uma sequência (ver
     # `_subir_visao`). Aguardar aqui é o que garante que nenhum thread de visao continua
@@ -377,8 +492,12 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Leitura de Placas (ALPR)", lifespan=lifespan)
-app.add_middleware(_SegurancaMiddleware)
+# ORDEM IMPORTA e é contra-intuitiva: `add_middleware` INSERE NO INÍCIO da pilha, então o
+# último adicionado é o mais EXTERNO. Com Segurança primeiro e Auth depois, o Auth ficava por
+# fora e os 401/303 que ele mesmo emite saíam sem CSP, sem `X-Frame-Options` e sem `nosniff`.
+# Invertendo, Segurança envolve tudo — inclusive as respostas do Auth. (Auditoria 27/08/2026.)
 app.add_middleware(_AuthMiddleware)
+app.add_middleware(_SegurancaMiddleware)
 class _EstaticosApp(StaticFiles):
     """StaticFiles que obriga o navegador a revalidar CSS e JS.
 
@@ -408,8 +527,45 @@ app.mount("/testes/fotos", StaticFiles(directory=_FOTOS_TESTE_DIR), name="testes
 app.mount("/testes/resultados/crops", StaticFiles(directory=_CROPS_TESTE_DIR), name="testes_crops")
 # HLS: diretório criado sob demanda pelo hls_manager; montado sempre para evitar
 # erro de startup caso o modo seja ativado sem reiniciar o servidor.
+#
+# `_HlsPorPosto` e não `StaticFiles` puro: os segmentos ficam em `hls/{camera_id}/`, e um
+# mount cru só exigia LOGIN — nada escopava por empresa. Um `cliente` do posto 4 pedia
+# `/hls/9/index.m3u8` e recebia o vídeo ao vivo da câmera do posto 7; `camera_id` é inteiro
+# sequencial pequeno, então nem adivinhação era preciso. O caminho MJPEG
+# (`app/web/stream.py`) já fazia a checagem certa. (Auditoria 27/08/2026, achado A4.)
 _os.makedirs("hls", exist_ok=True)
-app.mount("/hls", StaticFiles(directory="hls"), name="hls")
+
+
+class _HlsPorPosto(StaticFiles):
+    """StaticFiles que confere o dono da câmera antes de servir playlist ou segmento."""
+
+    _RE_CAM = re.compile(r"^/?(\d+)/")
+
+    async def get_response(self, path: str, scope):
+        m = self._RE_CAM.match(path.replace("\\", "/"))
+        if m is None:
+            # Nada fora de `hls/{id}/...` é servível — inclusive o índice do diretório.
+            return JSONResponse({"detail": "Não encontrado."}, status_code=404)
+        request = Request(scope)
+        # Cacheado: sem isto, cada segmento .ts (buscado a cada poucos segundos por
+        # câmera por espectador) fazia um SELECT novo — ver web_deps.empresa_da_camera_cacheada.
+        empresa_id = web_deps.empresa_da_camera_cacheada(int(m.group(1)))
+        if empresa_id is web_deps._AUSENTE:
+            return JSONResponse({"detail": "Câmera não encontrada."}, status_code=404)
+        try:
+            web_deps.checar_acesso_empresa(request, empresa_id)
+        except HTTPException as e:
+            # `checar_acesso_empresa` levanta 404 DE PROPÓSITO (não confirmar a um cliente
+            # fora do escopo que a câmera existe) — repassar o status REAL em vez de um 403
+            # fixo é o que fecha o oráculo de enumeração 403≠existe / 404≠não-existe.
+            return JSONResponse({"detail": e.detail}, status_code=e.status_code)
+        except Exception as e:
+            log.error("Erro ao checar acesso HLS da câmera %s: %s", m.group(1), e)
+            return JSONResponse({"detail": "Erro interno."}, status_code=500)
+        return await super().get_response(path, scope)
+
+
+app.mount("/hls", _HlsPorPosto(directory="hls"), name="hls")
 app.include_router(auth_rotas.router)
 app.include_router(paginas.router)
 app.include_router(stream_rotas.router)
@@ -439,8 +595,10 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     if not autenticado:
         cfg = config.carregar()
         api_key = cfg.get("api_key", "").strip()
-        if api_key:
-            autenticado = websocket.query_params.get("api_key", "") == api_key
+        enviada = websocket.query_params.get("api_key", "")
+        # Mesma chave global do middleware: mesma comparação constant-time (achado A5).
+        if api_key and enviada:
+            autenticado = secrets.compare_digest(enviada, api_key)
 
     if not autenticado or banco.contar_usuarios() == 0:
         await websocket.close(code=1008)  # Policy Violation
@@ -451,8 +609,11 @@ async def ws_endpoint(websocket: WebSocket) -> None:
         while True:
             # Mantém a conexão viva; ignora mensagens do cliente
             await websocket.receive_text()
-    except (WebSocketDisconnect, Exception):
-        pass
+    except WebSocketDisconnect:
+        pass          # desconexão do cliente é o fim NORMAL deste laço
+    except Exception as e:
+        # Engolir tudo sem log escondia falha real do broadcaster. (Auditoria 27/08/2026.)
+        log.warning("WebSocket encerrado por erro: %s", e, exc_info=True)
     finally:
         bc.broadcaster.desconectar(websocket)
 

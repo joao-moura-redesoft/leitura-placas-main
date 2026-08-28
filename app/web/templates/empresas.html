@@ -205,11 +205,26 @@ function abrirModalSeguranca(id) {
 
 function fecharModalSeguranca() { fecharOverlay('modal-seg-overlay'); }
 
+// `********` é a MÁSCARA que /api/empresas devolve (app/web/redacao.py): a chave em texto
+// puro só existe na resposta de `gerarApiKey`, no instante em que ela é criada. Mostrar a
+// máscara num <code> convidaria o admin a copiar oito asteriscos achando que é a chave —
+// então o estado "existe chave, mas não posso mostrar" tem texto próprio.
+const MASCARA_CHAVE = '********';
+
 function renderChaveAtual(chave) {
   const el = document.getElementById('seg-chave-atual');
-  el.innerHTML = chave
-    ? `<span class="badge badge-ok">Chave ativa</span> <code style="font-size:12px;word-break:break-all">${esc(chave)}</code>`
-    : '<span class="badge badge-antigo">Sem chave — endpoint público para este posto</span>';
+  if (!chave) {
+    el.innerHTML = '<span class="badge badge-antigo">Sem chave — endpoint público para este posto</span>';
+    return;
+  }
+  if (chave === MASCARA_CHAVE) {
+    el.innerHTML = '<span class="badge badge-ok">Chave ativa</span> '
+      + '<span style="font-size:12px;color:#64748b">'
+      + 'A chave só aparece no momento em que é gerada. Perdeu? Gere outra — '
+      + 'a anterior deixa de valer na hora.</span>';
+    return;
+  }
+  el.innerHTML = `<span class="badge badge-ok">Chave ativa</span> <code style="font-size:12px;word-break:break-all">${esc(chave)}</code>`;
 }
 
 async function gerarApiKey() {

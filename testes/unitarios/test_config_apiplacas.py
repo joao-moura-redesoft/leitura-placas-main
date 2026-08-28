@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from app.core import config
+from app.web import redacao
 
 HTML = Path("app/web/templates/configuracao.html").read_text(encoding="utf-8")
 
@@ -21,20 +22,32 @@ class TestSegredo:
     def test_token_nunca_sai_em_texto_claro(self, ambiente, admin):
         config.salvar({**config.carregar(), "apiplacas_token": "SEGREDO-PAGO"})
         corpo = admin.get("/api/config").json()
-        assert corpo["apiplacas_token"] == ""
+        assert corpo["apiplacas_token"] == redacao.MASCARA
         assert "SEGREDO-PAGO" not in str(corpo)
 
-    def test_salvar_a_tela_inteira_nao_apaga_o_token(self, ambiente, admin):
-        """O caso real: o admin abre a tela (o campo vem vazio, mascarado), muda o
-        intervalo de retenção e salva. O POST leva `apiplacas_token: ""` junto — e isso
-        NÃO pode zerar a credencial, senão a integração cai sem ninguém ter mexido nela.
+    def test_salvar_a_tela_inteira_com_mascara_nao_apaga_o_token(self, ambiente, admin):
+        """O caso real (achado A7): o admin abre a tela (o campo vem MASCARADO, não mais
+        vazio), muda o intervalo de retenção e salva sem tocar no token. O POST leva
+        `apiplacas_token: "********"` de volta — e isso NÃO pode zerar a credencial,
+        senão a integração cai sem ninguém ter mexido nela.
         """
         config.salvar({**config.carregar(), "apiplacas_token": "SEGREDO-PAGO"})
-        r = admin.post("/api/config", json={"apiplacas_token": "", "apiplacas_ttl_dias": "90"})
+        r = admin.post("/api/config", json={"apiplacas_token": redacao.MASCARA,
+                                            "apiplacas_ttl_dias": "90"})
         assert r.status_code == 200, r.text
         cfg = config.carregar()
         assert cfg["apiplacas_token"] == "SEGREDO-PAGO"
         assert cfg["apiplacas_ttl_dias"] == "90", "o resto da tela tem de salvar normalmente"
+
+    def test_enviar_vazio_de_proposito_agora_limpa_o_token(self, ambiente, admin):
+        """A outra metade do achado A7: antes desta mudança era IMPOSSÍVEL limpar um dos
+        4 campos de `CHAVES_SENSIVEIS` pela tela — todo vazio virava "preservar". Agora
+        presente-e-vazio é a forma explícita de limpar, igual a `rtsp_url_custom`
+        em /api/cameras."""
+        config.salvar({**config.carregar(), "apiplacas_token": "SEGREDO-PAGO"})
+        r = admin.post("/api/config", json={"apiplacas_token": ""})
+        assert r.status_code == 200, r.text
+        assert config.carregar()["apiplacas_token"] == ""
 
     def test_token_novo_substitui(self, ambiente, admin):
         config.salvar({**config.carregar(), "apiplacas_token": "ANTIGO"})
@@ -75,10 +88,10 @@ class TestSegredo:
 
 class TestTelaSabeDizerSeEstaDePe:
     def test_uso_informa_se_ha_token(self, ambiente, admin):
-        """`GET /api/config` devolve "" tanto para token salvo quanto para nunca
-        preenchido — mascara os dois casos IGUAL. Sem este booleano a tela não tem como
-        distinguir "configurado" de "vazio", e o modo de falha desta feature é o silêncio.
-        """
+        """Endpoint mantido mesmo depois do achado A7 (que fez `GET /api/config` passar
+        a distinguir configurado/vazio via `redacao.MASCARA`): `token_configurado`
+        continua sendo o sinal mais direto para a tela, sem depender de comparar o
+        valor mascarado contra a constante da máscara."""
         assert admin.get("/api/apiplacas/uso").json()["token_configurado"] is False
         config.salvar({**config.carregar(), "apiplacas_token": "SEGREDO-PAGO"})
         u = admin.get("/api/apiplacas/uso").json()

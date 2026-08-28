@@ -14,6 +14,8 @@ Redução de OCR:
     `_EstadoTrack.placa_eleita`) — concordância por posição, não por string exata
 """
 from __future__ import annotations
+import heapq
+import itertools
 import logging
 from collections import Counter
 
@@ -108,17 +110,30 @@ class _IoUTracker:
 
 # ── Estado OCR por track ──────────────────────────────────────────────────────
 
+# Contador global e monotônico de leituras de OCR registradas, de todos os tracks. Dá a
+# `leituras_recentes` uma ordem TOTAL por recência — ver o corte lá. Não é timestamp de
+# propósito: não depende de relógio de parede (que os testes mockam) e não empata.
+_CONTADOR_LEITURA = itertools.count()
+
+
 class _EstadoTrack:
     """Estado OCR acumulado de um veículo rastreado."""
 
     __slots__ = ("track_id", "frames_visto", "ultimo_ocr_frame",
-                 "resultados", "emitido", "bbox", "conf_det", "frames_sem_match")
+                 "resultados", "emitido", "bbox", "conf_det", "frames_sem_match",
+                 "_seqs")
 
     def __init__(self, track_id: int) -> None:
         self.track_id = track_id
         self.frames_visto: int = 0
         self.ultimo_ocr_frame: int = -1
         self.resultados: list[tuple[str, str, float]] = []  # (placa, padrao, conf)
+        # Ordem GLOBAL de chegada de cada item de `resultados`, para `leituras_recentes`
+        # poder cortar por recência entre tracks diferentes. Lista paralela em vez de uma
+        # 4-tupla porque `resultados` é desempacotado como trio em vários pontos
+        # (`placa_eleita`, `consenso`, `leituras_do_track`) e mudar a aridade quebraria
+        # todos em silêncio.
+        self._seqs: list[int] = []
         self.emitido: bool = False
         self.bbox: tuple[int, int, int, int] | None = None
         self.conf_det: float = 0.0
@@ -135,7 +150,12 @@ class _EstadoTrack:
 
     def registrar(self, placa: str, padrao: str, conf: float, frame_global: int) -> None:
         self.resultados.append((placa, padrao, conf))
+        self._seqs.append(next(_CONTADOR_LEITURA))
         self.ultimo_ocr_frame = frame_global
+
+    def resultados_ordenados(self):
+        """`(seq, placa, padrao, conf)` — `seq` é a ordem global de chegada da leitura."""
+        return zip(self._seqs, *zip(*self.resultados)) if self.resultados else ()
 
     def placa_eleita(self, votos_min: int) -> tuple[str, str, float] | None:
         """A placa deste veículo, por consenso POR POSIÇÃO entre as leituras acumuladas.
@@ -396,12 +416,36 @@ class Tracker:
         Ja emitido fica de FORA: aquela leitura virou linha no historico, e reinjeta-la
         faria a chamada do bico votar em cima de um evento ja fechado.
         """
-        leituras: list[tuple[str, float]] = []
+        # Corta por RECENCIA, e nao pela ordem em que os tracks entraram no dict.
+        #
+        # `self._estados` e indexado por track_id, entao iterar por ele e iterar por ordem de
+        # CRIACAO do track: o `[-limite:]` favorecia sistematicamente os ids mais altos. O
+        # caso que a feature existe para salvar era justamente o que perdia — o carro parado
+        # na bomba (track antigo, muitas leituras boas acumuladas) via as suas serem
+        # descartadas em favor de um carro de fundo que acabou de aparecer.
+        # (Auditoria 27/08/2026, achado M5.)
+        #
+        # `seq` e um contador monotonico por leitura registrada, e nao um timestamp: nao
+        # depende de relogio de parede (que os testes mockam) e da ordem total mesmo entre
+        # leituras do mesmo instante.
+        leituras: list[tuple[int, str, float]] = []
         for st in self._estados.values():
             if st.emitido:
                 continue
-            leituras.extend((p, c) for p, _, c in st.resultados)
-        return leituras[-limite:] if limite and limite > 0 else leituras
+            leituras.extend((seq, p, c) for seq, p, _, c in st.resultados_ordenados())
+
+        if not limite or limite <= 0:
+            leituras.sort(key=lambda x: x[0])
+            return [(p, c) for _, p, c in leituras]
+
+        # `heapq.nlargest` evita ordenar a lista INTEIRA quando só as `limite` mais
+        # recentes importam — esta função é chamada até ~13x por /api/leitura (ver
+        # app/web/leitura.py::_leituras_do_continuo). `nlargest` devolve em ordem
+        # DESCENDENTE de seq; `reversed` restaura a ordem ascendente (mais antiga
+        # primeiro) que `sort()+[-limite:]` produzia, para não mudar o comportamento
+        # observável de quem consome esta lista.
+        maiores = heapq.nlargest(limite, leituras, key=lambda x: x[0])
+        return [(p, c) for _, p, c in reversed(maiores)]
 
     @property
     def votos_minimos(self) -> int:
@@ -409,6 +453,17 @@ class Tracker:
         precisa dele para decidir se a leitura conta como confirmada — a mesma pergunta
         que `app/visao/consenso.py` faz nos dois caminhos de leitura."""
         return self._votos
+
+    def leituras_do_track(self, track_id: int) -> list[tuple[str, float]]:
+        """As leituras cruas `(placa, confianca)` deste veículo, ou lista vazia.
+
+        Existe para o pipeline poder calcular `acordo` pela MESMA métrica da leitura
+        reativa (`acordo_metrica`). Sem isto o contínuo só sabia contar string exata, e as
+        duas origens gravavam escalas diferentes na mesma coluna `deteccoes.acordo`
+        (auditoria 27/08/2026, achado A11).
+        """
+        st = self._estados.get(track_id)
+        return [(p, c) for p, _, c in st.resultados] if st else []
 
     def consenso(self, track_id: int, placa: str | None = None) -> tuple[int, int]:
         """(votos da placa eleita, total de leituras) do track, ou (0, 0) se não existe.

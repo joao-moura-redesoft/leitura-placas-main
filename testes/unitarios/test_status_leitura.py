@@ -5,7 +5,8 @@ confiar na placa — uma leitura fraca contada como 'ok' vira cobrança no clien
 """
 from __future__ import annotations
 
-from app.web.leitura import _status_da_leitura
+from app.visao.leitura import PERFIL_COMPLETO, PERFIL_RAPIDO
+from app.web.leitura import _status_da_leitura, perfil_pedido
 
 
 class TestStatusDaLeitura:
@@ -120,3 +121,31 @@ class TestStatusDaLeitura:
         assert _status_da_leitura(
             {"placa": "ABC1D23", "confirmada": True, "acordo": 0.9,
              "parada_motivo": "max_tentativas"})[0] == "ok"
+
+
+class TestPerfilPedido:
+    """A regra que decide quanto a chamada vai durar e quanta acuracia abre mao."""
+
+    def test_sem_o_parametro_e_o_perfil_completo(self):
+        assert perfil_pedido(False, {"rapido_ativo": "sim"}) == (PERFIL_COMPLETO, "")
+
+    def test_com_o_parametro_e_o_perfil_rapido(self):
+        assert perfil_pedido(True, {"rapido_ativo": "sim"}) == (PERFIL_RAPIDO, "")
+
+    def test_desligado_no_servidor_roda_completo_e_avisa(self):
+        """`rapido_ativo=nao` nao e erro para quem chamou — e o interruptor para desligar
+        o perfil leve num posto onde ele se mostrou ruim, sem mexer no roteador. Mas o
+        chamador precisa saber, senao espera em 5s uma resposta que leva 30."""
+        perfil, aviso = perfil_pedido(True, {"rapido_ativo": "nao"})
+        assert perfil == PERFIL_COMPLETO
+        assert "desativado" in aviso
+
+    def test_desligado_nao_avisa_quem_nao_pediu(self):
+        """Aviso so para quem fez a pergunta: poluir o `avisos` de toda chamada completa
+        faria o painel agrupar um nao-evento como se fosse problema de infraestrutura."""
+        assert perfil_pedido(False, {"rapido_ativo": "nao"}) == (PERFIL_COMPLETO, "")
+
+    def test_config_sem_a_chave_mantem_o_modo_disponivel(self):
+        """Instalacao antiga, sem `rapido_ativo` no config.txt: o default de
+        `config.PADROES` e 'sim', e quem pedir o modo tem de recebe-lo."""
+        assert perfil_pedido(True, {})[0] == PERFIL_RAPIDO

@@ -136,7 +136,8 @@ class TestLogDeReinicioNaoMente:
         """A regressão de diagnóstico: sucesso logado sobre um reinício que não houve."""
         pipeline._instancias[CAM] = _PipelineFalso(parou=True)
         monkeypatch.setattr(pipeline, "_cfg_para_camera", lambda cfg, cam: dict(cfg))
-        monkeypatch.setattr(pipeline, "reiniciar_camera", lambda cid, cfg: False)
+        monkeypatch.setattr(pipeline, "reiniciar_camera_status",
+                            lambda cid, cfg: "falhou")
 
         s = _supervisor(monkeypatch, cameras=[{"id": CAM, "ativo": 1}])
         with caplog.at_level("INFO"):
@@ -146,10 +147,55 @@ class TestLogDeReinicioNaoMente:
         assert "reiniciado com sucesso" not in texto
         assert "NÃO confirmado" in texto
 
+    def test_camera_ocupada_nao_escala_o_backoff(self, limpo, monkeypatch):
+        """O que fazia 30 s de stall virar minutos de camera fora.
+
+        `REINICIO_OCUPADO` significa "a thread anterior esta dentro de um cap.read()", que
+        tem teto de ~30 s (medido em 27/08/2026: as propriedades CAP_PROP_*_TIMEOUT_MSEC sao
+        recusadas nesta build e os 30 s vem do interrupt callback do OpenCV). Tratar isso
+        como falha dobrava a espera a cada ciclo — o log de 26/08 mostra a camera 6 indo de
+        5 s a 160 s de backoff e ficando 363 s sem frame.
+        """
+        pipeline._instancias[CAM] = _PipelineFalso(parou=True)
+        monkeypatch.setattr(pipeline, "_cfg_para_camera", lambda cfg, cam: dict(cfg))
+        monkeypatch.setattr(pipeline, "reiniciar_camera_status",
+                            lambda cid, cfg: pipeline.REINICIO_OCUPADO)
+
+        s = _supervisor(monkeypatch, cameras=[{"id": CAM, "ativo": 1}])
+        agora = time.time()
+        for _ in range(5):
+            s._backoff_ate[CAM] = 0          # libera o portao do backoff
+            s._tentar_reiniciar(CAM, agora)
+
+        from app.operacao.supervisor import _BACKOFF_INICIAL, _RETENTATIVA_OCUPADO
+        assert s._delay_atual.get(CAM, _BACKOFF_INICIAL) == _BACKOFF_INICIAL, (
+            "cinco ciclos de camera OCUPADA escalaram o backoff — a espera deveria ter "
+            "ficado no valor inicial"
+        )
+        assert s._backoff_ate[CAM] - agora == _RETENTATIVA_OCUPADO
+        assert s._restarts.get(CAM, 0) == 0, "ocupado nao gasta tentativa de reinicio"
+
+    def test_falha_real_continua_escalando_o_backoff(self, limpo, monkeypatch):
+        """A escalada tem de sobreviver para o caso que ela existe para tratar."""
+        pipeline._instancias[CAM] = _PipelineFalso(parou=True)
+        monkeypatch.setattr(pipeline, "_cfg_para_camera", lambda cfg, cam: dict(cfg))
+        monkeypatch.setattr(pipeline, "reiniciar_camera_status", lambda cid, cfg: "falhou")
+
+        s = _supervisor(monkeypatch, cameras=[{"id": CAM, "ativo": 1}])
+        agora = time.time()
+        for _ in range(3):
+            s._backoff_ate[CAM] = 0
+            s._tentar_reiniciar(CAM, agora)
+
+        from app.operacao.supervisor import _BACKOFF_INICIAL
+        assert s._delay_atual[CAM] > _BACKOFF_INICIAL, "falha real deve escalar"
+        assert s._restarts[CAM] == 3
+
     def test_reinicio_bem_sucedido_continua_registrando_sucesso(self, limpo, monkeypatch, caplog):
         pipeline._instancias[CAM] = _PipelineFalso(parou=True)
         monkeypatch.setattr(pipeline, "_cfg_para_camera", lambda cfg, cam: dict(cfg))
-        monkeypatch.setattr(pipeline, "reiniciar_camera", lambda cid, cfg: True)
+        monkeypatch.setattr(pipeline, "reiniciar_camera_status",
+                            lambda cid, cfg: pipeline.REINICIO_OK)
 
         s = _supervisor(monkeypatch, cameras=[{"id": CAM, "ativo": 1}])
         with caplog.at_level("INFO"):

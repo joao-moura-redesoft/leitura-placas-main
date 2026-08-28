@@ -444,7 +444,11 @@ function renderCabecalho() {
   const linhas = [
     ["Nome", esc(c.nome)],
     ["Local", esc(c.local || '—')],
-    ["Endereço", esc(c.intelbras_host || c.rtsp_url_custom || '—')],
+    // URL RTSP com credencial embutida vem mascarada (app/web/redacao.py) — "********"
+    // não informa nada aqui.
+    ["Endereço", esc(c.intelbras_host
+        || (c.rtsp_url_custom === '********' ? 'URL personalizada (oculta)' : c.rtsp_url_custom)
+        || '—')],
     ["Canal", esc(c.intelbras_canal || '—')],
     ["Situação", c.ativo ? '<span class="badge badge-ok">ativa</span>'
                          : '<span class="badge badge-err">inativa</span>'],

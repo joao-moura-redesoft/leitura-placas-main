@@ -38,17 +38,34 @@ def _migrar(c: sqlite3.Connection) -> None:
             ativo INTEGER NOT NULL DEFAULT 1,
             criado_em TEXT NOT NULL
         );
-        INSERT INTO cameras_novo
-            (id, nome, camera_tipo, camera_indice, intelbras_host, intelbras_porta,
-             intelbras_usuario, intelbras_senha, intelbras_canal, intelbras_subtype,
-             intelbras_formato, rtsp_url_custom, ativo, criado_em)
-        SELECT id, nome, camera_tipo, camera_indice, intelbras_host, intelbras_porta,
-               intelbras_usuario, intelbras_senha, intelbras_canal, intelbras_subtype,
-               intelbras_formato, rtsp_url_custom, ativo, criado_em
-        FROM cameras;
-        DROP TABLE cameras;
-        ALTER TABLE cameras_novo RENAME TO cameras;
         """)
+        # Copia as colunas que existem nas DUAS tabelas, em vez de uma lista fixa.
+        #
+        # A lista fixa omitia `empresa_id` e `local`. Testado em 27/08/2026 contra o backup
+        # real `placas.db.bak-pre-multitenant`: naquele schema as duas colunas ainda NÃO
+        # existem, então nada se perdia e a migração passa limpa (FK check sem violações).
+        # Mas a lista fixa só estava certa por coincidência — um banco que chegasse aqui já
+        # com o vínculo câmera→posto preenchido o perderia em silêncio, e
+        # `_JOIN_EMPRESA_DETECCAO` passaria a tratar essas câmeras como "sem empresa",
+        # quebrando a retenção por cliente (LGPD). Derivar as colunas remove a coincidência.
+        comuns = [nome for nome in
+                  [row[1] for row in c.execute("PRAGMA table_info(cameras_novo)").fetchall()]
+                  if nome in cols]
+        lista = ", ".join(comuns)
+        c.execute(f"INSERT INTO cameras_novo ({lista}) SELECT {lista} FROM cameras")
+        # `foreign_keys` OFF durante o DROP: com ele ligado (`_base._abrir` liga), o DROP
+        # executa um DELETE implícito e um `bicos.camera_id ... ON DELETE RESTRICT` apontando
+        # para cameras faria a migração falhar. Hoje `bicos` ainda não existe quando este
+        # ramo roda (confirmado no backup), mas a ordem de criação não é uma garantia que
+        # este código deva assumir.
+        c.execute("PRAGMA foreign_keys=OFF")
+        try:
+            c.executescript("""
+            DROP TABLE cameras;
+            ALTER TABLE cameras_novo RENAME TO cameras;
+            """)
+        finally:
+            c.execute("PRAGMA foreign_keys=ON")
         cols = {row[1] for row in c.execute("PRAGMA table_info(cameras)").fetchall()}
 
     # Câmera pertence a um posto (empresa) e diz onde está fisicamente instalada.
@@ -58,6 +75,69 @@ def _migrar(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE cameras ADD COLUMN empresa_id INTEGER REFERENCES empresas(id) ON DELETE CASCADE")
     if "local" not in cols:
         c.execute("ALTER TABLE cameras ADD COLUMN local TEXT NOT NULL DEFAULT ''")
+
+    # Dono da entrada de lista branca/negra. NULL = entrada GLOBAL do sistema, visível a
+    # todos os postos — que é como todas as linhas existentes nascem, preservando o
+    # comportamento anterior. Preenchido = entrada daquele posto, e só ele a enxerga.
+    #
+    # Sem esta coluna, `/api/listas` devolvia a lista inteira do sistema para qualquer
+    # usuário: um `cliente` via as placas que OUTROS postos marcaram, com a descrição em
+    # texto livre. Num servidor com concorrentes como clientes, é dado de negócio do
+    # vizinho. (Auditoria 27/08/2026, achado A3.)
+    cols_lst = {row[1] for row in c.execute("PRAGMA table_info(listas_placas)").fetchall()}
+    if "empresa_id" not in cols_lst:
+        c.execute("ALTER TABLE listas_placas ADD COLUMN empresa_id INTEGER "
+                  "REFERENCES empresas(id) ON DELETE CASCADE")
+
+    # `placa TEXT NOT NULL UNIQUE` (coluna sozinha) era uma constraint GLOBAL: dois postos
+    # não conseguiam cada um bloquear a MESMA placa no próprio lote — o segundo INSERT
+    # estourava IntegrityError mesmo sendo de um posto diferente. Trocar ingenuamente por
+    # UNIQUE(placa, empresa_id) não bastava: o SQLite trata cada NULL como distinto num
+    # UNIQUE comum, então várias entradas GLOBAIS (empresa_id NULL) com a mesma placa
+    # passariam a coexistir sem erro. A correção são dois ÍNDICES ÚNICOS PARCIAIS no lugar
+    # do UNIQUE de coluna — um por escopo. SQLite não remove UNIQUE de coluna via ALTER
+    # (mesmo motivo do rebuild de `cameras` acima), então primeiro reconstrói a tabela SEM
+    # o UNIQUE embutido, e só depois cria os dois índices.
+    # (Auditoria 28/08/2026, achado A2.)
+    idx_lst = c.execute("PRAGMA index_list(listas_placas)").fetchall()
+    if any(row["origin"] == "u" for row in idx_lst):
+        c.executescript("""
+        CREATE TABLE listas_placas_novo (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            placa TEXT NOT NULL,
+            tipo TEXT NOT NULL CHECK(tipo IN ('branca','negra')),
+            descricao TEXT,
+            criado_em TEXT NOT NULL,
+            empresa_id INTEGER REFERENCES empresas(id) ON DELETE CASCADE
+        );
+        """)
+        # Copia as colunas que existem nas DUAS tabelas — mesmo motivo do rebuild de
+        # `cameras` acima: uma lista fixa só está certa por coincidência.
+        cols_lst_novo = {row[1] for row in
+                        c.execute("PRAGMA table_info(listas_placas)").fetchall()}
+        comuns = [nome for nome in
+                  [row[1] for row in
+                   c.execute("PRAGMA table_info(listas_placas_novo)").fetchall()]
+                  if nome in cols_lst_novo]
+        lista = ", ".join(comuns)
+        c.execute(f"INSERT INTO listas_placas_novo ({lista}) SELECT {lista} FROM listas_placas")
+        c.execute("PRAGMA foreign_keys=OFF")
+        try:
+            c.executescript("""
+            DROP TABLE listas_placas;
+            ALTER TABLE listas_placas_novo RENAME TO listas_placas;
+            """)
+        finally:
+            c.execute("PRAGMA foreign_keys=ON")
+
+    # Um índice cobre as entradas GLOBAIS entre si; o outro, as de POSTO entre si — a mesma
+    # placa pode existir em 1 global + 1 por posto, ou em postos diferentes, nunca 2x no
+    # MESMO escopo. Dado existente já satisfaz os dois (o UNIQUE antigo era mais
+    # restritivo), então não há necessidade de deduplicar antes de criar os índices.
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_listas_placa_global "
+              "ON listas_placas(placa) WHERE empresa_id IS NULL")
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_listas_placa_posto "
+              "ON listas_placas(placa, empresa_id) WHERE empresa_id IS NOT NULL")
 
     cols_det = {row[1] for row in c.execute("PRAGMA table_info(deteccoes)").fetchall()}
     if "bico_id" not in cols_det:
@@ -194,6 +274,14 @@ def _migrar(c: sqlite3.Connection) -> None:
     # depois desta migração a coluna existe também nos bancos antigos.
     c.execute("CREATE INDEX IF NOT EXISTS idx_bicos_camera2 ON bicos(camera2_id)")
 
+    # Perfil da leitura que atendeu a chamada (`GET /api/leitura?rapido=1`). Default
+    # 'completo' e não NULL: toda chamada anterior a esta coluna rodou o perfil completo,
+    # e é isso que ela era — deixar NULL criaria um terceiro estado ("não se sabe") que os
+    # agregados teriam de tratar para sempre sem ganhar informação nenhuma.
+    cols_cha = {row[1] for row in c.execute("PRAGMA table_info(chamadas)").fetchall()}
+    if "modo" not in cols_cha:
+        c.execute("ALTER TABLE chamadas ADD COLUMN modo TEXT NOT NULL DEFAULT 'completo'")
+
     # Usuário do painel restrito a UMA empresa ("cliente"): NULL = admin, vê tudo (papel
     # continua sendo o que manda — isto só faz sentido quando papel='cliente').
     cols_usr = {row[1] for row in c.execute("PRAGMA table_info(usuarios)").fetchall()}
@@ -229,10 +317,16 @@ def inicializar() -> None:
 
         CREATE TABLE IF NOT EXISTS listas_placas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            placa TEXT NOT NULL UNIQUE,
+            -- SEM UNIQUE aqui: unicidade é POR ESCOPO (global × por posto), não global —
+            -- ver os dois índices únicos parciais criados em `_migrar`, logo abaixo do
+            -- bloco que adiciona `empresa_id` a esta tabela.
+            placa TEXT NOT NULL,
             tipo TEXT NOT NULL CHECK(tipo IN ('branca','negra')),
             descricao TEXT,
-            criado_em TEXT NOT NULL
+            criado_em TEXT NOT NULL,
+            -- NULL = entrada global do sistema; preenchido = só daquele posto. Ver a
+            -- migração acima para o porquê.
+            empresa_id INTEGER REFERENCES empresas(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS usuarios (
@@ -352,7 +446,13 @@ def inicializar() -> None:
             placa TEXT,
             acordo REAL,
             tentativas INTEGER,
-            duracao_ms INTEGER
+            duracao_ms INTEGER,
+            modo TEXT NOT NULL DEFAULT 'completo'   -- completo | rapido (ver PERFIL_* em
+                                         -- app/visao/leitura.py). Coluna própria, e não
+                                         -- texto no `motivo`, porque as duas populações
+                                         -- têm taxa de sucesso e duração diferentes POR
+                                         -- DESENHO: misturá-las faria o painel mostrar
+                                         -- uma queda de qualidade que ninguém causou.
         );
         CREATE INDEX IF NOT EXISTS idx_chamadas_criado ON chamadas(criado_em DESC);
         CREATE INDEX IF NOT EXISTS idx_chamadas_empresa ON chamadas(empresa_id);

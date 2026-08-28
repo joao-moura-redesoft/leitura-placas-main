@@ -13,7 +13,24 @@ A distinção nunca é feita direto de `banco.buscar_usuario_id` nas rotas — s
 aqui, para o escopo ficar num lugar só.
 """
 from __future__ import annotations
+import threading
+
 from fastapi import HTTPException, Request
+
+
+def inteiro_ou_400(valor, campo: str) -> int:
+    """`int()` com erro de CLIENTE, não 500.
+
+    `int(payload["empresa_id"])` cru levantava ValueError num payload como
+    `{"empresa_id": "abc"}`, e o FastAPI devolvia 500 — erro de servidor para um dado
+    inválido do cliente, ainda deixando stack no log como se a falha fosse nossa.
+    (Auditoria 27/08/2026.) Centralizado aqui porque estava copiado igual em
+    app/web/api.py, app/web/cadastro.py e app/web/usuarios.py.
+    """
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"{campo} deve ser um número inteiro")
 
 
 def usuario_atual(request: Request) -> dict | None:
@@ -95,3 +112,39 @@ def chave_do_posto_do_bico(bico_id: int) -> str:
         return ""
     empresa = banco.empresas_obter(automacao["empresa_id"])
     return (empresa or {}).get("api_key") or ""
+
+
+# ── Cache de empresa_id por câmera, para o HLS ──────────────────────────────────────
+#
+# `_HlsPorPosto.get_response` (app/servidor.py) chamava `banco.cameras_obter` a CADA
+# request — inclusive cada segmento .ts, buscado a cada poucos segundos por câmera por
+# espectador. Mesmo padrão de cache já usado em app/streaming/stream.py (`_cache_jpeg`):
+# dict plano + lock, invalidado EXPLICITAMENTE (nunca por TTL) quando a câmera muda de
+# dono ou é removida. (Achado A4/C1, review de 28/08/2026.)
+_cache_lock_camera = threading.Lock()
+_AUSENTE = object()   # sentinela: câmera não existe (evita reconsultar toda hora)
+_cache_empresa_camera: dict[int, object] = {}
+
+
+def empresa_da_camera_cacheada(camera_id: int):
+    """empresa_id da câmera, `None` se ela não tem posto, ou `_AUSENTE` se não existe."""
+    with _cache_lock_camera:
+        if camera_id in _cache_empresa_camera:
+            return _cache_empresa_camera[camera_id]
+    from app.core import banco
+
+    cam = banco.cameras_obter(camera_id)
+    valor = cam.get("empresa_id") if cam else _AUSENTE
+    with _cache_lock_camera:
+        _cache_empresa_camera[camera_id] = valor
+    return valor
+
+
+def descartar_cache_camera(camera_id: int) -> None:
+    with _cache_lock_camera:
+        _cache_empresa_camera.pop(camera_id, None)
+
+
+def limpar_cache_camera() -> None:
+    with _cache_lock_camera:
+        _cache_empresa_camera.clear()

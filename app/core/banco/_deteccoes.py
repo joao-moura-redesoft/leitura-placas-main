@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from ._base import _agora
+from ._base import _agora, inicio_do_dia_local
 
 from ._base import cursor
 
@@ -13,6 +13,12 @@ from ._base import cursor
 # é teste manual, porque do ponto de vista de quem audita um abastecimento o que
 # importa é "isto aconteceu de verdade" e não qual caminho de código gravou a linha.
 ORIGENS_FILTRO = ("producao", "teste", "todas")
+
+# Quantos `?` cabem numa cláusula IN por vez. Bem abaixo do teto real do SQLite
+# (`SQLITE_LIMIT_VARIABLE_NUMBER`, 32766 nesta build; 999 em builds antigas) para o código
+# funcionar em qualquer uma delas, e pequeno o bastante para nenhuma transação segurar o
+# write lock por muito tempo enquanto o pipeline tenta gravar detecção.
+_LOTE_PARAMETROS = 500
 
 # Tipos de veículo que o histórico sabe filtrar. 'desconhecido' é um filtro de PRIMEIRA
 # CLASSE, e não um resto: NULL é o valor de toda linha em que o detector de veículo não
@@ -177,7 +183,8 @@ def atualizar_deteccao(id_: int, *, placa: str, padrao: str, confianca: float,
                         tipo_veiculo: str | None = None,
                         veiculo_classe: int | None = None,
                         veiculo_conf: float | None = None,
-                        tipo_veiculo_fonte: str | None = None) -> bool:
+                        tipo_veiculo_fonte: str | None = None,
+                        camera_db_id: int | None = None) -> bool:
     """Atualiza placa/padrão/confiança de uma detecção existente — usado ao mesclar uma
     leitura nova com a detecção anterior do mesmo bico em vez de criar uma 2ª linha.
 
@@ -194,6 +201,13 @@ def atualizar_deteccao(id_: int, *, placa: str, padrao: str, confianca: float,
             "criado_em=:criado_em, "
             "snapshot=COALESCE(:snapshot, snapshot), frame=COALESCE(:frame, frame), "
             "acordo=COALESCE(:acordo, acordo), confirmada=COALESCE(:confirmada, confirmada), "
+            # A câmera que de fato LEU esta chamada. Não estava na lista, e a linha ficava
+            # com a câmera da leitura ANTERIOR: num bico de duas câmeras, a chamada seguinte
+            # cruzava o pipeline pela câmera errada e o mesmo veículo aparecia duas vezes no
+            # histórico — exatamente o que o comentário do INSERT diz estar prevenindo.
+            # COALESCE porque quem não sabe a câmera (chamador antigo) não deve apagá-la.
+            # (Auditoria 27/08/2026, achado M3.)
+            "camera_db_id=COALESCE(:camera_db_id, camera_db_id), "
             # Os quatro campos do tipo de veículo se movem em BLOCO, e não por COALESCE
             # independente — `:fonte` é o discriminante de presença (nunca None numa
             # leitura real; todo caminho de `app/visao/detector.py` se rotula). Um COALESCE
@@ -211,6 +225,7 @@ def atualizar_deteccao(id_: int, *, placa: str, padrao: str, confianca: float,
                 "criado_em": _agora(), "snapshot": snapshot, "frame": frame,
                 "acordo": acordo,
                 "confirmada": None if confirmada is None else int(confirmada),
+                "camera_db_id": camera_db_id,
                 "fonte": tipo_veiculo_fonte, "tipo": tipo_veiculo,
                 "classe": veiculo_classe, "conf": veiculo_conf,
                 "id": id_,
@@ -320,10 +335,26 @@ def listar_deteccoes(
         return [dict(r) for r in c.execute(sql, params).fetchall()]
 
 
-def remover_deteccao(id_: int) -> bool:
+def remover_deteccao(id_: int) -> list[str] | None:
+    """Apaga a linha e devolve os caminhos relativos dos JPEGs que ficaram órfãos
+    (lista possivelmente vazia), ou `None` se não havia nada com esse id.
+
+    Devolve os arquivos porque antes não devolvia: a linha sumia e o JPEG ficava em disco
+    para sempre. Órfão é pior do que só ocupar espaço — ele é invisível para
+    `imagens_excedentes`, que ancora o teto de contagem no banco, então nenhuma limpeza
+    automática jamais o alcança. Quem chama (app/web/api.py) apaga do disco.
+
+    `list[str] | None` em vez de bool: a rota precisa distinguir "não existia" (404) de
+    "existia e não tinha foto" (204 com lista vazia), e `[] or None` colapsaria os dois.
+    """
     with cursor() as c:
-        cur = c.execute("DELETE FROM deteccoes WHERE id=?", (id_,))
-        return cur.rowcount > 0
+        linha = c.execute(
+            "SELECT snapshot, frame FROM deteccoes WHERE id=?", (id_,)
+        ).fetchone()
+        if linha is None:
+            return None
+        c.execute("DELETE FROM deteccoes WHERE id=?", (id_,))
+        return [v for v in (linha["snapshot"], linha["frame"]) if v]
 
 
 def _corte(dias: int) -> str:
@@ -425,11 +456,82 @@ def deteccoes_e_chamadas_antigas(dias: int) -> dict:
     return {"arquivos": arquivos, "deteccoes_removidas": n_det, "chamadas_removidas": n_cham}
 
 
-def stats() -> dict:
+def contagem_com_imagem() -> int:
+    """Quantas linhas de `deteccoes` ainda têm foto (`snapshot` ou `frame` não-nulos).
+
+    Checagem BARATA para quem só quer saber "há algo a purgar?" antes de pagar o custo
+    de `rotulos.protegidos()` (leitura de disco + parse de JSON) — ver
+    `app/operacao/retencao.py::_purgar_por_contagem`, chamada a cada 5 minutos. Mesma
+    condição WHERE de `imagens_excedentes`, só que sem o OFFSET nem a mutação.
+    """
+    with cursor() as c:
+        return c.execute(
+            "SELECT COUNT(*) FROM deteccoes WHERE snapshot IS NOT NULL OR frame IS NOT NULL"
+        ).fetchone()[0]
+
+
+def imagens_excedentes(max_leituras: int) -> dict:
+    """Tira a FOTO das leituras que passaram do teto de contagem, da mais antiga para a mais
+    nova, e devolve os caminhos relativos dos JPEGs que ficaram órfãos.
+
+    A LINHA FICA. Só `snapshot`/`frame` viram NULL — placa, hora, bico e confiança continuam
+    no histórico e nos relatórios. É a diferença central para `deteccoes_e_chamadas_antigas`,
+    que apaga a linha inteira: aqui o que sobra em disco é o problema (221 MB para 971
+    leituras, medido), não a linha (~200 bytes). `historico.html` já renderiza "—" quando as
+    duas colunas são nulas, então isso não produz miniatura quebrada.
+
+    Como em `deteccoes_e_chamadas_antigas`, apagar os arquivos é responsabilidade de quem
+    chama (app/operacao/retencao.py) — esta camada não faz I/O de arquivo.
+    """
+    if max_leituras <= 0:                 # 0 = sem teto; só o prazo em dias vale
+        return {"arquivos": [], "leituras_afetadas": 0}
+
+    with cursor() as c:
+        # O ORDER BY é IDÊNTICO ao de `listar_deteccoes` (inclusive o desempate por id DESC).
+        # Tem de ser: "as N mais recentes" que sobrevivem à purga precisam ser exatamente as
+        # N primeiras que a tela mostra, senão a purga come uma linha visível na página 1 e
+        # poupa outra da página 3. O índice idx_deteccoes_criado(criado_em DESC) cobre.
+        linhas = c.execute(
+            "SELECT id, snapshot, frame FROM deteccoes "
+            "WHERE snapshot IS NOT NULL OR frame IS NOT NULL "
+            "ORDER BY criado_em DESC, id DESC LIMIT -1 OFFSET ?",
+            (max_leituras,),
+        ).fetchall()
+        if not linhas:
+            return {"arquivos": [], "leituras_afetadas": 0}
+
+        arquivos = [r["snapshot"] for r in linhas if r["snapshot"]]
+        arquivos += [r["frame"] for r in linhas if r["frame"]]
+
+        # NÃO dá para usar `atualizar_deteccao`: ela é COALESCE(:snapshot, snapshot), ou
+        # seja, é incapaz de gravar NULL por construção.
+        #
+        # EM LOTES, e não um `IN (?,?,…)` com o excedente inteiro. O limite desta build é
+        # `SQLITE_LIMIT_VARIABLE_NUMBER = 32766` (medido), e passar disso levanta
+        # `too many SQL variables`. O erro era capturado pelo laço de retenção e repetido a
+        # cada 5 minutos PARA SEMPRE — o teto nunca era aplicado e o disco enchia em
+        # silêncio. Alcançável ao ligar `retencao_max_imagens` num banco já grande.
+        # (Auditoria 27/08/2026, achado A9.)
+        ids = [r["id"] for r in linhas]
+        for i in range(0, len(ids), _LOTE_PARAMETROS):
+            lote = ids[i:i + _LOTE_PARAMETROS]
+            marcadores = ",".join("?" * len(lote))
+            c.execute(
+                f"UPDATE deteccoes SET snapshot=NULL, frame=NULL WHERE id IN ({marcadores})",
+                lote,
+            )
+
+    return {"arquivos": arquivos, "leituras_afetadas": len(linhas)}
+
+
+def stats(fuso: str = "America/Sao_Paulo") -> dict:
+    """Contadores do dashboard. `fuso` decide onde o dia começa — ver
+    `_base.inicio_do_dia_local` e o achado M2 da auditoria de 27/08/2026."""
+    corte_hoje = inicio_do_dia_local(fuso)
     with cursor() as c:
         total = c.execute("SELECT COUNT(*) FROM deteccoes").fetchone()[0]
         hoje = c.execute(
-            "SELECT COUNT(*) FROM deteccoes WHERE criado_em >= date('now')"
+            "SELECT COUNT(*) FROM deteccoes WHERE criado_em >= ?", (corte_hoje,)
         ).fetchone()[0]
         top = [
             dict(r)
@@ -441,24 +543,47 @@ def stats() -> dict:
         return {"total": total, "hoje": hoje, "top": top}
 
 
-def listas_listar(tipo: str | None = None) -> list[dict]:
+def listas_listar(tipo: str | None = None, empresa_id: int | None = None,
+                  limit: int = 1000) -> list[dict]:
+    """Entradas de lista branca/negra visíveis para este escopo.
+
+    `empresa_id=None` (admin) traz tudo. Com escopo, traz as GLOBAIS (empresa_id NULL) mais
+    as do próprio posto — nunca as de outro. `limit` existe porque a rota é aberta ao painel
+    e a tabela não tinha teto nenhum.
+    """
     sql = "SELECT * FROM listas_placas"
+    where: list[str] = []
     params: list = []
     if tipo:
-        sql += " WHERE tipo=?"
+        where.append("tipo=?")
         params.append(tipo)
-    sql += " ORDER BY criado_em DESC"
+    if empresa_id is not None:
+        where.append("(empresa_id IS NULL OR empresa_id=?)")
+        params.append(empresa_id)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY criado_em DESC LIMIT ?"
+    params.append(limit)
     with cursor() as c:
         return [dict(r) for r in c.execute(sql, params).fetchall()]
 
 
-def listas_inserir(placa: str, tipo: str, descricao: str = "") -> int:
+def listas_inserir(placa: str, tipo: str, descricao: str = "",
+                   empresa_id: int | None = None) -> int:
     with cursor() as c:
         cur = c.execute(
-            "INSERT INTO listas_placas (placa, tipo, descricao, criado_em) VALUES (?, ?, ?, ?)",
-            (placa, tipo, descricao, _agora()),
+            "INSERT INTO listas_placas (placa, tipo, descricao, criado_em, empresa_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (placa, tipo, descricao, _agora(), empresa_id),
         )
         return cur.lastrowid
+
+
+def listas_obter(id_: int) -> dict | None:
+    """Uma entrada por id — para o chamador conferir o dono antes de apagar."""
+    with cursor() as c:
+        r = c.execute("SELECT * FROM listas_placas WHERE id=?", (id_,)).fetchone()
+        return dict(r) if r else None
 
 
 def listas_remover(id_: int) -> bool:
@@ -467,7 +592,21 @@ def listas_remover(id_: int) -> bool:
         return cur.rowcount > 0
 
 
-def listas_buscar(placa: str) -> dict | None:
+def listas_buscar(placa: str, empresa_id: int | None = None) -> dict | None:
+    """A entrada que vale para esta placa NESTE escopo.
+
+    Com `empresa_id`, considera as globais e as do próprio posto. A do posto tem
+    PRECEDÊNCIA sobre a global: quem cadastrou algo específico para o próprio pátio quis
+    justamente sobrepor a regra geral.
+    """
     with cursor() as c:
-        r = c.execute("SELECT * FROM listas_placas WHERE placa=?", (placa,)).fetchone()
+        if empresa_id is None:
+            r = c.execute("SELECT * FROM listas_placas WHERE placa=?", (placa,)).fetchone()
+        else:
+            r = c.execute(
+                "SELECT * FROM listas_placas WHERE placa=? "
+                "AND (empresa_id IS NULL OR empresa_id=?) "
+                "ORDER BY empresa_id IS NULL LIMIT 1",
+                (placa, empresa_id),
+            ).fetchone()
         return dict(r) if r else None

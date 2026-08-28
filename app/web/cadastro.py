@@ -20,6 +20,8 @@ from app.core import config
 from app.integracoes import apiplacas
 from app.visao import leitura
 from app.web import deps
+from app.seguranca import limitador
+from app.web import redacao
 from app.web import leitura as leitura_rotas
 
 log = logging.getLogger(__name__)
@@ -99,7 +101,9 @@ def postos_listar(request: Request):
         cams = banco.cameras_listar(empresa_id=emp["id"])
         ent = entidades.get(emp["entidade_id"])
         saida.append({
-            **emp,
+            # `redacao.empresa` e não `**emp` cru: a api_key do posto saía aqui para
+            # `cliente` e `operador` (auditoria 27/08, K3).
+            **redacao.empresa(emp),
             "entidade_nome": ent["nome"] if ent else "",
             "n_automacoes": len(autos),
             "n_bicos": len(meus_bicos),
@@ -152,9 +156,11 @@ def posto_detalhe(empresa_id: int, request: Request):
                           "tem_roi": bool(b["roi"])})
         autos.append({**a, "bicos": bicos})
     return {
-        "empresa": emp,
+        "empresa": redacao.empresa(emp),
         "entidade": ent,
-        "cameras": list(cams.values()),
+        # `cams` foi mutado acima com `stream_modo`; a redação copia, então o dict de
+        # trabalho continua intacto para quem ainda o usa nesta request.
+        "cameras": redacao.cameras(cams.values()),
         "automacoes": autos,
     }
 
@@ -219,11 +225,11 @@ def entidades_remover(id_: int, request: Request):
 def empresas_listar(request: Request, entidade_id: int | None = None):
     escopo = deps.empresa_do_usuario(request)
     if escopo is None:
-        return banco.empresas_listar(entidade_id=entidade_id)
+        return redacao.empresas(banco.empresas_listar(entidade_id=entidade_id))
     emp = banco.empresas_obter(escopo)
     if not emp or (entidade_id is not None and emp["entidade_id"] != entidade_id):
         return []
-    return [emp]
+    return redacao.empresas([emp])
 
 
 @router.get("/empresas/{id_}")
@@ -232,7 +238,7 @@ def empresas_obter(id_: int, request: Request):
     emp = banco.empresas_obter(id_)
     if not emp:
         raise HTTPException(404, "Empresa não encontrada")
-    return emp
+    return redacao.empresa(emp)
 
 
 @router.post("/empresas/{id_}/api-key", dependencies=[Depends(deps.exigir_admin)])
@@ -446,11 +452,11 @@ def _validar_bico(payload: dict) -> None:
     if not payload.get("automacao_id") or not payload.get("camera_id"):
         raise HTTPException(400, "automacao_id e camera_id são obrigatórios")
 
-    automacao = banco.automacoes_obter(int(payload["automacao_id"]))
+    automacao = banco.automacoes_obter(deps.inteiro_ou_400(payload["automacao_id"], "automacao_id"))
     if not automacao:
         raise HTTPException(400, "Automação não encontrada")
 
-    camera_id = int(payload["camera_id"])
+    camera_id = deps.inteiro_ou_400(payload['camera_id'], 'camera_id')
     _validar_camera_do_posto(camera_id, automacao)
 
     # Normaliza os papéis in-place (o payload segue daqui direto para o banco), inclusive
@@ -571,8 +577,16 @@ def bicos_limpar_roi(id_: int, camera_id: int | None = None):
     return {"limpo": True}
 
 
+# Leituras de teste por minuto, por IP. A rota roda `leitura_timeout_seg` (28 s por padrão)
+# segurando uma thread do pool e o lock da câmera. Sem freio, 40 chamadas paralelas
+# esgotavam o threadpool e paravam o servidor inteiro por ~28 s — inclusive `/api/leitura`
+# dos outros postos e o `/login`. Custo do ataque: 40 requisições, de qualquer sessão
+# válida. (Auditoria 27/08/2026, achado K5.)
+_LIMITE_LER_PLACA_MIN = 6
+
+
 @router.post("/bicos/{id_}/ler-placa-teste")
-def bicos_ler_placa_teste(id_: int, request: Request):
+def bicos_ler_placa_teste(id_: int, request: Request, rapido: bool = False):
     """Testa a leitura de um bico direto (sem montar a URL completa de
     entidade+cnpj+automacao+bico) — usado pelo editor de ROI (admin) e pela tela do
     posto (também liberado a 'cliente', escopado ao próprio posto — é diagnóstico
@@ -582,6 +596,13 @@ def bicos_ler_placa_teste(id_: int, request: Request):
     leitura reativa de verdade — senão o botão de teste do painel responde mesmo para
     um cadastro desativado, driblando a trava aplicada em produção.
     """
+    # Freio ANTES de qualquer trabalho: esta rota segura uma thread do pool por até
+    # `leitura_timeout_seg` e o lock da câmera junto.
+    ip = request.client.host if request.client else "?"
+    if not limitador.permitido("ler_placa_teste", ip, _LIMITE_LER_PLACA_MIN, 60):
+        raise HTTPException(
+            429, "Muitas leituras de teste seguidas — aguarde um instante.")
+
     bico, motivo = banco.bico_verificar_ativo(id_)
     if bico is None:
         if motivo in ("bico", "empresa", "automacao"):
@@ -594,14 +615,21 @@ def bicos_ler_placa_teste(id_: int, request: Request):
         raise HTTPException(404, "Câmera do bico não encontrada")
 
     cfg = config.carregar()
+    # `rapido` passa pela MESMA resolução do endpoint do roteador (inclusive o
+    # `rapido_ativo=nao`): o botão existe para exercitar o que o roteador vai receber, e
+    # um caminho próprio aqui já significaria testar outra coisa.
+    perfil, aviso_perfil = leitura_rotas.perfil_pedido(rapido, cfg)
     try:
         resultado = leitura.ler_placa(
-            fontes=leitura_rotas.montar_fontes(fontes_db, cfg),
+            fontes=leitura_rotas.montar_fontes(fontes_db, cfg, perfil),
             cfg=cfg, avisos=avisos,
             preview_nome=f"preview_bico_{id_}", bico_id=id_, origem="teste",
+            perfil=perfil,
         )
     except leitura.LeituraError as e:
         raise HTTPException(e.status, e.mensagem)
+    if aviso_perfil:
+        resultado.setdefault("avisos", []).append(aviso_perfil)
 
     # Dados do veículo em modo CACHE-ONLY: este fluxo é o botão "Testar como o roteador" e
     # o editor de ROI, clicados em rajada enquanto se ajusta o enquadramento. Cada consulta

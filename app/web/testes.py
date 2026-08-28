@@ -1,6 +1,7 @@
 """API de testes — gerencia dataset rotulado e executa avaliações de precisão."""
 from __future__ import annotations
 import json
+import os
 import re
 import threading
 import uuid
@@ -19,6 +20,7 @@ _FOTOS_TESTE = Path("testes/fotos")
 # Capturas que um humano olhou e recusou (ilegível, duplicada, sem placa). Sem esta
 # lista elas voltariam para a fila de classificação a cada carga da tela, e a fila
 # nunca chegaria ao fim — hoje são centenas de snapshots contra poucas dezenas úteis.
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024   # 25 MB
 _DESCARTADOS = Path("testes/descartados.json")
 
 # Rotas síncronas (`def`) rodam em threads do threadpool do Starlette — duas
@@ -43,11 +45,29 @@ def _ler_descartados() -> set[str]:
     return set(json.loads(_DESCARTADOS.read_text(encoding="utf-8")).get("arquivos", []))
 
 
+def _escrever_json_atomico(destino, dados: dict) -> None:
+    """Grava JSON sem NUNCA deixar o arquivo num estado meio escrito.
+
+    `write_text` trunca e só então escreve: entre as duas coisas o arquivo existe e está
+    incompleto. Os locks deste módulo não bastam porque quem LÊ está em outro módulo e não
+    os conhece — `app/core/rotulos.protegidos()` é chamado pelo worker de retenção a cada
+    5 minutos e por TODO gatilho de captura de dataset. Pegando o arquivo truncado, o
+    `json.loads` levanta, `protegidos()` devolve None e a coleta PARA com "dataset
+    ilegível" — enquanto o arquivo está íntegro quando alguém vai olhar, o que torna o
+    diagnóstico péssimo. (Auditoria 27/08/2026, achado M11.)
+
+    `os.replace` é atômico no mesmo volume, em POSIX e no Windows: o leitor vê o conteúdo
+    antigo ou o novo, nunca metade. O temporário fica ao lado do destino de propósito —
+    `tempfile.gettempdir()` pode estar em outro volume, e aí `replace` deixa de ser atômico.
+    """
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destino.with_suffix(destino.suffix + ".tmp")
+    tmp.write_text(json.dumps(dados, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, destino)
+
+
 def _salvar_descartados(arquivos: set[str]) -> None:
-    _DESCARTADOS.parent.mkdir(parents=True, exist_ok=True)
-    _DESCARTADOS.write_text(
-        json.dumps({"arquivos": sorted(arquivos)}, indent=2, ensure_ascii=False),
-        encoding="utf-8")
+    _escrever_json_atomico(_DESCARTADOS, {"arquivos": sorted(arquivos)})
 
 
 def _ler_dataset() -> dict:
@@ -57,8 +77,9 @@ def _ler_dataset() -> dict:
 
 
 def _salvar_dataset(ds: dict) -> None:
-    _DATASET.parent.mkdir(parents=True, exist_ok=True)
-    _DATASET.write_text(json.dumps(ds, indent=2, ensure_ascii=False), encoding="utf-8")
+    # Atômico: `rotulos.protegidos()` lê este arquivo de outras threads, sem lock nenhum,
+    # e é ele que decide o que a limpeza automática pode apagar. Ver `_escrever_json_atomico`.
+    _escrever_json_atomico(_DATASET, ds)
 
 
 def _placa_do_nome(nome: str) -> str:
@@ -132,7 +153,12 @@ async def upload_foto(file: UploadFile = File(...)):
     ts = datetime.now().strftime("%Y%m%dT%H%M%S")
     nome = f"{ts}_{uuid.uuid4().hex[:6]}{ext}"
     dest = _FOTOS_TESTE / nome
-    conteudo = await file.read()
+    # Teto de tamanho: `read()` sem limite carrega o corpo inteiro em RAM. Rota é
+    # admin-only, mas "admin" não é motivo para aceitar um upload de 4 GB.
+    # (Auditoria 27/08/2026.)
+    conteudo = await file.read(_MAX_UPLOAD_BYTES + 1)
+    if len(conteudo) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "Imagem maior que %d MB." % (_MAX_UPLOAD_BYTES // (1024 * 1024)))
     dest.write_bytes(conteudo)
     return {
         "ok": True,
@@ -396,7 +422,10 @@ def rodar_testes(payload: dict = {}):
         resultado = mod.rodar(engines=engines, salvar=salvar)
         return resultado
     except Exception as e:
-        raise HTTPException(500, str(e))
+        # A mensagem interna da exceção (texto do SQLite, caminho de arquivo) fica no
+        # LOG, não na resposta ao cliente. (Auditoria 27/08/2026.)
+        log.error("Falha em a execução dos testes: %s" % e, exc_info=True)
+        raise HTTPException(500, "Operação falhou — veja o log do servidor.")
     finally:
         sys.path[:] = _sys_path_backup
 

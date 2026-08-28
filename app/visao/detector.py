@@ -17,6 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from app.visao import _fabrica_singleton as _fab
 from app.visao.contexto_log import ContadorDeFalhas
 
 log = logging.getLogger(__name__)
@@ -624,8 +625,14 @@ class DetectorDoisEstagios:
             if tipo_mantido != tipo_descartado and None not in (tipo_mantido, tipo_descartado):
                 log.debug("Placa em %d veículos de classes diferentes (%s vs %s) — tipo ambíguo",
                           2, tipo_mantido, tipo_descartado)
-                mantidas[mantidas.index(duplicada_de)] = BBoxPlaca(
-                    *duplicada_de[:5], VEICULO_AMBIGUO)
+                # Índice por IDENTIDADE, não por conteúdo. `BBoxPlaca` é subclasse de
+                # `tuple`, e `list.index` compara elemento a elemento — ignorando o atributo
+                # `origem`. Duas caixas com os mesmos (x, y, w, h, conf) e origens diferentes
+                # colidem, e a marca de "tipo ambíguo" cai na errada.
+                # `consenso.agrupar_por_veiculo` documenta essa exata armadilha e escolheu
+                # `is` pelo mesmo motivo. (Auditoria 27/08/2026.)
+                _i = next(i for i, m in enumerate(mantidas) if m is duplicada_de)
+                mantidas[_i] = BBoxPlaca(*duplicada_de[:5], VEICULO_AMBIGUO)
         return mantidas
 
 
@@ -857,7 +864,6 @@ def obter_detector_leitura(cfg: dict):
     Se `veiculo_dois_estagios_get=sim`, envolve com um estágio de detecção de veículo
     (ver `DetectorDoisEstagios`) — vale a latência extra porque é sob demanda.
     """
-    global _detector_leitura, _detector_leitura_id
     backend = (cfg.get("detector_backend", "open_image_models") or "").strip().lower()
     if backend == "open_image_models":
         modelo = cfg.get("oim_modelo_leitura") or cfg.get("oim_modelo", "yolo-v9-t-512-license-plate-end2end")
@@ -891,52 +897,118 @@ def obter_detector_leitura(cfg: dict):
          cfg.get("tiles_sobreposicao", ""), cfg.get("tiles_max_janelas", "")) if tiles else "",
     )
 
-    if _detector_leitura is None or _detector_leitura_id != ident:
-        with _detector_leitura_criacao_lock:
-            # Reconfirma dentro do lock — outra thread pode ter carregado enquanto
-            # esperávamos aqui.
-            if _detector_leitura is None or _detector_leitura_id != ident:
-                # SÓ o detector de placa: envolver os estágios é responsabilidade daqui
-                # para baixo. `criar_detector(cfg)` devolveria um 2 estágios já montado
-                # (ele aplica `veiculo_dois_estagios_live`), que seria envolvido de novo.
-                det_placa = _criar_detector_placa(
-                    cfg, modelo_oim=ident_placa[1] if backend == "open_image_models" else None)
+    def _construir():
+        # SÓ o detector de placa: envolver os estágios é responsabilidade daqui
+        # para baixo. `criar_detector(cfg)` devolveria um 2 estágios já montado
+        # (ele aplica `veiculo_dois_estagios_live`), que seria envolvido de novo.
+        det_placa = _criar_detector_placa(
+            cfg, modelo_oim=ident_placa[1] if backend == "open_image_models" else None)
 
-                if dois_estagios:
-                    det = DetectorDoisEstagios(
-                        det_placa, _criar_detector_veiculo(cfg),
-                        padding=float(cfg.get("veiculo_padding", "0.05")),
-                        obrigatorio=_bool_cfg(cfg, "veiculo_obrigatorio"),
-                        max_veiculos=int(cfg.get("veiculo_max_veiculos", "5")),
-                    )
-                else:
-                    det = det_placa
+        if dois_estagios:
+            det = DetectorDoisEstagios(
+                det_placa, _criar_detector_veiculo(cfg),
+                padding=float(cfg.get("veiculo_padding", "0.05")),
+                obrigatorio=_bool_cfg(cfg, "veiculo_obrigatorio"),
+                max_veiculos=int(cfg.get("veiculo_max_veiculos", "5")),
+            )
+        else:
+            det = det_placa
 
-                # Sempre por FORA do 2 estágios: as janelas só devem ser varridas quando o
-                # caminho normal inteiro (veículo→placa, com fallback no recorte todo) não
-                # achou nada. Por dentro, cada recorte de veículo dispararia sua própria
-                # varredura — latência multiplicada sem motivo.
-                if tiles:
-                    # Detector próprio para as janelas quando `tiles_conf` for mais
-                    # permissivo que o principal — é uma segunda sessão do MESMO modelo,
-                    # só com outro limiar (o open-image-models fixa o limiar na
-                    # construção, não aceita por chamada). Igual ou maior, reusa o
-                    # principal e não gasta memória à toa.
-                    conf_tiles = float(cfg.get("tiles_conf", "0.15"))
-                    if backend == "open_image_models" and conf_tiles < float(cfg.get("conf_threshold", "0.3")):
-                        det_tiles = OpenImageDetector(modelo=ident_placa[1], conf=conf_tiles)
-                    else:
-                        det_tiles = det_placa
-                    det = BuscaEmTiles(
-                        det, det_tiles,
-                        lado_alvo=int(cfg.get("tiles_lado_alvo", "300")),
-                        sobreposicao=float(cfg.get("tiles_sobreposicao", "0.30")),
-                        max_janelas=int(cfg.get("tiles_max_janelas", "6")),
-                    )
+        # Sempre por FORA do 2 estágios: as janelas só devem ser varridas quando o
+        # caminho normal inteiro (veículo→placa, com fallback no recorte todo) não
+        # achou nada. Por dentro, cada recorte de veículo dispararia sua própria
+        # varredura — latência multiplicada sem motivo.
+        if tiles:
+            # Detector próprio para as janelas quando `tiles_conf` for mais
+            # permissivo que o principal — é uma segunda sessão do MESMO modelo,
+            # só com outro limiar (o open-image-models fixa o limiar na
+            # construção, não aceita por chamada). Igual ou maior, reusa o
+            # principal e não gasta memória à toa.
+            conf_tiles = float(cfg.get("tiles_conf", "0.15"))
+            if backend == "open_image_models" and conf_tiles < float(cfg.get("conf_threshold", "0.3")):
+                det_tiles = OpenImageDetector(modelo=ident_placa[1], conf=conf_tiles)
+            else:
+                det_tiles = det_placa
+            det = BuscaEmTiles(
+                det, det_tiles,
+                lado_alvo=int(cfg.get("tiles_lado_alvo", "300")),
+                sobreposicao=float(cfg.get("tiles_sobreposicao", "0.30")),
+                max_janelas=int(cfg.get("tiles_max_janelas", "6")),
+            )
 
-                det.carregar()
-                _detector_leitura = det
-                _detector_leitura_id = ident
-                log.info("Detector de leitura (GET) carregado: %s (2 estágios=%s, tiles=%s)",
-                         ident_placa[1], dois_estagios, tiles)
-    return _detector_leitura
+        det.carregar()
+        log.info("Detector de leitura (GET) carregado: %s (2 estágios=%s, tiles=%s)",
+                 ident_placa[1], dois_estagios, tiles)
+        return det
+
+    def _definir(v, i):
+        global _detector_leitura, _detector_leitura_id
+        _detector_leitura, _detector_leitura_id = v, i
+
+    return _fab.resolver(lambda: (_detector_leitura, _detector_leitura_id), ident,
+                         _detector_leitura_criacao_lock, _construir, _definir)
+
+
+# Detector do perfil RÁPIDO (`GET /api/leitura?rapido=1`) — slots PRÓPRIOS, e não um
+# `cfg` alterado passado para `obter_detector_leitura`. Aquela fábrica tem um slot global
+# único indexado por `ident`: chamá-la com outra config DESPEJA a instância de alta
+# precisão e a recarrega na chamada seguinte. Alternar rápido/completo faria thrashing de
+# modelo — dezenas de segundos por alternância, exatamente o custo que este perfil existe
+# para evitar.
+_detector_rapido = None
+_detector_rapido_id: tuple | None = None
+
+# Lock de USO próprio, e não o `detector_leitura_lock`: compartilhar serializaria uma
+# leitura rápida atrás de uma completa que pode levar 28s — o pior caso possível para o
+# modo cuja razão de existir é responder rápido. Mesma motivação de crash do lock de
+# leitura (sessão onnxruntime compartilhada entre threads do pool do FastAPI).
+detector_rapido_lock = threading.Lock()
+_detector_rapido_criacao_lock = threading.Lock()
+
+
+def obter_detector_rapido(cfg: dict):
+    """Detector do perfil rápido: o MESMO que o stream ao vivo usa, cacheado à parte.
+
+    O corpo delega a `criar_detector` de propósito — é literalmente a fábrica do pipeline
+    contínuo (app/visao/pipeline.py:__init__). Assim o perfil rápido não é "mais um
+    conjunto de decisões de modelo" que alguém precisa manter sincronizado: é o perfil ao
+    vivo, e muda junto com ele. Consequências que vêm de graça daí: modelo t-512 em vez de
+    s-608, `veiculo_dois_estagios_live` no lugar de `..._get`, e nenhuma `BuscaEmTiles`
+    (a varredura em janelas custa até 6 passadas extras de detector).
+
+    O que se perde em relação ao completo está medido no histórico do projeto: a varredura
+    em janelas é o que fez moto sair de 0/12 para 12/12. Placa de moto distante NÃO vai
+    ser lida aqui — é o preço declarado do modo.
+    """
+    # A identidade tem de cobrir TODA config que `criar_detector` congela na construção.
+    # Ident incompleto já custou caro neste projeto: ajuste salvo, confirmado na tela, e
+    # que nunca chegava ao detector cacheado até o processo reiniciar (ver o comentário
+    # em `obter_detector_leitura`). A lista abaixo espelha `_criar_detector_placa` +
+    # `_criar_detector_veiculo` + o ramo de 2 estágios de `criar_detector`.
+    dois_estagios = _bool_cfg(cfg, "veiculo_dois_estagios_live")
+    ident = (
+        cfg.get("detector_backend", ""),
+        cfg.get("oim_modelo", ""),
+        cfg.get("modelo_path", ""),
+        cfg.get("conf_threshold", ""), cfg.get("nms_threshold", ""),
+        cfg.get("detector_modelos_extra", ""), cfg.get("detector_votos_minimos", ""),
+        dois_estagios,
+        (cfg.get("veiculo_modelo_path", ""), cfg.get("veiculo_conf", ""),
+         cfg.get("veiculo_nms", ""), cfg.get("veiculo_classes", ""),
+         cfg.get("veiculo_padding", ""), cfg.get("veiculo_obrigatorio", ""),
+         cfg.get("veiculo_max_veiculos", "")) if dois_estagios else "",
+    )
+
+    def _construir():
+        det = criar_detector(cfg)
+        det.carregar()
+        log.info("Detector rápido carregado: %s (2 estágios=%s, sem tiles)",
+                 cfg.get("oim_modelo", cfg.get("modelo_path", "?")), dois_estagios)
+        return det
+
+    def _definir(v, i):
+        global _detector_rapido, _detector_rapido_id
+        _detector_rapido, _detector_rapido_id = v, i
+
+    return _fab.resolver(lambda: (_detector_rapido, _detector_rapido_id), ident,
+                         _detector_rapido_criacao_lock, _construir, _definir)

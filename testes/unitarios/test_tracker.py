@@ -75,6 +75,38 @@ def test_veiculo_ja_emitido_nao_reemite_apos_oclusao(tracker):
     assert tracker.placa_pronta(tid) is None, "não pode emitir o mesmo veículo duas vezes"
 
 
+class TestLeiturasRecentes:
+    """Achado C2 do review de 28/08/2026: `leituras_recentes` ordenava a lista INTEIRA de
+    leituras a cada chamada só para pegar a cauda — trocado por `heapq.nlargest`. O
+    comportamento observável (quais entram, em que ordem saem) tem de continuar igual."""
+
+    BBOX2 = [(400, 100, 120, 40, 0.9)]  # bem longe de BBOX: vira um segundo track
+
+    def test_corta_pelas_mais_recentes_em_ordem_ascendente(self, tracker):
+        tid1, tid2 = [d[5] for d in tracker.update(BBOX + self.BBOX2, FRAME)]
+
+        tracker.registrar_ocr(tid1, "AAA1111", "antigo", 0.9)   # seq 1 (mais antiga)
+        tracker.registrar_ocr(tid2, "BBB2222", "antigo", 0.8)   # seq 2
+        tracker.registrar_ocr(tid1, "CCC3333", "antigo", 0.7)   # seq 3 (mais nova)
+
+        assert tracker.leituras_recentes(limite=2) == [("BBB2222", 0.8), ("CCC3333", 0.7)]
+
+    def test_limite_maior_que_o_total_devolve_tudo_em_ordem(self, tracker):
+        tid1, tid2 = [d[5] for d in tracker.update(BBOX + self.BBOX2, FRAME)]
+        tracker.registrar_ocr(tid1, "AAA1111", "antigo", 0.9)
+        tracker.registrar_ocr(tid2, "BBB2222", "antigo", 0.8)
+
+        assert tracker.leituras_recentes(limite=12) == [("AAA1111", 0.9), ("BBB2222", 0.8)]
+
+    def test_ja_emitido_fica_de_fora(self, tracker):
+        tid1, tid2 = [d[5] for d in tracker.update(BBOX + self.BBOX2, FRAME)]
+        tracker.registrar_ocr(tid1, "AAA1111", "antigo", 0.9)
+        tracker.registrar_ocr(tid2, "BBB2222", "antigo", 0.8)
+        tracker.marcar_emitido(tid1)
+
+        assert tracker.leituras_recentes(limite=12) == [("BBB2222", 0.8)]
+
+
 class TestFusaoPorPosicao:
     """O tracker votava por STRING EXATA, e por isso moto nunca era emitida.
 

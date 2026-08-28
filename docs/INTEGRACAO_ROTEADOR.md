@@ -3,6 +3,10 @@
 Especificação para quem vai desenvolver a chamada HTTP do lado do posto (sidecar
 Java/roteador) contra o servidor central de leitura de placas.
 
+> Para a visão geral da API inteira — autenticação, consulta de histórico, webhook,
+> WebSocket e imagens —, veja [API_INTEGRACAO.md](API_INTEGRACAO.md). Este documento aqui
+> é o aprofundamento de campo de `GET /api/leitura`.
+
 ## Quando chamar
 
 Faça a chamada **quando o abastecimento terminar** — não antes, não durante. A foto é
@@ -21,6 +25,7 @@ GET /api/leitura?entidade=<...>&cnpj=<...>&automacao=<...>&bico=<...>
 | `cnpj`     | CNPJ do posto. Pode vir com ou sem pontuação — o servidor normaliza (mantém só dígitos) | `12.345.678/0001-11` ou `12345678000111` |
 | `automacao`| Identifica QUAL sistema de automação está chamando (ver nota abaixo) | `1` |
 | `bico`     | Identifica o bico físico que abasteceu                 | `1` |
+| `rapido`   | **Opcional.** `1` pede o modo de captura rápida — resposta em poucos segundos, lendo menos (ver *Modo de captura rápida*, abaixo) | `1` |
 
 **Exemplo real, com o cadastro atual do posto ALTIPLANO:**
 
@@ -70,8 +75,7 @@ descartado antes de comparar.
   "detalhes_ocr": [{"engine": "fast_plate_ocr", "placa": "PGK2D93", "padrao": "mercosul", "confianca": 0.91}],
   "tentativas": 6,
   "parada_motivo": "acordo",
-  "snapshot": "/static/snapshots/20260721T185912_PGK2D93.jpg",
-  "frame_url": "/api/bicos/2/preview.jpg"
+  "modo": "completo"
 }
 ```
 HTTP `200`. Use o campo `"placa"` — **e confira `"confirmada"` antes de vincular a placa
@@ -209,7 +213,6 @@ Os campos que você já usa mantêm exatamente o significado:
 | Campo | Com duas câmeras |
 |---|---|
 | `placa`, `confirmada`, `acordo` | idênticos — o consenso considera as fotos das duas |
-| `frame_url` | o quadro de onde saiu a placa lida |
 | `camera_id` | a câmera que **leu** a placa (antes: a única do bico) |
 
 E aparecem dois campos novos, **puramente informativos** (pode ignorá-los):
@@ -220,10 +223,9 @@ E aparecem dois campos novos, **puramente informativos** (pode ignorá-los):
   "fontes": [
     {"camera_id": 3, "papel": "traseira", "estado": "abandonada",
      "motivo": "sem detecção em 2 rodadas (2 foto(s))", "tentativas": 2, "bboxes": 0,
-     "candidatos": 0, "frame_url": "/api/bicos/2/preview.jpg?camera_id=3"},
+     "candidatos": 0},
     {"camera_id": 4, "papel": "frente", "estado": "usada", "motivo": "",
-     "tentativas": 9, "bboxes": 7, "candidatos": 5,
-     "frame_url": "/api/bicos/2/preview.jpg?camera_id=4"}
+     "tentativas": 9, "bboxes": 7, "candidatos": 5}
   ],
   "avisos": []
 }
@@ -240,8 +242,7 @@ cuida da infraestrutura do posto, não motivo para recusar a placa.
   "placa": null,
   "mensagem": "Nenhuma placa detectada nos frames — verifique o enquadramento da área do bico e se o veículo aparece dentro dela",
   "camera_id": 3, "bico_id": 2, "bboxes_detectadas": 0,
-  "snapshots_analisados": 12, "tentativas": 12, "parada_motivo": "timeout",
-  "frame_url": "/api/bicos/2/preview.jpg"
+  "snapshots_analisados": 12, "tentativas": 12, "parada_motivo": "timeout"
 }
 ```
 Também HTTP `200`. `"placa": null` é uma resposta válida — sem carro na área, placa
@@ -287,30 +288,53 @@ leitura segue com a que funciona e devolve `200` com a placa, registrando o prob
 HTTP `503`. Problema de infraestrutura do posto (câmera offline, rede), não de
 integração.
 
-## Buscando a imagem de `frame_url`
+## Imagens não vêm no payload
 
-`frame_url` é o quadro que a leitura analisou — útil para o atendente confirmar a placa
-com o olho, principalmente quando `confirmada` vem `false`.
+A resposta de `/api/leitura` **não traz link de imagem** — nem o recorte da placa, nem o
+quadro analisado. A foto da leitura é do posto, e fica no sistema web: histórico, tela do
+bico e editor de ROI, para quem entra com login.
 
-Diferente do resto da resposta, **essa URL exige credencial**: a imagem de um bico não é
-pública (o `bico_id` é um número sequencial compartilhado entre todos os postos do
-servidor, então uma URL aberta permitiria varrer as fotos de qualquer bomba de qualquer
-cliente).
+O que a integração recebe é a placa e os números que a sustentam (`confirmada`, `acordo`,
+`confianca`, `votos_*`). Para conferência visual de uma leitura duvidosa, o caminho é o
+painel do servidor.
 
-Para buscá-la, o posto precisa ter uma **chave própria** configurada (ver
-*Autenticação*, abaixo) e mandá-la junto:
+## Modo de captura rápida (`rapido=1`)
+
+A chamada normal gasta até ~30 s procurando consenso. Quando o fluxo do posto não
+comporta essa espera, acrescente `&rapido=1`:
 
 ```
-GET /api/bicos/2/preview.jpg
-X-API-Key: <a chave do posto>
+GET /api/leitura?entidade=OPCAO&cnpj=12345678000111&automacao=1&bico=1&rapido=1
 ```
 
-ou `GET /api/bicos/2/preview.jpg?api_key=<chave>`. A chave do posto só abre os previews
-dos bicos **daquele** posto.
+O servidor passa a usar os mesmos modelos do monitoramento contínuo — que já lê placa em
+tempo real — tira **uma** foto em vez de até doze, e desiste em ~2 s se a câmera não
+entregar quadro (contra 20 s do modo normal).
 
-Sem chave configurada, a URL responde `401` para o roteador — a imagem continua visível
-no painel do servidor (para quem está logado), mas não pela integração. Se você precisa
-mostrar a foto no sistema do posto, peça a chave a quem administra o servidor.
+**A resposta tem exatamente as mesmas chaves.** Não há um segundo formato para tratar.
+
+| | Normal | `rapido=1` |
+|---|---|---|
+| Fotos | até 12 | 1–2 |
+| Teto do laço | 28 s | 5 s |
+| Espera pela câmera | 20 s | 2 s |
+| Reforço de OCR p/ placa borrada | sim | não |
+| Varredura em janelas (moto de longe) | sim | não |
+
+**O que se perde é específico, não genérico:** placa borrada e moto distante. São os dois
+casos que os recursos desligados existem para resolver — e por isso o modo é escolha de
+quem chama, uma chamada de cada vez, e não uma configuração global.
+
+**`confirmada` continua sendo o portão, com o mesmo limiar.** O modo rápido não afrouxa
+critério nenhum: ele lê menos, e isso aparece como mais `confirmada: false` e mais
+`placa: null`. Continue tratando `false` como "mandar para conferência".
+
+O campo **`modo`** na resposta (`"rapido"` ou `"completo"`) diz qual perfil atendeu. Se
+você pediu `rapido=1` e voltou `"completo"`, o modo está desligado no servidor (há um
+interruptor em Configuração) e o aviso aparece em `avisos` — a chamada rodou completa e
+pode ter levado os 30 s de sempre.
+
+Timeout HTTP recomendado nessas chamadas: **~10 s**.
 
 ## Tempo de resposta
 

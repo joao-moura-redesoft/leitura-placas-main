@@ -141,6 +141,44 @@ PADROES: dict[str, str] = {
     # Concordância mínima (0-1) entre as leituras para parar antecipadamente com confiança.
     # 0.80 = para assim que 80%+ do peso das leituras concordar com a placa eleita.
     "leitura_acordo_minimo": "0.80",
+
+    # ── Modo de captura RÁPIDA (`GET /api/leitura?rapido=1`) ───────────────────────
+    # Perfil opt-in que troca acurácia por tempo de resposta: uma foto, orçamento curto e
+    # os MESMOS modelos que o stream ao vivo usa (t-512 sem varredura em janelas, OCR sem
+    # PaddleOCR) — ver `obter_detector_rapido`/`obter_ocr_rapido`. Existe porque a chamada
+    # completa mede 44s de média neste posto (tabela `chamadas`), e há fluxos do roteador
+    # em que um palpite em poucos segundos vale mais que uma placa boa daqui a meio minuto.
+    #
+    # O que se perde é conhecido: placa borrada (era o Paddle) e moto de longe (era a
+    # varredura em janelas). Por isso é opt-in por CHAMADA, e não um novo default.
+    #
+    # `nao` faz o servidor ignorar o parâmetro e rodar a leitura completa — interruptor
+    # para o caso de o perfil leve se mostrar ruim demais num posto específico, sem
+    # precisar mexer no roteador.
+    "rapido_ativo": "sim",
+    # Teto do laço no perfil rápido.
+    #
+    # Medido em 26/08/2026 sobre 8 quadros REAIS do posto, nesta máquina (CPU-only, dev):
+    #
+    #                      detecção   OCR      passada   carga de modelo
+    #   completo (s-608)     893ms   1401ms     2294ms        17,2s
+    #   rápido   (t-512)     480ms    127ms      607ms         3,2s
+    #                                          -> 3,8x mais barato por foto
+    #
+    # 2 fotos custam ~1,2s de inferência. O resto do orçamento é espera por frame novo:
+    # com `deteccao_fps_max=1` o pipeline publica 1 quadro/s, e é ELE o piso do modo, não
+    # o modelo. Daí 5s — folga para duas fotos mais a espera, sem virar alvo (o laço para
+    # antes, por acordo). Em produção com GPU sobra ainda mais.
+    "rapido_timeout_seg": "5",
+    # Duas, e não uma: a segunda foto é o que permite o laço parar por `acordo` em vez de
+    # por esgotamento, e a diferença entre as duas paradas é o que `_status_da_leitura`
+    # usa para rebaixar (ou não) a leitura.
+    "rapido_max_tentativas": "2",
+    "rapido_snapshots_votacao": "1",
+    # Espera pelo PRIMEIRO frame do pipeline. É a maior economia isolada do modo: no
+    # perfil completo são 20s (ver `ESPERA_PRIMEIRO_FRAME_SEG`, app/web/leitura.py), e
+    # essa espera acontece ANTES do laço — o `rapido_timeout_seg` não a alcança.
+    "rapido_espera_frame_seg": "2",
     # Máximo de detecções YOLO+OCR por segundo — e também a frequência do ajuste de
     # ambiente e da publicação de frame (stream/HLS/ler-placa), que andam junto com a
     # detecção (ver comentário em app/visao/pipeline.py:_loop). Reduzir alivia CPU bastante.
@@ -192,7 +230,31 @@ PADROES: dict[str, str] = {
     # de serem apagados automaticamente. 0 = nunca apaga (crescimento ilimitado — cuidado
     # num servidor multi-tenant de longa duração). Ajuste conforme a política de retenção
     # de dados/imagens do cliente (ex.: LGPD, se as imagens contêm veículo/placa de terceiros).
+    # Fuso do POSTO, para os contadores que falam em "hoje" e "ontem". O banco guarda tudo
+    # em UTC (o certo — ver `_base._agora`), mas o operador conta o turno pelo relógio da
+    # parede dele: com `date('now')` do SQLite, que é UTC, o contador de hoje ZERAVA às 21h
+    # locais, no meio do turno da noite, e as leituras das 21h-24h de ontem apareciam como
+    # de hoje. Nome IANA (ex.: America/Sao_Paulo, America/Manaus, UTC).
+    # (Auditoria 27/08/2026, achado M2.)
+    # Threads que as rotas SÍNCRONAS compartilham (o default do AnyIO é 40). Cada viewer de
+    # MJPEG segura uma quase o tempo todo, e `/api/config` e `ler-placa-teste` seguram por
+    # dezenas de segundos — com 40, um punhado de abas abertas derrubava `/api/leitura` e o
+    # healthcheck do container. 0 = não mexe (usa o default do AnyIO).
+    "threadpool_max": "120",
+    "fuso_horario": "America/Sao_Paulo",
     "retencao_dias": "90",
+    # Teto de LEITURAS que continuam com foto. Passando disso, as mais antigas perdem o JPEG
+    # (recorte e quadro) e a LINHA DO HISTÓRICO FICA — placa, hora, bico e confiança seguem
+    # disponíveis para auditoria e cobrança; só a coluna de imagem vira NULL. 0 = sem teto.
+    #
+    # Existe porque `retencao_dias` sozinho não segura disco: num posto movimentado ele deixa
+    # crescer 90 dias antes de apagar a primeira coisa. Medido em 27/08/2026 nesta base: 971
+    # leituras em 40 dias (pico de 232/dia) ocupando 221 MB.
+    #
+    # Dimensione JUNTO com `salvar_frame_deteccao`: com o quadro ligado cada leitura custa
+    # ~380 KB, sem ele ~2,6 KB (145x de diferença — o quadro é 99% dos bytes do histórico).
+    # Com 2.000: ~760 MB com quadro, ~5 MB sem.
+    "retencao_max_imagens": "2000",
     "alerta_lista_negra": "sim",
     "webhook_todas": "nao",       # sim = dispara webhook para TODA placa detectada
     "webhook_url": "",

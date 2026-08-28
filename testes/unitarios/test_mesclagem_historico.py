@@ -65,7 +65,7 @@ class TestLeituraDoRoteador:
         assert anterior_id is None                      # insere linha nova...
         assert banco.listar_deteccoes(origem="todas") == []   # ...e a do pipeline sumiu
         assert melhor["confianca"] == 0.9
-        assert banco.remover_deteccao(pipe) is False
+        assert banco.remover_deteccao(pipe) is None   # None = não existia mais
 
     def test_absorve_o_pipeline_das_DUAS_cameras_do_bico(self, ambiente):
         """Bico de duas câmeras: o mesmo carro gera uma detecção contínua em CADA uma.

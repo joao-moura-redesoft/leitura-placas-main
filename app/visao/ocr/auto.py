@@ -5,6 +5,7 @@ import threading
 
 import cv2
 
+from app.visao import _fabrica_singleton as _fab
 from app.visao.consenso import (
     agrupar_por_veiculo, consenso_caractere, leitura_real_proxima, peso_medio,
     prior_de_formato,
@@ -21,12 +22,25 @@ def _leituras_do_engine(engine, crop) -> list[tuple[str, float]]:
     fallback para `ler()` existe para os dubles de teste, que implementam so o contrato
     antigo: um atributo novo que eles nao conhecem tem de degradar para uma leitura, nunca
     estourar `AttributeError` no meio da passada de OCR.
+
+    FILTRA sem reconstruir. `[(t, c) for t, c in ...]` monta tuplas NOVAS e joga fora o
+    `por_char` de cada `LeituraOCR` — era exatamente o que esta funcao fazia, e com isso a
+    confianca por caractere NUNCA chegava a fusao: `getattr(leitura, "por_char", None)` em
+    `_ler_com_engines` dava None sempre, e cada leitura votava com o escalar (a media) em
+    todas as 7 posicoes. O mecanismo central do ensemble estava morto desde o commit que o
+    criou (8f5dc4f, 26/08/2026); `engines.py:_ler_fast_varias` ja alertava sobre isto num
+    comentario, e a armadilha foi cair aqui, uma camada acima. (Auditoria 27/08, achado K6.)
+
+    Medido no recorte da RLX2A77: `BLX2677` sai com
+    `[0.99, 0.30, 0.97, 0.99, 0.22, 0.99, 0.99]` — as posicoes 1 e 4 sao as duas erradas, e
+    o modelo sabe disso. Sem o vetor, elas votam com o mesmo peso das certas, e os dois
+    modelos `cct-*` (mesma familia, erro correlacionado) amplificam o proprio erro.
     """
     if engine is None:
         return []
     try:
         if hasattr(engine, "ler_varias"):
-            return [(t, c) for t, c in engine.ler_varias(crop) if t]
+            return [l for l in engine.ler_varias(crop) if l[0]]
         texto, conf = engine.ler(crop)
         return [(texto, conf)] if texto else []
     except Exception as e:
@@ -398,7 +412,15 @@ class AutoOCR:
                      for t, w in pool if parecidas(t, placa, 2)]
             conf = sum(apoio) / len(apoio) if apoio else max(
                 conf_original.get(t, peso_medio(w)) for t, w in pool)
-            votos = sum(1 for t, _ in pool if t == placa)
+            # `parecidas(..., 2)` e nao `== placa`: `placa` e o resultado de `validar`, que
+            # pode ter aplicado ate MAX_CORRECOES trocas digito<->letra, enquanto `pool` tem
+            # os textos CRUS. Tres modelos lendo `FBI0I23`/`FBI0I23`/`FBI0123` fundem e
+            # validam para `FBI0123`, e a contagem exata dava votos=0 -> `max(votos,1)` = 1:
+            # o payload publico reportava "1 engine concordou" quando tres concordaram, e com
+            # `ocr_votos_minimos >= 2` o pipeline DESCARTAVA a leitura correta. A linha logo
+            # acima ja usava `parecidas` para o mesmo pool ao calcular a confianca — a
+            # contagem e que tinha ficado para tras. (Auditoria 27/08/2026, achado M4.)
+            votos = sum(1 for t, _ in pool if parecidas(t, placa, 2))
             log.info("OCR %s | %s -> %s conf=%.2f (fusao de %d leitura(s), %d exata(s))",
                      cabecalho, lidas, placa, conf, len(pool), votos)
             return {"placa": placa, "padrao": padrao, "confianca": round(conf, 3),
@@ -592,7 +614,6 @@ def obter_ocr_leitura(cfg: dict):
     """OCR de alta acurácia para a leitura GET. Com ocr_engine=auto e ocr_leitura_paddle=sim,
     usa o ensemble AutoOCRPaddle (reforço PaddleOCR para placa borrada). Carregado uma vez.
     O stream ao vivo continua com o OCR mais leve do pipeline."""
-    global _ocr_leitura, _ocr_leitura_id
     engine = cfg.get("ocr_engine", "auto")
     psm = int(cfg.get("tesseract_psm", "7"))
     usar_paddle = str(cfg.get("ocr_leitura_paddle", "sim")).strip().lower() in ("sim", "true", "1")
@@ -608,27 +629,90 @@ def obter_ocr_leitura(cfg: dict):
     ident = (engine, psm, usar_paddle, usar_easy, fast_modelos,
              tuple(extras), deskew_on, deskew_max)
 
-    if _ocr_leitura is None or _ocr_leitura_id != ident:
-        with _ocr_leitura_criacao_lock:
-            if _ocr_leitura is None or _ocr_leitura_id != ident:
-                if engine == "auto" and usar_paddle:
-                    novo = AutoOCRPaddle(tesseract_psm=psm,
-                                         deskew_ativo=deskew_on, deskew_angulo_max=deskew_max,
-                                         fast_modelos=fast_modelos, usar_easyocr=usar_easy)
-                elif engine == "auto":
-                    novo = AutoOCR(tesseract_psm=psm,
-                                   deskew_ativo=deskew_on, deskew_angulo_max=deskew_max,
-                                   fast_modelos=fast_modelos, usar_easyocr=usar_easy)
-                elif extras:
-                    novo = MultiOCR(engines=[engine] + extras, tesseract_psm=psm,
-                                    deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
-                else:
-                    novo = OCR(engine=engine, tesseract_psm=psm,
-                               deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
-                novo.carregar()
-                _ocr_leitura = novo
-                _ocr_leitura_id = ident
-                log.info("OCR de leitura (GET) carregado: engine=%s paddle=%s easyocr=%s "
-                         "deskew=%s fast=[%s]", engine, usar_paddle, usar_easy, deskew_on,
-                         ", ".join(fast_modelos))
-    return _ocr_leitura
+    def _construir():
+        if engine == "auto" and usar_paddle:
+            novo = AutoOCRPaddle(tesseract_psm=psm,
+                                 deskew_ativo=deskew_on, deskew_angulo_max=deskew_max,
+                                 fast_modelos=fast_modelos, usar_easyocr=usar_easy)
+        elif engine == "auto":
+            novo = AutoOCR(tesseract_psm=psm,
+                           deskew_ativo=deskew_on, deskew_angulo_max=deskew_max,
+                           fast_modelos=fast_modelos, usar_easyocr=usar_easy)
+        elif extras:
+            novo = MultiOCR(engines=[engine] + extras, tesseract_psm=psm,
+                            deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
+        else:
+            novo = OCR(engine=engine, tesseract_psm=psm,
+                       deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
+        novo.carregar()
+        log.info("OCR de leitura (GET) carregado: engine=%s paddle=%s easyocr=%s "
+                 "deskew=%s fast=[%s]", engine, usar_paddle, usar_easy, deskew_on,
+                 ", ".join(fast_modelos))
+        return novo
+
+    def _definir(v, i):
+        global _ocr_leitura, _ocr_leitura_id
+        _ocr_leitura, _ocr_leitura_id = v, i
+
+    return _fab.resolver(lambda: (_ocr_leitura, _ocr_leitura_id), ident,
+                         _ocr_leitura_criacao_lock, _construir, _definir)
+
+
+# OCR do perfil RÁPIDO — slots próprios pelo mesmo motivo do detector: `_ocr_leitura` é um
+# slot único indexado por `ident`, e chamar `obter_ocr_leitura` com `ocr_leitura_paddle`
+# desligado despejaria o ensemble com Paddle e o recarregaria na chamada completa
+# seguinte. Lock de USO próprio para que uma leitura rápida não fique atrás de uma
+# completa na fila.
+_ocr_rapido = None
+_ocr_rapido_id: tuple | None = None
+ocr_rapido_lock = threading.Lock()
+_ocr_rapido_criacao_lock = threading.Lock()
+
+
+def obter_ocr_rapido(cfg: dict):
+    """OCR do perfil rápido: o MESMO ensemble que o stream ao vivo usa, cacheado à parte.
+
+    A diferença que importa é a ausência do PaddleOCR: ~747 ms por recorte contra ~62 ms
+    do ensemble do fast-plate-ocr inteiro (números medidos e registrados no comentário de
+    `Pipeline.__init__`). Num orçamento de 5 segundos, o Paddle sozinho comeria boa parte
+    de cada passada.
+
+    O preço é conhecido: o Paddle entrou no projeto justamente para dar conta de placa
+    antiga borrada. Essa é a leitura que o modo rápido vai perder.
+
+    `usar_paddle` não é parâmetro nem lido da config aqui de propósito — ele é o que
+    distingue este perfil do completo, e deixá-lo configurável apagaria a distinção.
+    """
+    engine = cfg.get("ocr_engine", "auto")
+    psm = int(cfg.get("tesseract_psm", "7"))
+    usar_easy = str(cfg.get("ocr_leitura_easyocr", "nao")).strip().lower() in ("sim", "true", "1")
+    extras = [e.strip() for e in cfg.get("ocr_engines_extra", "").split(",") if e.strip()]
+    deskew_on = str(cfg.get("deskew_ativo", "sim")).strip().lower() in ("sim", "true", "1", "yes")
+    deskew_max = float(cfg.get("deskew_angulo_max", "30"))
+    fast_modelos = modelos_fast_da_config(cfg)
+    # Mesmos campos de `obter_ocr_leitura` menos `usar_paddle`, que aqui é constante.
+    ident = (engine, psm, usar_easy, fast_modelos, tuple(extras), deskew_on, deskew_max)
+
+    def _construir():
+        if engine == "auto":
+            novo = AutoOCR(tesseract_psm=psm,
+                           deskew_ativo=deskew_on, deskew_angulo_max=deskew_max,
+                           fast_modelos=fast_modelos, usar_easyocr=usar_easy)
+        elif extras:
+            novo = MultiOCR(engines=[engine] + extras, tesseract_psm=psm,
+                            deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
+        else:
+            novo = OCR(engine=engine, tesseract_psm=psm,
+                       deskew_ativo=deskew_on, deskew_angulo_max=deskew_max)
+        novo.carregar()
+        log.info("OCR rápido carregado: engine=%s (sem paddle) easyocr=%s "
+                 "deskew=%s fast=[%s]", engine, usar_easy, deskew_on,
+                 ", ".join(fast_modelos))
+        return novo
+
+    def _definir(v, i):
+        global _ocr_rapido, _ocr_rapido_id
+        _ocr_rapido, _ocr_rapido_id = v, i
+
+    return _fab.resolver(lambda: (_ocr_rapido, _ocr_rapido_id), ident,
+                         _ocr_rapido_criacao_lock, _construir, _definir)

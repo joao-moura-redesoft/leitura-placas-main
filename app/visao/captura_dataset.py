@@ -37,6 +37,9 @@ from pathlib import Path
 
 import cv2
 
+from app.core import threads
+from app.core.rotulos import protegidos
+
 log = logging.getLogger(__name__)
 
 SNAPSHOT_DIR = Path("app/web/static/snapshots")
@@ -85,42 +88,19 @@ def _meus_arquivos() -> list[Path]:
         return []
 
 
-def _rotulados() -> set[str]:
-    """Nomes de arquivo que o dataset referencia - a evicção nunca pode toca-los.
-
-    Le `testes/dataset.json` porque rotulo humano e a coisa mais caro de reproduzir neste
-    projeto: apagar uma captura ja rotulada transformaria trabalho de gente numa linha
-    apontando para arquivo inexistente, que e um modo de falha que este projeto JA teve
-    (commit 2252896, "Corrige o caminho das capturas no dataset e tira arquivo faltando da
-    acuracia").
-
-    Hoje nenhuma entrada do dataset e `-amostra`/`-naolido` (as 48 que vivem em snapshots/
-    sao recortes de deteccao, que a evicção nao alcanca de qualquer forma). A checagem
-    existe para o dia em que alguem rotular uma captura - e ai o custo de nao ter checado
-    seria silencioso.
-
-    Falha em ler = conjunto vazio seria o mais perigoso possivel, entao devolve None e quem
-    chama ABORTA a evicção. Nao apagar nada e sempre recuperavel; apagar rotulo nao e.
-    """
-    import json
-    try:
-        dados = json.loads(Path("testes/dataset.json").read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        # Sem dataset nao ha rotulo a proteger - mas AVISA, porque "arquivo ausente" e
-        # ambiguo: pode ser projeto novo (legitimo) ou processo rodando do diretorio errado
-        # (e ai a evicção correria sem protecao nenhuma). O caminho e relativo de proposito,
-        # a mesma convencao de `SNAPSHOT_DIR`, e o Dockerfile leva `testes/dataset.json`
-        # (o .dockerignore exclui so `fotos/` e `resultados/`).
-        log.warning("Evicção sem protecao de rotulo: testes/dataset.json nao encontrado a "
-                    "partir de %s", Path.cwd())
-        return set()
-    except (OSError, ValueError) as e:
-        log.warning("Evicção abortada: nao consegui ler o dataset (%s)", e)
-        return None
-    return {Path(f["arquivo"]).name for f in dados.get("fotos", []) if f.get("arquivo")}
-
 _coletores: list[threading.Thread] = []
 _parar = threading.Event()
+# RLock (não Lock comum): `iniciar_coletor` chama `parar_coletor` internamente enquanto já
+# segura o lock — um Lock comum travaria a própria thread.
+#
+# Duas chamadas de `iniciar_coletor` rodando ao mesmo tempo (dois saves rápidos da tela de
+# config — desde que o achado A6 passou a rodar cada save numa thread de fundo própria,
+# isso ficou mais fácil de acontecer) podiam intercalar: uma zera `_parar`/inicia threads
+# novas bem no meio do `_parar.set()`/`_coletores.clear()` da outra, deixando threads
+# recém-criadas morrendo na primeira checagem ou `_coletores` com uma mistura de threads
+# de gerações diferentes. O lock serializa o ciclo inteiro (parar tudo → talvez subir de
+# novo) entre chamadas concorrentes. (Achado do review de 28/08/2026.)
+_ciclo_lock = threading.RLock()
 
 
 def _sim(valor) -> bool:
@@ -226,7 +206,8 @@ class CapturaDataset:
            coleta antes de travar de novo.
 
         A evicção e segura porque so alcanca `SUFIXOS_MEUS`, que nunca aparecem em
-        `deteccoes.snapshot`, e porque pula o que o dataset referencia (`_rotulados`).
+        `deteccoes.snapshot`, e porque pula o que o dataset referencia
+        (`app.core.rotulos.protegidos`).
         """
         if self.max_arquivos <= 0:
             return True
@@ -253,8 +234,8 @@ class CapturaDataset:
         if len(meus) < self.max_arquivos:
             return True
 
-        protegidos = _rotulados()
-        if protegidos is None:
+        intocaveis = protegidos()
+        if intocaveis is None:
             # Nao consegui ler o dataset: PARA, como antes. Nao apagar e recuperavel;
             # apagar rotulo humano nao e.
             if not self._avisou_teto:
@@ -271,7 +252,7 @@ class CapturaDataset:
         for f in meus:                     # `_meus_arquivos` ja vem do mais antigo
             if apagados >= alvo:
                 break
-            if f.name in protegidos:
+            if f.name in intocaveis:
                 continue                   # rotulado: nunca
             try:
                 f.unlink()
@@ -400,26 +381,53 @@ def _coletar_de_camera(cam_id: int, intervalo: float) -> None:
 
 
 def iniciar_coletor(cfg: dict) -> int:
-    """Sobe uma thread por câmera ativa. Devolve quantas subiram."""
-    if not _sim(cfg.get("captura_dataset", "nao")):
-        return 0
-    from app.core import banco
+    """Sobe uma thread por câmera ativa. Devolve quantas subiram.
 
-    intervalo = float(cfg.get("captura_dataset_intervalo_seg", "60"))
-    _parar.clear()
-    n = 0
-    for cam in banco.cameras_listar():
-        if not cam.get("ativo", 1):
-            continue
-        t = threading.Thread(target=_coletar_de_camera, args=(cam["id"], intervalo),
-                             daemon=True, name=f"coletor-dataset-{cam['id']}")
-        t.start()
-        _coletores.append(t)
-        n += 1
-    if n:
-        log.info("Coletor para dataset ativo: %d câmera(s), 1 quadro a cada %.0fs", n, intervalo)
-    return n
+    IDEMPOTENTE: sempre para o que estiver rodando antes de subir de novo. Sem isso, chamar
+    esta função ao salvar a configuração — que é o que faz o botão da tela finalmente
+    funcionar — DUPLICARIA uma thread por câmera a cada save, e `_parar.clear()` ainda
+    ressuscitaria coletores que um `parar_coletor()` anterior tinha mandado parar. Dez
+    saves = dez coletores por câmera brigando pelo mesmo `lock_camera` e abrindo/fechando
+    RTSP em rajada. (Auditoria 27/08/2026, achado A10.)
+    """
+    with _ciclo_lock:
+        parar_coletor()
+        if not _sim(cfg.get("captura_dataset", "nao")):
+            return 0
+        from app.core import banco
+
+        intervalo = float(cfg.get("captura_dataset_intervalo_seg", "60"))
+        _parar.clear()
+        n = 0
+        for cam in banco.cameras_listar():
+            if not cam.get("ativo", 1):
+                continue
+            t = threading.Thread(target=_coletar_de_camera, args=(cam["id"], intervalo),
+                                 daemon=True, name=f"coletor-dataset-{cam['id']}")
+            t.start()
+            _coletores.append(t)
+            n += 1
+        if n:
+            log.info("Coletor para dataset ativo: %d câmera(s), 1 quadro a cada %.0fs", n, intervalo)
+        return n
 
 
-def parar_coletor() -> None:
-    _parar.set()
+def parar_coletor(timeout: float = 5.0) -> None:
+    """Sinaliza parada, ESPERA as threads morrerem e esvazia o registro.
+
+    `_coletores` nunca era esvaziado e `parar_coletor` não era chamado em lugar nenhum —
+    nem no desligamento do servidor. A lista crescia para sempre e o `Event` global de
+    módulo era o único freio.
+    """
+    with _ciclo_lock:
+        _parar.set()
+        vivos = list(_coletores)
+        _coletores.clear()
+        restantes = [t for t in vivos if not threads.encerrar_thread(t, timeout, lambda: None)]
+        if restantes:
+            # Não é fatal: as threads são daemon e o próximo `_parar.clear()` não as revive
+            # (elas já saíram do laço ou vão sair na próxima volta). Mas registra, porque uma
+            # coletora presa está segurando `lock_camera`.
+            log.warning("Coletor: %d thread(s) não encerraram em %.0fs — provavelmente presas "
+                        "numa captura; o lock da câmera pode demorar a liberar",
+                        len(restantes), timeout)

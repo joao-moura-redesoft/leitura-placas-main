@@ -20,6 +20,7 @@ from app.core import banco, config
 from app.seguranca import limitador
 from app.seguranca import sessao as auth_mod
 from app.seguranca import tentativas
+from app.web import deps as web_deps
 
 # OpenCV determinístico na suíte, aplicado no import do conftest (antes de qualquer teste
 # tocar em imagem). Sem isto, um módulo que exercita o ajuste de ambiente (CLAHE,
@@ -55,6 +56,10 @@ def ambiente(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.txt")
     tentativas._resetar_para_teste()
     limitador._resetar_para_teste()
+    # Cache global de processo (deps.empresa_da_camera_cacheada, achado A4/C1): sem
+    # limpar, um camera_id reaproveitado por outro teste "herdaria" a permissão cacheada
+    # do teste anterior.
+    web_deps.limpar_cache_camera()
     banco.inicializar()
     yield tmp_path
     banco.fechar_conexao()
