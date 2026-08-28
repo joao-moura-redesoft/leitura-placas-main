@@ -8,6 +8,15 @@
 # "passo a mais" que este entrypoint elimina.
 set -e
 
+# Um runtime de OpenMP por processo, se ninguem definiu ainda. O compose ja passa estas
+# variaveis; aqui e a rede de seguranca para quem sobe com `docker run` direto. OpenCV,
+# onnxruntime, PyTorch e Paddle trazem cada um o seu OpenMP, e o conflito produz falta
+# nativa na carga de DLL -- ver app/core/nativo.py. `:=` respeita quem passou outro valor.
+: "${OMP_NUM_THREADS:=1}"
+: "${MKL_NUM_THREADS:=1}"
+: "${KMP_DUPLICATE_LIB_OK:=TRUE}"
+export OMP_NUM_THREADS MKL_NUM_THREADS KMP_DUPLICATE_LIB_OK
+
 UID_APP=1000
 GID_APP=1000
 

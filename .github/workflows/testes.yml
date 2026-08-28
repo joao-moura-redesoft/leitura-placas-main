@@ -1,0 +1,45 @@
+name: Testes
+
+# Roda a suíte unitária (testes/unitarios) a cada push/PR pra main. NÃO cobre o harness
+# de acurácia de OCR em testes/ (baixa modelo, roda inferência de verdade, leva minutos)
+# — só o que testes/unitarios/conftest.py chama de "suíte unitária" (rápida, sem
+# câmera/modelo real: a fixture autouse `_sem_visao` garante isso).
+#
+# Existe por causa de um incidente real: um merge silencioso (module vs package
+# shadowing em app/core/banco.py) deixou parte do RBAC como código morto sem que
+# ninguém percebesse — só apareceu ao rodar a suíte manualmente. Isto aqui é pra essa
+# categoria de problema aparecer sozinha, no push, em vez de precisar de alguém lembrar
+# de rodar `pytest` à mão.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"      # mesma versão da imagem de produção (ver Dockerfile)
+          cache: "pip"
+
+      # Mesmas bibliotecas de sistema do Dockerfile — opencv/tesseract precisam delas
+      # até só para IMPORTAR (a suíte não roda inferência de verdade, mas os módulos de
+      # visão são importados na cadeia de import de app.servidor).
+      - name: Instala dependências de sistema (opencv/tesseract)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr tesseract-ocr-por \
+            libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 ffmpeg
+
+      - name: Instala dependências Python (mesmas do requirements.txt de produção — CPU)
+        run: pip install -r requirements.txt
+
+      - name: Roda a suíte unitária
+        run: python -m pytest testes/unitarios -q

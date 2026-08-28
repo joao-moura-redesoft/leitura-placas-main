@@ -29,7 +29,6 @@
 {% block scripts %}
 <script>
 let _postos = [];
-function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 async function carregar() {
   _postos = await fetch('/api/postos').then(r => r.json()).catch(() => []);

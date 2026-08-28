@@ -38,17 +38,34 @@ def _migrar(c: sqlite3.Connection) -> None:
             ativo INTEGER NOT NULL DEFAULT 1,
             criado_em TEXT NOT NULL
         );
-        INSERT INTO cameras_novo
-            (id, nome, camera_tipo, camera_indice, intelbras_host, intelbras_porta,
-             intelbras_usuario, intelbras_senha, intelbras_canal, intelbras_subtype,
-             intelbras_formato, rtsp_url_custom, ativo, criado_em)
-        SELECT id, nome, camera_tipo, camera_indice, intelbras_host, intelbras_porta,
-               intelbras_usuario, intelbras_senha, intelbras_canal, intelbras_subtype,
-               intelbras_formato, rtsp_url_custom, ativo, criado_em
-        FROM cameras;
-        DROP TABLE cameras;
-        ALTER TABLE cameras_novo RENAME TO cameras;
         """)
+        # Copia as colunas que existem nas DUAS tabelas, em vez de uma lista fixa.
+        #
+        # A lista fixa omitia `empresa_id` e `local`. Testado em 27/08/2026 contra o backup
+        # real `placas.db.bak-pre-multitenant`: naquele schema as duas colunas ainda NÃO
+        # existem, então nada se perdia e a migração passa limpa (FK check sem violações).
+        # Mas a lista fixa só estava certa por coincidência — um banco que chegasse aqui já
+        # com o vínculo câmera→posto preenchido o perderia em silêncio, e
+        # `_JOIN_EMPRESA_DETECCAO` passaria a tratar essas câmeras como "sem empresa",
+        # quebrando a retenção por cliente (LGPD). Derivar as colunas remove a coincidência.
+        comuns = [nome for nome in
+                  [row[1] for row in c.execute("PRAGMA table_info(cameras_novo)").fetchall()]
+                  if nome in cols]
+        lista = ", ".join(comuns)
+        c.execute(f"INSERT INTO cameras_novo ({lista}) SELECT {lista} FROM cameras")
+        # `foreign_keys` OFF durante o DROP: com ele ligado (`_base._abrir` liga), o DROP
+        # executa um DELETE implícito e um `bicos.camera_id ... ON DELETE RESTRICT` apontando
+        # para cameras faria a migração falhar. Hoje `bicos` ainda não existe quando este
+        # ramo roda (confirmado no backup), mas a ordem de criação não é uma garantia que
+        # este código deva assumir.
+        c.execute("PRAGMA foreign_keys=OFF")
+        try:
+            c.executescript("""
+            DROP TABLE cameras;
+            ALTER TABLE cameras_novo RENAME TO cameras;
+            """)
+        finally:
+            c.execute("PRAGMA foreign_keys=ON")
         cols = {row[1] for row in c.execute("PRAGMA table_info(cameras)").fetchall()}
 
     # Câmera pertence a um posto (empresa) e diz onde está fisicamente instalada.
@@ -58,6 +75,69 @@ def _migrar(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE cameras ADD COLUMN empresa_id INTEGER REFERENCES empresas(id) ON DELETE CASCADE")
     if "local" not in cols:
         c.execute("ALTER TABLE cameras ADD COLUMN local TEXT NOT NULL DEFAULT ''")
+
+    # Dono da entrada de lista branca/negra. NULL = entrada GLOBAL do sistema, visível a
+    # todos os postos — que é como todas as linhas existentes nascem, preservando o
+    # comportamento anterior. Preenchido = entrada daquele posto, e só ele a enxerga.
+    #
+    # Sem esta coluna, `/api/listas` devolvia a lista inteira do sistema para qualquer
+    # usuário: um `cliente` via as placas que OUTROS postos marcaram, com a descrição em
+    # texto livre. Num servidor com concorrentes como clientes, é dado de negócio do
+    # vizinho. (Auditoria 27/08/2026, achado A3.)
+    cols_lst = {row[1] for row in c.execute("PRAGMA table_info(listas_placas)").fetchall()}
+    if "empresa_id" not in cols_lst:
+        c.execute("ALTER TABLE listas_placas ADD COLUMN empresa_id INTEGER "
+                  "REFERENCES empresas(id) ON DELETE CASCADE")
+
+    # `placa TEXT NOT NULL UNIQUE` (coluna sozinha) era uma constraint GLOBAL: dois postos
+    # não conseguiam cada um bloquear a MESMA placa no próprio lote — o segundo INSERT
+    # estourava IntegrityError mesmo sendo de um posto diferente. Trocar ingenuamente por
+    # UNIQUE(placa, empresa_id) não bastava: o SQLite trata cada NULL como distinto num
+    # UNIQUE comum, então várias entradas GLOBAIS (empresa_id NULL) com a mesma placa
+    # passariam a coexistir sem erro. A correção são dois ÍNDICES ÚNICOS PARCIAIS no lugar
+    # do UNIQUE de coluna — um por escopo. SQLite não remove UNIQUE de coluna via ALTER
+    # (mesmo motivo do rebuild de `cameras` acima), então primeiro reconstrói a tabela SEM
+    # o UNIQUE embutido, e só depois cria os dois índices.
+    # (Auditoria 28/08/2026, achado A2.)
+    idx_lst = c.execute("PRAGMA index_list(listas_placas)").fetchall()
+    if any(row["origin"] == "u" for row in idx_lst):
+        c.executescript("""
+        CREATE TABLE listas_placas_novo (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            placa TEXT NOT NULL,
+            tipo TEXT NOT NULL CHECK(tipo IN ('branca','negra')),
+            descricao TEXT,
+            criado_em TEXT NOT NULL,
+            empresa_id INTEGER REFERENCES empresas(id) ON DELETE CASCADE
+        );
+        """)
+        # Copia as colunas que existem nas DUAS tabelas — mesmo motivo do rebuild de
+        # `cameras` acima: uma lista fixa só está certa por coincidência.
+        cols_lst_novo = {row[1] for row in
+                        c.execute("PRAGMA table_info(listas_placas)").fetchall()}
+        comuns = [nome for nome in
+                  [row[1] for row in
+                   c.execute("PRAGMA table_info(listas_placas_novo)").fetchall()]
+                  if nome in cols_lst_novo]
+        lista = ", ".join(comuns)
+        c.execute(f"INSERT INTO listas_placas_novo ({lista}) SELECT {lista} FROM listas_placas")
+        c.execute("PRAGMA foreign_keys=OFF")
+        try:
+            c.executescript("""
+            DROP TABLE listas_placas;
+            ALTER TABLE listas_placas_novo RENAME TO listas_placas;
+            """)
+        finally:
+            c.execute("PRAGMA foreign_keys=ON")
+
+    # Um índice cobre as entradas GLOBAIS entre si; o outro, as de POSTO entre si — a mesma
+    # placa pode existir em 1 global + 1 por posto, ou em postos diferentes, nunca 2x no
+    # MESMO escopo. Dado existente já satisfaz os dois (o UNIQUE antigo era mais
+    # restritivo), então não há necessidade de deduplicar antes de criar os índices.
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_listas_placa_global "
+              "ON listas_placas(placa) WHERE empresa_id IS NULL")
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_listas_placa_posto "
+              "ON listas_placas(placa, empresa_id) WHERE empresa_id IS NOT NULL")
 
     cols_det = {row[1] for row in c.execute("PRAGMA table_info(deteccoes)").fetchall()}
     if "bico_id" not in cols_det:
@@ -78,6 +158,73 @@ def _migrar(c: sqlite3.Connection) -> None:
     # 'roteador'/'teste' da mesma câmera física para evitar duplicar o mesmo veículo.
     if "camera_db_id" not in cols_det:
         c.execute("ALTER TABLE deteccoes ADD COLUMN camera_db_id INTEGER")
+    # Grau de consenso do loop de leitura (0..1). `confianca` é a confiança do OCR num
+    # crop; `acordo` é quantos frames concordaram com a placa eleita — é ele que separa
+    # uma leitura sólida de um chute devolvido por timeout. Sem essa coluna as duas
+    # ficam indistinguíveis no histórico: quem audita uma cobrança contestada não tem
+    # como saber se a placa foi consenso ou palpite. Fica NULL para detecções do
+    # pipeline ao vivo, que não passam pelo loop de consenso.
+    if "acordo" not in cols_det:
+        c.execute("ALTER TABLE deteccoes ADD COLUMN acordo REAL")
+    # Veredito congelado NO MOMENTO DA GRAVAÇÃO: 1 = acordo atingiu o mínimo, 0 = ficou
+    # abaixo (leitura fraca, devolvida por timeout). Guardado em vez de recalculado a
+    # partir de `acordo` porque `leitura_acordo_minimo` é configurável: se o limiar mudar
+    # amanhã, uma cobrança contestada de hoje precisa ser julgada pelo critério que valia
+    # quando foi gravada. NULL = não se aplica (pipeline ao vivo) ou linha anterior a esta
+    # migração, casos em que o consenso é desconhecido — nunca presumir confirmada.
+    if "confirmada" not in cols_det:
+        c.execute("ALTER TABLE deteccoes ADD COLUMN confirmada INTEGER")
+    # 'moto' | 'carro' | NULL. NÃO dá para derivar isto de `padrao`, que guarda o FORMATO
+    # da placa (mercosul/antigo) e vale para os dois tipos de veículo — sem coluna própria
+    # o histórico não tem como separar moto de carro.
+    #
+    # O valor é a CLASSE do detector de veículo (YOLOX, 1º estágio da detecção em 2
+    # estágios): COCO 3=motorcycle → 'moto'; 2/5/7=car/bus/truck → 'carro'. Ela viaja
+    # carregada na própria bbox da placa, desde `DetectorDoisEstagios`, porque a associação
+    # é estrutural — a placa foi encontrada DENTRO do recorte daquele veículo.
+    #
+    # Continua sendo estimativa, não cadastro, e a interface rotula como "estimado".
+    #
+    # Até 20/08/2026 a fonte era o `e_moto` do AutoOCR (`tinha_header and aspect <= 2.0`).
+    # Aposentada por medição: 32,8% das 774 detecções reais tinham aspecto abaixo do
+    # limiar, 12 dos 25 rótulos gravados eram 'moto' num posto de combustível (11 depois
+    # refutados rodando o YOLOX nos quadros salvos), e o mesmo veículo recebeu vereditos
+    # opostos com 3 min de diferença — bbox 59×27 deu 'carro', 56×28 deu 'moto'. O aspecto
+    # do bbox mede a folga do detector, não a diagramação da placa, então não havia limiar
+    # que consertasse.
+    #
+    # NULL = desconhecido, e nenhum destes casos deve ser fundido com 'carro': linhas
+    # anteriores à troca de fonte, 2 estágios desligado (`veiculo_dois_estagios_*=nao`),
+    # nenhum veículo detectado no quadro, e placa recuperada pela varredura em janelas
+    # (que roda só o estágio de placa).
+    if "tipo_veiculo" not in cols_det:
+        c.execute("ALTER TABLE deteccoes ADD COLUMN tipo_veiculo TEXT")
+    # O SINAL CRU por trás do veredito acima — mesmo precedente de `acordo`+`confirmada`
+    # (medida crua + veredito congelado), agora aplicado a `tipo_veiculo`. `veiculo_classe`
+    # é a classe COCO bruta (2=car, 3=motorcycle, 5=bus, 7=truck — não só 'carro'/'moto'),
+    # `veiculo_conf` é a confiança do detector de VEÍCULO (não confundir com `confianca`,
+    # que é do OCR). Sem isto, "subir `veiculo_conf` de 0,4 para 0,5 custaria o quê?" só
+    # tinha resposta por palpite — medido: perderia ~14,7% dos veículos vistos.
+    #
+    # `tipo_veiculo_fonte` é o motivo, inclusive quando `tipo_veiculo` é NULL — hoje essa
+    # coluna (acima) já documenta 4 causas de NULL em texto corrido; esta as torna
+    # consultáveis. Vocabulário (cresce; validado em Python em `_deteccoes.py`, não por
+    # CHECK, que não dá para estender sem recriar a tabela):
+    #   'veiculo'             tipo veio de um veículo detectado
+    #   'classe-nao-mapeada'  veículo detectado, classe fora do mapa (ex.: config custom)
+    #   'sem-veiculo'         2 estágios rodou, nenhum veículo no quadro
+    #   'tiles'               placa veio da varredura em janelas (não roda estágio de veículo)
+    #   'sem-2-estagios'      detector de 1 estágio
+    #   'replay:<causa>'      reconstruído a posteriori por `testes/recalcula_tipo_veiculo.py`
+    #                         a partir do quadro salvo — nunca confundir com medida ao vivo
+    # NULL nesta coluna = linha anterior a esta migração (o veredito em `tipo_veiculo`,
+    # se houver, não tem sinal cru correspondente).
+    if "veiculo_classe" not in cols_det:
+        c.execute("ALTER TABLE deteccoes ADD COLUMN veiculo_classe INTEGER")
+    if "veiculo_conf" not in cols_det:
+        c.execute("ALTER TABLE deteccoes ADD COLUMN veiculo_conf REAL")
+    if "tipo_veiculo_fonte" not in cols_det:
+        c.execute("ALTER TABLE deteccoes ADD COLUMN tipo_veiculo_fonte TEXT")
     # `deteccoes` é alimentada por toda leitura reativa de todos os postos — sem
     # índice, listar/filtrar por bico vira table scan conforme a tabela cresce.
     # Fica em `_migrar` (não no CREATE TABLE inicial) porque só depois daqui a
@@ -94,11 +241,56 @@ def _migrar(c: sqlite3.Connection) -> None:
     if "retencao_dias_override" not in cols_emp:
         c.execute("ALTER TABLE empresas ADD COLUMN retencao_dias_override INTEGER")
 
+    # ── Segunda câmera por bico (opcional) ───────────────────────────────────────────
+    # A câmera do posto fica elevada: um veículo com estepe/roda na traseira esconde a
+    # placa traseira, e aí NENHUM ajuste de OCR resolve — não há pixel de placa no frame
+    # (é o que a medição de 13/08/2026 mostrou: o gargalo dominante é enquadramento, não
+    # leitura). Uma segunda câmera enxergando o outro lado do carro é a única saída.
+    #
+    # `camera2_id` NULL = bico de uma câmera, comportamento de sempre — a feature é
+    # opcional bico a bico, não uma migração de todo mundo. Nullable também é o que
+    # permite o `ADD COLUMN ... REFERENCES` (o SQLite só aceita a cláusula quando o
+    # default é NULL; mesmo caso de `cameras.empresa_id` e `usuarios.empresa_id` acima).
+    #
+    # `roi2` é coluna própria, e não um segundo campo no mesmo JSON, porque o ROI está em
+    # COORDENADAS DO FRAME de uma câmera específica: o retângulo da traseira não quer
+    # dizer nada na imagem da frente.
+    #
+    # Os papéis são descritivos (rótulo na tela + de qual ângulo saiu a placa no
+    # histórico); nenhuma decisão do laço de leitura depende deles. Linhas existentes
+    # ficam 'traseira' porque é o que as câmeras já instaladas enquadram — o palpite é
+    # certo na esmagadora maioria e corrigível em dois cliques, enquanto um valor
+    # "indefinido" obrigaria o admin a revisitar todos os bicos sem ganhar informação.
+    cols_bic = {row[1] for row in c.execute("PRAGMA table_info(bicos)").fetchall()}
+    if "papel_camera" not in cols_bic:
+        c.execute("ALTER TABLE bicos ADD COLUMN papel_camera TEXT NOT NULL DEFAULT 'traseira'")
+    if "camera2_id" not in cols_bic:
+        c.execute("ALTER TABLE bicos ADD COLUMN camera2_id INTEGER REFERENCES cameras(id) ON DELETE RESTRICT")
+    if "roi2" not in cols_bic:
+        c.execute("ALTER TABLE bicos ADD COLUMN roi2 TEXT")
+    if "papel_camera2" not in cols_bic:
+        c.execute("ALTER TABLE bicos ADD COLUMN papel_camera2 TEXT NOT NULL DEFAULT 'frente'")
+    # Fica aqui (não no CREATE inicial) pelo mesmo motivo de `idx_deteccoes_bico`: só
+    # depois desta migração a coluna existe também nos bancos antigos.
+    c.execute("CREATE INDEX IF NOT EXISTS idx_bicos_camera2 ON bicos(camera2_id)")
+
+    # Perfil da leitura que atendeu a chamada (`GET /api/leitura?rapido=1`). Default
+    # 'completo' e não NULL: toda chamada anterior a esta coluna rodou o perfil completo,
+    # e é isso que ela era — deixar NULL criaria um terceiro estado ("não se sabe") que os
+    # agregados teriam de tratar para sempre sem ganhar informação nenhuma.
+    cols_cha = {row[1] for row in c.execute("PRAGMA table_info(chamadas)").fetchall()}
+    if "modo" not in cols_cha:
+        c.execute("ALTER TABLE chamadas ADD COLUMN modo TEXT NOT NULL DEFAULT 'completo'")
+
     # Usuário do painel restrito a UMA empresa ("cliente"): NULL = admin, vê tudo (papel
     # continua sendo o que manda — isto só faz sentido quando papel='cliente').
     cols_usr = {row[1] for row in c.execute("PRAGMA table_info(usuarios)").fetchall()}
     if "empresa_id" not in cols_usr:
         c.execute("ALTER TABLE usuarios ADD COLUMN empresa_id INTEGER REFERENCES empresas(id) ON DELETE SET NULL")
+    # Último login bem-sucedido — mostrado na lista de usuários pra achar conta
+    # esquecida/nunca usada (cliente que nunca entrou, admin dormente).
+    if "ultimo_login" not in cols_usr:
+        c.execute("ALTER TABLE usuarios ADD COLUMN ultimo_login TEXT")
 
 
 def inicializar() -> None:
@@ -125,10 +317,16 @@ def inicializar() -> None:
 
         CREATE TABLE IF NOT EXISTS listas_placas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            placa TEXT NOT NULL UNIQUE,
+            -- SEM UNIQUE aqui: unicidade é POR ESCOPO (global × por posto), não global —
+            -- ver os dois índices únicos parciais criados em `_migrar`, logo abaixo do
+            -- bloco que adiciona `empresa_id` a esta tabela.
+            placa TEXT NOT NULL,
             tipo TEXT NOT NULL CHECK(tipo IN ('branca','negra')),
             descricao TEXT,
-            criado_em TEXT NOT NULL
+            criado_em TEXT NOT NULL,
+            -- NULL = entrada global do sistema; preenchido = só daquele posto. Ver a
+            -- migração acima para o porquê.
+            empresa_id INTEGER REFERENCES empresas(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS usuarios (
@@ -201,6 +399,9 @@ def inicializar() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_automacoes_empresa ON automacoes(empresa_id);
 
+        -- Um bico enxerga o veículo por 1 ou 2 câmeras (ver `camera2_id` abaixo). Cada
+        -- câmera tem ROI e papel PRÓPRIOS: o retângulo está em coordenadas do frame
+        -- daquela câmera e não significa nada na outra.
         CREATE TABLE IF NOT EXISTS bicos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             automacao_id INTEGER NOT NULL REFERENCES automacoes(id) ON DELETE CASCADE,
@@ -210,12 +411,21 @@ def inicializar() -> None:
             lado INTEGER,                                  -- opcional, só organização/UI
             camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE RESTRICT,
             roi TEXT,                                      -- {x,y,w,h} — área própria deste bico
+            papel_camera TEXT NOT NULL DEFAULT 'traseira', -- 'traseira' | 'frente'
+            camera2_id INTEGER REFERENCES cameras(id) ON DELETE RESTRICT,   -- NULL = uma câmera só
+            roi2 TEXT,
+            papel_camera2 TEXT NOT NULL DEFAULT 'frente',
             ativo INTEGER NOT NULL DEFAULT 1,
             criado_em TEXT NOT NULL,
             UNIQUE(automacao_id, codigo)
         );
         CREATE INDEX IF NOT EXISTS idx_bicos_automacao ON bicos(automacao_id);
         CREATE INDEX IF NOT EXISTS idx_bicos_camera ON bicos(camera_id);
+        -- `idx_bicos_camera2` NÃO entra aqui: num banco antigo a coluna `camera2_id` só
+        -- existe depois de `_migrar` (que roda no fim de `inicializar`), e o CREATE TABLE
+        -- IF NOT EXISTS acima não altera uma tabela que já existe. Criar o índice neste
+        -- script quebra o boot de toda instalação existente com "no such column". Mesmo
+        -- motivo de `idx_deteccoes_bico` — ver o comentário dele em `_migrar`.
 
         -- Log de TODA chamada do roteador ao endpoint reativo, inclusive as recusadas.
         -- É o que dá visibilidade da integração: sem isso, um cadastro errado do lado do
@@ -229,15 +439,144 @@ def inicializar() -> None:
             bico TEXT NOT NULL DEFAULT '',
             bico_id INTEGER,
             empresa_id INTEGER,
-            status TEXT NOT NULL,        -- ok | sem_placa | erro_cadastro | erro_camera
+            status TEXT NOT NULL,        -- ok | nao_confirmada | sem_placa | erro_cadastro | erro_camera
+                                         -- nao_confirmada: devolveu placa, mas o acordo
+                                         -- ficou abaixo de leitura_acordo_minimo
             motivo TEXT NOT NULL DEFAULT '',
             placa TEXT,
             acordo REAL,
             tentativas INTEGER,
-            duracao_ms INTEGER
+            duracao_ms INTEGER,
+            modo TEXT NOT NULL DEFAULT 'completo'   -- completo | rapido (ver PERFIL_* em
+                                         -- app/visao/leitura.py). Coluna própria, e não
+                                         -- texto no `motivo`, porque as duas populações
+                                         -- têm taxa de sucesso e duração diferentes POR
+                                         -- DESENHO: misturá-las faria o painel mostrar
+                                         -- uma queda de qualidade que ninguém causou.
         );
         CREATE INDEX IF NOT EXISTS idx_chamadas_criado ON chamadas(criado_em DESC);
         CREATE INDEX IF NOT EXISTS idx_chamadas_empresa ON chamadas(empresa_id);
         CREATE INDEX IF NOT EXISTS idx_chamadas_status ON chamadas(status);
+
+        -- Log de auditoria: quem fez o quê no painel administrativo. `usuario_id` fica
+        -- NULL pra tentativa de login falha (não há "quem" autenticado ainda) — o alvo
+        -- (e-mail tentado) vai em `detalhe`. `usuario_nome` é denormalizado de propósito:
+        -- o nome de quem agiu tem que sobreviver mesmo que a conta seja desativada depois.
+        CREATE TABLE IF NOT EXISTS auditoria (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            criado_em TEXT NOT NULL,
+            usuario_id INTEGER,
+            usuario_nome TEXT NOT NULL DEFAULT '',
+            acao TEXT NOT NULL,
+            alvo_tipo TEXT NOT NULL DEFAULT '',
+            alvo_id TEXT NOT NULL DEFAULT '',
+            detalhe TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_auditoria_criado ON auditoria(criado_em DESC);
+        CREATE INDEX IF NOT EXISTS idx_auditoria_usuario ON auditoria(usuario_id);
+        CREATE INDEX IF NOT EXISTS idx_auditoria_acao ON auditoria(acao);
+
+        -- Tokens de "esqueci minha senha" / convite por e-mail (mesmo mecanismo pros
+        -- dois casos — a diferença é só o texto do e-mail enviado). `usado`: token de
+        -- uso único, marcado depois de trocar a senha; um token usado ou expirado não
+        -- serve mais, mas a linha fica pra auditoria.
+        CREATE TABLE IF NOT EXISTS reset_senha_tokens (
+            token     TEXT    PRIMARY KEY,
+            user_id   INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+            criado_em TEXT    NOT NULL,
+            expira_em REAL    NOT NULL,
+            usado     INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_reset_tokens_user ON reset_senha_tokens(user_id);
+
+        -- ── Cache dos dados de veículo consultados na apiplacas.com.br ──────────
+        -- Existe por DINHEIRO: cada consulta à API externa custa crédito pré-pago, e
+        -- marca/modelo/combustível de um veículo NUNCA mudam — o posto repete as mesmas
+        -- placas todo dia (frota, cliente fiel, aplicativo). Sem esta tabela, pagaríamos
+        -- de novo pelo mesmo dado imutável em cada abastecimento.
+        --
+        -- SEM coluna de posto/empresa DE PROPÓSITO: o cache é compartilhado por todo o
+        -- servidor. Placa não é dado de um cliente nosso, é dado do VEÍCULO, e a mesma
+        -- frota circula por vários postos da mesma rede — escopar por CNPJ multiplicaria
+        -- a conta pelo número de postos sem ganhar nada.
+        --
+        -- NÃO é purgada pela retenção (`app/operacao/retencao.py` só conhece `deteccoes`
+        -- e `chamadas`). É intencional: purgar o cache reintroduz exatamente o custo que
+        -- ele existe para eliminar. Não há imagem nem vínculo com abastecimento aqui, e
+        -- os dados são do veículo (marca, modelo, município), não do proprietário — o
+        -- `chassi` vem mascarado pelo próprio fornecedor e não é extraído para coluna.
+        CREATE TABLE IF NOT EXISTS veiculos (
+            -- NORMALIZADA (maiúscula, só alfanumérico) antes de gravar E de ler. A
+            -- comparação de TEXT PRIMARY KEY no SQLite é BINÁRIA: "abc1d23" e "ABC1D23"
+            -- seriam duas linhas e DUAS COBRANÇAS pelo mesmo veículo. Quem normaliza é
+            -- `app/integracoes/apiplacas.py`, num lugar só.
+            placa TEXT PRIMARY KEY,
+
+            -- Veredito sobre o VEÍCULO, não sobre a chamada HTTP:
+            --   'ok'          a API respondeu 200 e há dado (que pode estar incompleto)
+            --   'inexistente' a API respondeu 406 "sem resultados" — a placa não consta
+            --                 na base consultada. É resposta LEGÍTIMA e precisa ser
+            --                 cacheada: o caso comum é OCR que leu errado, uma placa que
+            --                 nunca vai existir e que sem isso seria reconsultada (e
+            --                 recobrada) em todo abastecimento daquele bico.
+            -- Falha de rede/timeout/402/429 NÃO viram linha aqui: não são respostas sobre
+            -- o veículo, e gravá-las faria uma indisponibilidade passageira "responder"
+            -- pelos próximos 180 dias. Vocabulário validado em Python (`_veiculos.py`) e
+            -- não por CHECK — mesmo motivo de `tipo_veiculo_fonte`: um CHECK não dá para
+            -- estender sem recriar a tabela.
+            status TEXT NOT NULL,
+
+            criado_em     TEXT NOT NULL,   -- 1ª vez que se pagou por esta placa
+            consultado_em TEXT NOT NULL,   -- data da resposta ARMAZENADA; base do TTL
+            -- Quantas vezes a API PAGA foi chamada para esta placa (1 na primeira, +1 a
+            -- cada reconsulta por TTL vencido). É contabilidade de gasto que sobrevive a
+            -- restart do processo, ao contrário do freio em memória do `limitador`.
+            consultas INTEGER NOT NULL DEFAULT 1,
+            http_status INTEGER,           -- 200 | 406. NULL = linha importada à mão
+
+            -- ── Bloco curado: o que vai no payload do roteador ──────────────────
+            -- TODAS nullable, e NULL significa "a API não informou" — NUNCA um valor por
+            -- omissão. A doc da apiplacas avisa que o objeto `extra` (de onde sai o
+            -- combustível) pode vir AUSENTE OU INCOMPLETO, e que `fipe` pode faltar.
+            -- Preencher 'Gasolina' por padrão seria inventar o dado mais importante da
+            -- integração — e num flex, inventá-lo errado.
+            combustivel       TEXT,   -- extra.combustivel, ex. "Alcool / Gasolina" — o alvo
+            combustivel_sigla TEXT,   -- fipe (maior score).sigla_combustivel, ex. "G"
+            marca             TEXT,
+            modelo            TEXT,
+            ano               INTEGER,
+            ano_modelo        INTEGER,
+            cor               TEXT,
+            especie           TEXT,   -- extra.especie, ex. "Passageiro"
+            -- extra.tipo_veiculo, ex. "Automovel"/"Motocicleta". VOCABULÁRIO DO
+            -- FORNECEDOR: não confundir com `deteccoes.tipo_veiculo` ('moto'/'carro'),
+            -- que é estimativa NOSSA do detector. São escalas diferentes e cruzá-las
+            -- faria alguém "corrigir" nosso detector com dado de terceiro.
+            tipo_veiculo      TEXT,
+            -- É o campo VOLÁTIL do bloco, e o que motiva o TTL não ser infinito. Com TTL
+            -- de 180 dias pode estar 180 dias velho: NÃO serve como checagem de
+            -- roubo/restrição em tempo real. Está documentado em INTEGRACAO_ROTEADOR.md.
+            situacao          TEXT,
+            municipio         TEXT,
+            uf                TEXT,
+
+            -- Resposta 200 INTEIRA, como veio. É o que permite expor amanhã chassi,
+            -- cilindradas, quantidade_passageiro, segmento ou FIPE SEM PAGAR DE NOVO
+            -- pelas placas já consultadas. Sem ele, cada campo novo pedido pelo posto
+            -- custaria uma recompra do histórico todo. NULL nas negativas (sem corpo útil).
+            bruto TEXT,
+
+            -- De qual provedor veio. Existe para o dia em que houver um segundo, ou um
+            -- import manual — para não confundir dado pago com dado digitado.
+            fonte TEXT NOT NULL DEFAULT 'apiplacas'
+        );
+        -- Serve ao teto DIÁRIO de gasto (COUNT de linhas com consultado_em >= meia-noite)
+        -- e à varredura "reconsultar as mais velhas". A busca do caminho quente é pela
+        -- PK, que já tem índice próprio. Ambos podem ficar NESTE script (e não em
+        -- `_migrar`) porque a tabela inteira nasce aqui: num banco antigo ela é criada já
+        -- completa, então não há o risco de "no such column" que manda
+        -- `idx_bicos_camera2`/`idx_deteccoes_bico` para o `_migrar`.
+        CREATE INDEX IF NOT EXISTS idx_veiculos_consultado ON veiculos(consultado_em);
+        CREATE INDEX IF NOT EXISTS idx_veiculos_status ON veiculos(status);
         """)
         _migrar(c)

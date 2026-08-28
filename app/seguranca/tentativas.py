@@ -28,8 +28,20 @@ _lock = threading.Lock()
 _falhas: dict[str, tuple[int, float]] = {}
 
 
-def _chaves(email: str, ip: str) -> list[str]:
-    return [f"email:{email.strip().lower()}", f"ip:{ip}"]
+def _chaves(email: str, ip: str, escopo: str = "login") -> list[str]:
+    """As duas chaves de um balde: por e-mail e por IP, AMBAS dentro do escopo.
+
+    O escopo no prefixo do IP é a correção do achado A6 (auditoria 27/08/2026). Antes a
+    chave de IP era `ip:{ip}` seca, compartilhada por todos os fluxos — então
+    `/esqueci-senha`, que chama `registrar_falha` INCONDICIONALMENTE (inclusive quando o
+    e-mail é enviado com sucesso), enchia o balde de IP que o LOGIN consulta.
+
+    Atrás de proxy ou NAT — o caso do Docker — `request.client.host` é o mesmo para todo
+    mundo: 10 POSTs em /esqueci-senha trancavam o login do sistema inteiro por 15 minutos,
+    renováveis. `auth.py` já tentava separar os fluxos passando `reset:{email}`, mas a
+    separação só valia na dimensão e-mail.
+    """
+    return [f"{escopo}:email:{email.strip().lower()}", f"{escopo}:ip:{ip}"]
 
 
 def _bloqueio_restante(chave: str, agora: float) -> float:
@@ -40,17 +52,18 @@ def _bloqueio_restante(chave: str, agora: float) -> float:
     return max(0.0, ultima + espera - agora)
 
 
-def segundos_de_bloqueio(email: str, ip: str) -> int:
+def segundos_de_bloqueio(email: str, ip: str, escopo: str = "login") -> int:
     """Quanto falta para esta combinação poder tentar de novo (0 = liberado)."""
     agora = time.time()
     with _lock:
-        return int(max(_bloqueio_restante(k, agora) for k in _chaves(email, ip)) + 0.999)
+        return int(max(_bloqueio_restante(k, agora)
+                       for k in _chaves(email, ip, escopo)) + 0.999)
 
 
-def registrar_falha(email: str, ip: str) -> None:
+def registrar_falha(email: str, ip: str, escopo: str = "login") -> None:
     agora = time.time()
     with _lock:
-        for k in _chaves(email, ip):
+        for k in _chaves(email, ip, escopo):
             n, ultima = _falhas.get(k, (0, 0.0))
             # Passou a janela inteira sem errar → recomeça a contagem em vez de somar
             # a uma sequência antiga que já não diz nada sobre agora.

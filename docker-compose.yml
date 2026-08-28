@@ -42,6 +42,15 @@ services:
     environment:
       PORTA: "14000"
       LOG_LEVEL: "info"
+      # Um runtime de OpenMP por processo. OpenCV, onnxruntime, PyTorch (via EasyOCR) e
+      # Paddle trazem cada um o seu, e o conflito no Windows produz falta nativa durante a
+      # carga de DLL - o log de 24/08/2026 tem 2061 dumps de `Windows fatal exception` e uma
+      # `access violation` dentro de um import. Sao variaveis e nao codigo de proposito:
+      # precisam existir ANTES de o runtime nativo carregar, e a essa altura `import cv2` ja
+      # aconteceu. Ver app/core/nativo.py.
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      KMP_DUPLICATE_LIB_OK: "TRUE"
       # Credenciais e api_key NÃO ficam aqui (o compose é versionado no git) — vão no
       # config.txt dentro de ./dados, que está no .gitignore. Se preferir env, use um
       # arquivo .env (também ignorado) com `env_file: .env`.

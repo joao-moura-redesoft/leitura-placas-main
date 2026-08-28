@@ -674,3 +674,132 @@ assumir que o servidor aguenta qualquer volume de clientes simultâneos.
 
 Nenhuma dessas foi decidida — a decisão certa depende do número que
 `medir_concorrencia.py` trouxer.
+
+---
+
+## 21. RBAC: o que ficou de uma branch paralela e o que foi resolvido
+
+Durante o desenvolvimento do RBAC (papel `admin` × `cliente` restrito a um posto —
+seções acima), uma branch paralela (`feat: administração de usuários e testes`)
+implementou, ao mesmo tempo e sem visibilidade de uma pra outra, uma **segunda**
+solução de gestão de usuários. O merge das duas não gerou conflito de texto (os
+dois trabalhos mexiam em arquivos/caminhos técnicamente diferentes), mas deixou
+metade do código órfão — `app/core/banco.py` (modificado nesta sessão) coexistindo
+com `app/core/banco/` (pacote da outra branch), com o pacote vencendo a resolução
+de import do Python **silenciosamente**. Só apareceu ao rodar `pytest
+testes/unitarios` pela primeira vez com sucesso — os 60 testes que a outra branch
+trouxe testavam um desenho que tinha virado código morto.
+
+Decisão, revisada teste a teste:
+
+**Adotado** (portado para dentro de `app/core/banco/`, hoje em produção):
+- **Sessões em SQLite** (`banco.sessao_*`) em vez de dict em memória —
+  sobrevivem a restart do servidor e, mais importante pro momento (ver §20), abrem
+  a porta pra rodar múltiplos workers uvicorn sem cada um ter sua própria sessão.
+  `app/seguranca/sessao.py` manteve a mesma interface pública; ninguém que já
+  chamava `criar_sessao`/`obter_user_id`/etc. precisou mudar.
+- **`GET /api/usuarios/eu`** — "quem sou eu", usado pela UI e pelas travas abaixo.
+- **Autoproteção**: um admin não consegue alterar o PRÓPRIO papel/status via
+  `PUT /api/usuarios/{id}` (precisa pedir a outro admin) — trava a mais além de "não
+  pode ser o último admin ativo", que sozinha só cobre o caso de sobrar zero.
+- **Edição de nome/e-mail** no mesmo `PUT` (antes só papel/posto/ativo).
+- **`app/seguranca/tentativas.py`** (freio de força bruta por e-mail+IP, com espera
+  progressiva) substituiu o limitador genérico só-por-IP no `/login` — mais preciso
+  contra os dois padrões de ataque (varrer e-mails de um IP, atacar um e-mail de
+  vários IPs).
+- **Papel `operador`** (adotado numa segunda passada, a pedido — não ligado a um
+  posto específico, vê todos como admin, mas não passa em `deps.exigir_admin`):
+  equipe interna que opera o painel no dia a dia sem poder reconfigurar o sistema.
+  `deps.empresa_do_usuario` trata `operador` igual a `admin` (sem restrição de
+  escopo) — a única diferença dos dois é `eh_admin`.
+- **Troca de senha self-service** (`POST /api/usuarios/eu/senha`) — qualquer usuário
+  logado (admin, operador ou cliente) troca a PRÓPRIA senha sem depender de um
+  admin, mediante a senha atual. Isso obrigou a tirar o gate de admin do
+  `include_router` de `/api/usuarios` (era bloqueio geral) e mover pra cada rota
+  individualmente — `GET /api/usuarios/eu` e a troca de senha ficaram abertas a
+  qualquer logado; listar/criar/editar outros usuários continuam admin-only.
+  Página `/minha-conta` (link no nav, visível a todo mundo logado).
+
+**Rejeitado** (removido/não usado — decisão de produto, não técnica):
+- **`api_key` obrigatória por padrão em `/api/leitura`** (com geração automática no
+  boot) — contradiz a decisão já tomada de opt-in por posto (README, §"Autenticação").
+  Ativar isso hoje derrubaria a integração de todo posto sem api_key configurada.
+- **`DELETE /api/usuarios/{id}`** (exclusão definitiva) — só desativação
+  (`ativo=False`), reversível e preserva o registro para auditoria.
+- Gate de escrita **por middleware genérico** (`_negar_por_papel`, qualquer
+  POST/PUT/DELETE exige admin por padrão, salvo lista curta) — arquitetura
+  interessante (uma rota nova nasce protegida sem precisar que alguém lembre de
+  anotá-la) mas trocar o modelo já testado (`Depends(deps.exigir_admin)` por rota)
+  por esse no meio da reconciliação era risco desnecessário. Fica registrado como
+  ideia pra quando o número de rotas justificar.
+
+`testes/unitarios/test_autenticacao.py`, `test_autorizacao.py` e `test_usuarios.py`
+foram reescritos linha a linha pra testar o que ficou de pé (nenhum teste foi só
+apagado por dar trabalho — cada um foi adaptado pro design real ou removido com
+justificativa, registrada nos próprios arquivos).
+
+### Recomendação de processo
+
+O incidente só foi possível porque duas sessões desenvolveram RBAC ao mesmo tempo
+sem se ver. Não tem solução técnica — é hábito de equipe:
+- `git fetch origin` (ou olhar PRs abertas) antes de embarcar em algo grande que
+  mexe em superfície compartilhada (auth, cadastro, schema).
+- Merges menores e mais frequentes em vez de branches longas divergindo — quanto
+  maior a janela, maior a chance de duas pessoas (ou duas sessões) resolverem o
+  mesmo problema em paralelo sem saber.
+- Depois de um merge não-trivial, rodar a suíte de testes (agora automático via CI,
+  ver `.github/workflows/testes.yml`) antes de considerar o merge "resolvido".
+
+---
+
+## 22. Usuários e permissões — segunda leva (auditoria, autoatendimento)
+
+Depois do RBAC (admin/operador/cliente, §21), uma rodada de melhorias sobre a MESMA
+área — todas opcionais/aditivas, nada muda o comportamento de quem já usava o sistema
+sem configurar nada a mais:
+
+- **Log de auditoria** (`banco.auditoria_registrar`/`auditoria_listar`, tabela
+  `auditoria`, painel em `/auditoria`, admin-only): login/login_falha, criação/edição
+  de usuário, troca de senha (self, admin, ou por link), criação/edição/remoção de
+  posto e entidade, gerar/revogar api_key, definir retenção, salvar configuração
+  (só os NOMES das chaves alteradas, nunca o valor — várias são segredo). Deliberadamente
+  **não** cobre CRUD de automação/bico/câmera — escopo cortado para não inflar demais
+  esta rodada; extensível pelo mesmo padrão se algum dia fizer falta.
+- **Política de senha** (`app/seguranca/sessao.py:senha_fraca`): mínimo 8 caracteres
+  (já existia) + pelo menos 2 classes de caractere (letra/dígito/símbolo). Não exige
+  símbolo obrigatório de propósito — NIST 800-63B desaconselha regra de complexidade
+  rígida, que na prática empurra pra padrões previsíveis tipo "Senha123!". Aplicada em
+  todo ponto que define senha (bootstrap, criação/edição de usuário, reset por admin,
+  troca self-service, redefinição por link).
+- **Cookie `Secure` configurável** (`cookie_secure`, `app/web/auth.py`): desligado por
+  padrão (senão quebra o acesso local via `http://localhost`); ligar quando o servidor
+  estiver atrás de proxy reverso com TLS.
+- **"Esqueci minha senha"** (`/esqueci-senha` → `/redefinir-senha/{token}`) e
+  **convite por e-mail** na criação de usuário (`/usuarios` → "Convidar por e-mail"):
+  os dois reaproveitam o mesmo mecanismo de token de uso único (`reset_senha_tokens`,
+  2h de validade). Exigem SMTP configurado (`smtp_*` em Configuração → Sistema) — sem
+  isso, ambos mostram um aviso ("peça a um administrador") em vez de quebrar. Convite
+  gera uma senha placeholder aleatória que ninguém conhece (nem quem criou a conta);
+  a pessoa convidada define a senha de verdade pelo link.
+- **Sessões ativas** (`/minha-conta` → "Sessões ativas", `banco.sessoes_listar_do_usuario`):
+  qualquer usuário vê e revoga individualmente as próprias sessões — útil pra notar um
+  acesso esquecido aberto em outro aparelho. Escopado ao dono: o endpoint de revogação
+  confere que o token pertence a quem está pedindo antes de apagar.
+- **Confirmação na UI antes de desativar ou rebaixar** um admin (`usuarios.html`) —
+  só client-side (a trava de verdade já existe no backend desde §21); evita clique
+  acidental.
+- **Último login** na listagem de usuários (`usuarios.ultimo_login`) — mostra "Nunca"
+  pra conta criada e nunca usada.
+
+**Deliberadamente fora desta rodada** (mencionado a pedido, não implementado — sem
+necessidade concreta ainda, não porque seja difícil):
+- **Permissões granulares por módulo** (ex.: "pode editar câmera mas não postos") — os
+  três papéis atuais (admin/operador/cliente) cobrem os casos de uso reais até aqui;
+  criar um sistema de permissões bit-a-bit sem nenhum consumidor concreto é complexidade
+  especulativa (mais código, mais testes, mais superfície de ataque) por um benefício
+  hipotético. Se surgir um caso real ("operador X pode mexer em Y mas não Z"), vale
+  revisitar.
+- **Tokens de API pessoais** (um token por usuário/operador, para scripts, distinto da
+  `api_key` global) — mesma lógica: ninguém pediu ainda um script/integração rodando
+  como um usuário específico. A `api_key` global mais o `X-API-Key` já cobre o caso de
+  integração hoje existente (o roteador do posto).

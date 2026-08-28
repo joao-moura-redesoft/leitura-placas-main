@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 
 from app.core import estado
+from app.core import threads
 
 log = logging.getLogger(__name__)
 
@@ -54,8 +55,23 @@ class _Encoder:
         )
         self._thread.start()
 
-    def parar(self) -> None:
+    def parar(self, timeout: float = 8.0) -> bool:
+        """Sinaliza parada e ESPERA a thread encerrar o FFmpeg. False no timeout.
+
+        O `subprocess` só é encerrado no `finally` do laço, que roda numa thread DAEMON.
+        Com `parar()` retornando na hora e o interpretador saindo em seguida, a thread era
+        morta antes do `finally` e o `ffmpeg` ficava ÓRFÃO gravando em `hls/{id}/` — no
+        Windows não há kill em cascata do filho, então cada reinício do serviço acumulava um
+        ffmpeg por câmera. (Auditoria 27/08/2026, achado M8.)
+        """
         self._stop.set()
+        return threads.encerrar_thread(self._thread, timeout, lambda: log.warning(
+            "HLS câmera %d: encoder não encerrou em %.0fs — o processo ffmpeg pode "
+            "ficar órfão", self.camera_id, timeout))
+
+    def morto(self) -> bool:
+        """Thread já criada e não mais viva — encoder que desistiu e não volta sozinho."""
+        return self._thread is not None and not self._thread.is_alive()
 
     # ── loop interno ──────────────────────────────────────────────────────────
 
@@ -81,12 +97,25 @@ class _Encoder:
             except Exception as e:
                 log.error("HLS câmera %d: %s — reiniciando em 5s", self.camera_id, e)
             finally:
-                if proc and proc.poll() is None:
+                if proc:
+                    # `stdin.close()` FORA do `if poll() is None`: quando o ffmpeg já morreu
+                    # (o caso comum — `_alimentar` sai por BrokenPipeError), o descritor do
+                    # pipe nunca era fechado, e o laço de retry a cada 5 s vazava um fd por
+                    # volta até o processo bater no limite do sistema.
                     try:
-                        proc.stdin.close()
-                        proc.wait(timeout=3)
+                        if proc.stdin and not proc.stdin.closed:
+                            proc.stdin.close()
                     except Exception:
-                        proc.kill()
+                        pass
+                    if proc.poll() is None:
+                        try:
+                            proc.wait(timeout=3)
+                        except Exception:
+                            proc.kill()
+                            try:
+                                proc.wait(timeout=2)
+                            except Exception:
+                                pass
             if not self._stop.is_set():
                 time.sleep(5)
 
@@ -153,6 +182,18 @@ class HLSManager:
     def __init__(self) -> None:
         self._encoders: dict[int, _Encoder] = {}
         self._ativo = False
+        # RLock (não Lock comum): `revisar()`/`parar()` chamam `remover_camera()` no MESMO
+        # objeto enquanto já seguram o lock — um Lock comum travaria a própria thread.
+        #
+        # Protege `_encoders`/`_ativo` contra mutação concorrente: o supervisor chama
+        # `revisar()` a cada 5s numa thread de fundo, e uma request HTTP (config_salvar
+        # trocando `streaming_modo`, ou o CRUD de câmeras) pode chamar `parar()`/`iniciar()`/
+        # `adicionar_camera()`/`remover_camera()` ao mesmo tempo. Sem lock, `revisar()`
+        # podia iterar `_encoders` bem no meio de um `parar()+iniciar()` de outra thread e
+        # deixar um `_Encoder` (e o processo ffmpeg dele) órfão — sem referência em
+        # `_encoders`, `parar()`/`remover_camera()` nunca mais conseguem pará-lo.
+        # (Achado do review de 28/08/2026.)
+        self._lock = threading.RLock()
 
     def iniciar(self, cameras: list[dict]) -> bool:
         """Inicia encoders para todas as câmeras ativas. Retorna False se FFmpeg ausente."""
@@ -163,38 +204,79 @@ class HLSManager:
                 "  Linux:   apt install ffmpeg"
             )
             return False
-        self._ativo = True
-        HLS_DIR.mkdir(exist_ok=True)
-        for cam in cameras:
-            if cam.get("ativo"):
-                self._iniciar_encoder(cam["id"])
+        with self._lock:
+            self._ativo = True
+            HLS_DIR.mkdir(exist_ok=True)
+            for cam in cameras:
+                if cam.get("ativo"):
+                    self._iniciar_encoder(cam["id"])
         return True
+
+    def revisar(self, cameras) -> None:
+        """Sobe encoder faltante e recria os que morreram. Chamado pelo supervisor.
+
+        Sem isto, `adicionar_camera`/`remover_camera` eram CÓDIGO MORTO — nada no projeto os
+        chamava —, então cadastrar câmera com `streaming_modo=hls` nunca criava encoder.
+        """
+        with self._lock:
+            if not self._ativo:
+                return
+            ativas = {c["id"] for c in cameras if c.get("ativo")}
+            for camera_id in ativas:
+                self._iniciar_encoder(camera_id)
+            for camera_id in list(self._encoders):
+                if camera_id not in ativas:
+                    self.remover_camera(camera_id)
 
     def adicionar_camera(self, camera_id: int) -> None:
         """Chame ao ativar uma câmera via API."""
-        if self._ativo:
-            self._iniciar_encoder(camera_id)
+        with self._lock:
+            if self._ativo:
+                self._iniciar_encoder(camera_id)
 
     def remover_camera(self, camera_id: int) -> None:
         """Chame ao desativar uma câmera via API."""
-        enc = self._encoders.pop(camera_id, None)
+        with self._lock:
+            enc = self._encoders.pop(camera_id, None)
+        # `enc.parar()` (join de até 8s) fica FORA do lock quando chamado direto — só quem
+        # chama de dentro de `revisar()` (que já segura o lock) paga o join sob lock, o que
+        # é aceitável por ser um tick periódico raro de remover câmera morta.
         if enc:
             enc.parar()
 
     def parar(self) -> None:
-        for enc in self._encoders.values():
+        with self._lock:
+            # Para TODOS antes de esperar qualquer um: sinalizar em série e joinar em série
+            # somaria os timeouts (8 s por câmera).
+            encoders = list(self._encoders.values())
+            for enc in encoders:
+                enc._stop.set()
+            self._encoders.clear()
+            self._ativo = False
+        # Os joins ficam FORA do lock: a mutação de `_encoders`/`_ativo` já terminou acima,
+        # e os encoders parados não estão mais em `_encoders` — outra thread pode voltar a
+        # chamar `iniciar()`/`ativo()` sem esperar os até 8s por câmera aqui.
+        for enc in encoders:
             enc.parar()
-        self._encoders.clear()
-        self._ativo = False
 
     def ativo(self) -> bool:
-        return self._ativo
+        with self._lock:
+            return self._ativo
 
     # ── interno ───────────────────────────────────────────────────────────────
 
     def _iniciar_encoder(self, camera_id: int) -> None:
-        if camera_id in self._encoders:
-            return
+        """Assume que `self._lock` já está seguro pelo chamador — nunca chamar direto."""
+        atual = self._encoders.get(camera_id)
+        if atual is not None:
+            if not atual.morto():
+                return
+            # Encoder que saiu por timeout de primeiro frame (`_loop` faz `return` após 60 s
+            # sem quadro) continuava no dicionário, e este `return` antecipado impedia
+            # qualquer recriação: a câmera ficava SEM HLS até reiniciar o processo, mesmo
+            # depois de voltar a transmitir.
+            log.info("HLS: encoder da câmera %d estava morto — recriando", camera_id)
+            self._encoders.pop(camera_id, None)
         enc = _Encoder(camera_id)
         enc.iniciar()
         self._encoders[camera_id] = enc

@@ -54,7 +54,8 @@ def usuarios_listar() -> list[dict]:
     with cursor() as c:
         return [dict(r) for r in c.execute(
             "SELECT u.id, u.nome, u.email, u.papel, u.ativo, u.empresa_id, u.criado_em, "
-            "em.nome AS empresa_nome FROM usuarios u LEFT JOIN empresas em ON u.empresa_id = em.id "
+            "u.ultimo_login, em.nome AS empresa_nome "
+            "FROM usuarios u LEFT JOIN empresas em ON u.empresa_id = em.id "
             "ORDER BY u.papel, u.nome"
         ).fetchall()]
 
@@ -86,6 +87,13 @@ def usuarios_definir_senha(id_: int, senha_hash: str) -> bool:
     with cursor() as c:
         cur = c.execute("UPDATE usuarios SET senha=? WHERE id=?", (senha_hash, id_))
         return cur.rowcount > 0
+
+
+def usuarios_marcar_login(id_: int) -> None:
+    """Registra o horário do login bem-sucedido — mostrado na lista de usuários pra
+    achar conta esquecida/nunca usada."""
+    with cursor() as c:
+        c.execute("UPDATE usuarios SET ultimo_login=? WHERE id=?", (_agora(), id_))
 
 
 def usuarios_remover(id_: int) -> bool:
@@ -143,6 +151,17 @@ def sessoes_remover_do_usuario(user_id: int, exceto_token: str | None = None) ->
 def sessoes_limpar_expiradas(agora: float) -> int:
     with cursor() as c:
         return c.execute("DELETE FROM sessoes WHERE expira_em < ?", (agora,)).rowcount
+
+
+def sessoes_listar_do_usuario(user_id: int) -> list[dict]:
+    """Sessões ativas de um usuário — "Meus dispositivos" em Minha Conta. Devolve o
+    token completo (só pra quem já É dono dele, via `/api/usuarios/eu/sessoes` — não
+    é uma exposição nova: o dono já pode agir como si mesmo de qualquer forma)."""
+    with cursor() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT token, criado_em, expira_em FROM sessoes WHERE user_id=? "
+            "ORDER BY criado_em DESC", (user_id,)
+        ).fetchall()]
 
 
 def usuarios_contar_admins_ativos(excluir_id: int | None = None) -> int:

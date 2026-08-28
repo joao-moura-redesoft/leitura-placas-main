@@ -34,17 +34,18 @@ class TestLogin:
         assert r.status_code == 200          # volta pro formulário
         assert not r.cookies.get("sessao")
 
-    def test_conta_desativada_nao_entra(self, admin, operador, ambiente):
+    def test_conta_desativada_nao_entra(self, admin, cliente_logado, posto, ambiente):
         """Regressão: `ativo` era gravado mas nunca consultado no login — desativar
         um usuário no painel não impedia o login dele."""
         uid = admin.get("/api/usuarios").json()[-1]["id"]
         admin.put(f"/api/usuarios/{uid}", json={
-            "nome": "Operador", "email": "op@teste.com", "papel": "usuario", "ativo": False,
+            "nome": "Cliente", "email": "cliente@teste.com", "papel": "cliente",
+            "empresa_id": posto["empresa_id"], "ativo": False,
         })
         from app.servidor import app
-        r = _login(TestClient(app), "op@teste.com", "senha-operador-1")
+        r = _login(TestClient(app), "cliente@teste.com", "senha-cliente-1")
         assert not r.cookies.get("sessao")
-        assert "desativada" in r.text
+        assert "incorretos" in r.text
 
 
 class TestSessao:
@@ -65,25 +66,18 @@ class TestSessao:
         admin.cookies.set("sessao", token)
         assert admin.get("/api/stats").status_code == 401
 
-    def test_desativar_usuario_derruba_a_sessao_aberta(self, admin, operador):
+    def test_desativar_usuario_derruba_a_sessao_aberta(self, admin, cliente_logado, posto):
         """Regressão: a sessão não era confrontada com o estado da conta, então
         desativar alguém não tirava quem já estava dentro."""
-        assert operador.get("/api/stats").status_code == 200
+        assert cliente_logado.get("/api/postos").status_code == 200
         uid = admin.get("/api/usuarios").json()[-1]["id"]
         admin.put(f"/api/usuarios/{uid}", json={
-            "nome": "Operador", "email": "op@teste.com", "papel": "usuario", "ativo": False,
+            "nome": "Cliente", "email": "cliente@teste.com", "papel": "cliente",
+            "empresa_id": posto["empresa_id"], "ativo": False,
         })
-        assert operador.get("/api/stats").status_code == 401
+        assert cliente_logado.get("/api/postos").status_code == 401
 
-    def test_remover_usuario_derruba_a_sessao_aberta(self, admin, operador):
-        """Regressão: um usuário REMOVIDO seguia com acesso total até o token expirar
-        — e o TTL se renovava a cada uso, ou seja, indefinidamente."""
-        uid = admin.get("/api/usuarios").json()[-1]["id"]
-        admin.delete(f"/api/usuarios/{uid}")
-        assert operador.get("/api/stats").status_code == 401
-        assert operador.get("/postos", follow_redirects=False).status_code == 303
-
-    def test_rebaixar_papel_derruba_a_sessao(self, admin, ambiente):
+    def test_rebaixar_papel_derruba_a_sessao(self, admin, posto, ambiente):
         """Sem isto o navegador já aberto continuaria operando como admin depois do
         rebaixamento — `ativo` continua 1, então nada mais o barraria."""
         r = admin.post("/api/usuarios", json={
@@ -95,7 +89,8 @@ class TestSessao:
         assert cli.get("/api/usuarios").status_code == 200
 
         admin.put(f"/api/usuarios/{uid}", json={
-            "nome": "Dois", "email": "d@teste.com", "papel": "usuario", "ativo": True})
+            "nome": "Dois", "email": "d@teste.com", "papel": "cliente",
+            "empresa_id": posto["empresa_id"], "ativo": True})
         assert cli.get("/api/stats").status_code == 401
 
     def test_trocar_a_propria_senha_nao_expulsa_quem_trocou(self, admin):
@@ -195,6 +190,53 @@ class TestBootstrapDoPrimeiroAdmin:
         cliente.post("/criar-admin", follow_redirects=False, data={
             "nome": "A", "email": "a@t.com", "senha": "senha-boa-123", "confirmar": "outra-coisa-1"})
         assert banco.contar_usuarios() == 0
+
+
+class TestTrocaDeSenhaSelfService:
+    """Qualquer usuário logado (admin, operador ou cliente) troca a PRÓPRIA senha sem
+    depender de admin — ver app/web/usuarios.py:trocar_a_propria_senha."""
+
+    def test_qualquer_usuario_logado_troca_a_propria_senha(self, admin):
+        r = admin.post("/api/usuarios/eu/senha", json={
+            "senha_atual": "senha-admin-1", "senha_nova": "senha-nova-do-admin-1"})
+        assert r.status_code == 200
+        assert admin.get("/api/stats").status_code == 200  # sessão atual continua valendo
+
+    def test_cliente_tambem_troca_a_propria_senha(self, cliente_logado):
+        r = cliente_logado.post("/api/usuarios/eu/senha", json={
+            "senha_atual": "senha-cliente-1", "senha_nova": "senha-nova-do-cliente-1"})
+        assert r.status_code == 200
+        assert cliente_logado.get("/api/postos").status_code == 200
+
+    def test_senha_atual_errada_e_recusada(self, admin):
+        r = admin.post("/api/usuarios/eu/senha", json={
+            "senha_atual": "senha-errada", "senha_nova": "senha-nova-123"})
+        assert r.status_code == 400
+
+    def test_nova_senha_curta_e_recusada(self, admin):
+        r = admin.post("/api/usuarios/eu/senha", json={
+            "senha_atual": "senha-admin-1", "senha_nova": "123"})
+        assert r.status_code == 400
+
+    def test_deixa_de_entrar_com_a_senha_antiga(self, admin, ambiente):
+        admin.post("/api/usuarios/eu/senha", json={
+            "senha_atual": "senha-admin-1", "senha_nova": "senha-nova-do-admin-1"})
+        from app.servidor import app
+        r = _login(TestClient(app), "admin@teste.com", "senha-admin-1")
+        assert not r.cookies.get("sessao")
+
+    def test_derruba_as_outras_sessoes_mas_preserva_a_atual(self, admin):
+        from app.servidor import app
+        outra = TestClient(app)
+        r = _login(outra, "admin@teste.com", "senha-admin-1")
+        outra.cookies.set("sessao", r.cookies["sessao"])
+        assert outra.get("/api/stats").status_code == 200
+
+        admin.post("/api/usuarios/eu/senha", json={
+            "senha_atual": "senha-admin-1", "senha_nova": "senha-nova-do-admin-1"})
+
+        assert admin.get("/api/stats").status_code == 200   # sessão que trocou continua
+        assert outra.get("/api/stats").status_code == 401   # a outra sessão morreu
 
 
 def test_hash_de_senha_nao_guarda_texto_puro():

@@ -28,6 +28,28 @@ log = logging.getLogger(__name__)
 
 CHARS_VALIDOS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
+# Membros default do ensemble do fast-plate-ocr. TRÊS modelos, e não um, porque a
+# diversidade entre eles é o que a fusão por caractere consome — medido nas 30 fotos
+# rotuladas (26 carro + 4 moto), fundindo com `visao.consenso.consenso_caractere`:
+#
+#     1 modelo  (o que havia) .... carro 13/26 (50%)   moto 0/4
+#     2 modelos ................. carro 15/26 (58%)   moto 2/4
+#     3 modelos ................. carro 17/26 (65%)   moto 3/4
+#
+# O ganho é de MODELO, não de pré-processamento: rodar o mesmo modelo em 3 variantes de
+# imagem (perspectiva, cortar-as-2-linhas-e-colar) mede 11/26 — PIOR que o modelo sozinho.
+# E o voto tem de ser PLANO, um por modelo: consolidar a família num voto antes de fundir
+# com os outros engines derruba para 13/26, porque a concordância entre os três É o sinal.
+#
+# `global-plates-mobile-vit-v2` é grayscale 70x140 e os `cct-*` são RGB 64x128 — a conversão
+# sai de `config['image_color_mode']` de cada modelo, nunca do nome: passar grayscale a um
+# modelo RGB estoura `InvalidArgument` no onnxruntime.
+FAST_MODELOS_DEFAULT = (
+    "global-plates-mobile-vit-v2-model",
+    "cct-s-v2-global-model",
+    "cct-xs-v2-global-model",
+)
+
 
 def _ordenar_pontos(pts: np.ndarray) -> np.ndarray:
     """Ordena 4 pontos: [top-left, top-right, bottom-right, bottom-left]."""
@@ -116,7 +138,8 @@ def _tentar_importar(engine: str) -> bool:
 
 class OCR:
     def __init__(self, engine: str = "tesseract", tesseract_psm: int = 7,
-                 deskew_ativo: bool = True, deskew_angulo_max: float = 30.0):
+                 deskew_ativo: bool = True, deskew_angulo_max: float = 30.0,
+                 fast_modelos: tuple[str, ...] | None = None):
         self.engine = engine
         self.psm = tesseract_psm
         self._deskew_ativo = deskew_ativo
@@ -125,6 +148,14 @@ class OCR:
         self._paddle = None
         self._doctr = None
         self._fast_plate = None
+        # Membros do ensemble: [(nome, recognizer, cor)] — ver `FAST_MODELOS_DEFAULT`.
+        # `_fast_plate` continua apontando para o PRIMEIRO membro porque é o atributo que
+        # `ler()` e os dublês de teste checam para saber se o engine subiu.
+        self._fast_modelos = tuple(fast_modelos) if fast_modelos else FAST_MODELOS_DEFAULT
+        self._fast_membros: list[tuple[str, object, str]] = []
+        # Marca se a última passada de `_preprocessar_dl` chegou a apagar QR/"BR" — é o que
+        # deixa `ler()` saber que vale repetir sem essa limpeza quando o OCR volta vazio.
+        self._ultimo_limpou_mercosul = False
 
     def carregar(self) -> None:
         engine = self.engine
@@ -225,14 +256,35 @@ class OCR:
             self._carregar_tesseract()
             return
         from fast_plate_ocr import LicensePlateRecognizer
-        self._fast_plate = LicensePlateRecognizer("global-plates-mobile-vit-v2-model")
-        log.info("fast-plate-ocr carregado")
-        # Warm-up: ONNX Runtime otimiza o grafo na primeira execução — fazer no startup.
-        try:
-            self._fast_plate.run(np.zeros((50, 200), dtype=np.uint8))
-            log.info("fast-plate-ocr aquecido")
-        except Exception:
-            pass
+        self._fast_membros = []
+        for nome in self._fast_modelos:
+            # Um membro que não baixa/carrega NÃO derruba o ensemble: os outros seguem, e a
+            # fusão só perde um voto. Derrubar tudo por causa de um download que falhou
+            # deixaria o posto sem OCR nenhum.
+            try:
+                rec = LicensePlateRecognizer(nome)
+            except Exception as e:
+                log.error("fast-plate-ocr: membro %s não carregou (%s) — segue sem ele", nome, e)
+                continue
+            self._fast_membros.append((nome, rec, _cor_do_modelo(rec)))
+        if not self._fast_membros:
+            log.error("fast-plate-ocr: nenhum membro carregou — caindo para tesseract")
+            self.engine = "tesseract"
+            self._carregar_tesseract()
+            return
+        self._fast_plate = self._fast_membros[0][1]
+        log.info("fast-plate-ocr carregado: %d modelo(s) [%s]", len(self._fast_membros),
+                 ", ".join(n for n, _, _ in self._fast_membros))
+        # Warm-up: ONNX Runtime otimiza o grafo na primeira execução — fazer no startup, e
+        # em CADA membro: aquecer só o primeiro deixaria a otimização dos outros para o
+        # primeiro "Ler Placa" de verdade.
+        for nome, rec, cor in self._fast_membros:
+            try:
+                forma = (50, 200, 3) if cor == "rgb" else (50, 200)
+                rec.run(np.zeros(forma, dtype=np.uint8))
+            except Exception as e:
+                log.debug("fast-plate-ocr: warm-up de %s falhou (%s)", nome, e)
+        log.info("fast-plate-ocr aquecido")
 
     # -- Pré-processamento -----------------------------------------------------
 
@@ -434,7 +486,7 @@ class OCR:
             else:
                 sat_media = 0.0
                 e_mercosul = False
-            log.info(
+            log.debug(
                 "_remover_header M1: corte=%d/%d mercosul=%s sat=%.0f",
                 corte, h, e_mercosul, sat_media,
             )
@@ -489,7 +541,7 @@ class OCR:
         faixa_hue = hsv[inicio : ultimo_header + 1, :, 0]
         hue_media = float(faixa_hue.mean()) if faixa_hue.size > 0 else 0
         if not (50 <= hue_media <= 150):
-            log.info(
+            log.debug(
                 "_remover_header M2: saturação detectada mas matiz=%.0f fora do range azul/verde"
                 " (50-150) — ignorando (provável pele ou fundo colorido)",
                 hue_media,
@@ -617,8 +669,12 @@ class OCR:
             cinza, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
         )
 
-    def _preprocessar_dl(self, crop) -> np.ndarray:
-        """Deep learning: remove artefatos → foca chars → escala mínima."""
+    def _preprocessar_dl(self, crop, limpar_mercosul: bool = True) -> np.ndarray:
+        """Deep learning: remove artefatos → foca chars → escala mínima.
+
+        `limpar_mercosul=False` pula só a etapa de apagar QR/"BR" — usado na segunda
+        tentativa de `ler()`, ver o comentário lá.
+        """
         if crop.size == 0:
             return crop
         if crop.ndim == 3:
@@ -628,7 +684,8 @@ class OCR:
             crop = self._deskew(crop)
             crop = self._corrigir_perspectiva(crop)
             crop, tinha_header, e_mercosul = self._remover_header(crop)
-            if tinha_header and e_mercosul:
+            self._ultimo_limpou_mercosul = bool(tinha_header and e_mercosul and limpar_mercosul)
+            if self._ultimo_limpou_mercosul:
                 crop = self._remover_ruidos_mercosul(crop)
             crop = self._focar_caracteres(crop)
         h = crop.shape[0]
@@ -638,6 +695,55 @@ class OCR:
         return crop
 
     # -- Leitura ---------------------------------------------------------------
+
+    def ler_varias(self, crop) -> list[tuple[str, float]]:
+        """TODAS as leituras que este engine tem a oferecer para o recorte.
+
+        Existe para alimentar a fusão por caractere em vez de a arbitragem: o
+        `fast_plate_ocr` devolve uma leitura por membro do ensemble, e é a discordância
+        entre elas que `visao.consenso.consenso_caractere` converte em placa. Os outros
+        engines devolvem uma leitura só — a lista de um elemento mantém o chamador com um
+        caminho único, sem `isinstance` nem `hasattr` espalhados.
+
+        O pré-processamento é o MESMO de `ler()` de propósito. Medido nas 30 fotos
+        rotuladas com o ensemble de 3 modelos: `deskew + perspectiva` (o que o sistema já
+        fazia) dá moto 3/4, contra 2/4 no recorte cru, com carro igual em 17/26. Trocar o
+        pré-processamento junto com o ensemble mexeria em duas variáveis de uma vez.
+        """
+        if crop is None or crop.size == 0:
+            return []
+        if self._fast_pronto():
+            # FILTRA sem reconstruir: `[(t, c) for t, c in ...]` monta tuplas novas e
+            # DESCARTA o `por_char` de cada `LeituraOCR` — o modo de falha que o docstring
+            # daquela classe descreve. Passar o objeto adiante é o que preserva o atributo.
+            return [l for l in self._ler_fast_plate_varias(self._preparar_fast(crop)) if l[0]]
+        texto, conf = self.ler(crop)
+        # Sem `por_char`: os outros engines não expõem confiança por caractere. A fusão cai
+        # para o peso escalar nessas leituras, que é o comportamento de antes.
+        return [LeituraOCR(texto, conf)] if texto else []
+
+    def _fast_pronto(self) -> bool:
+        """Este OCR e o fast-plate-ocr E tem ao menos um membro utilizavel?"""
+        return (self.engine == "fast_plate_ocr"
+                and bool(self._fast_membros or self._fast_plate is not None))
+
+    def _preparar_fast(self, crop):
+        """Pre-processamento do fast-plate-ocr: so deskew + perspectiva, SEM remover header.
+
+        O modelo foi treinado em placas completas, com a faixa colorida. Remover o header
+        muda a distribuicao de entrada e piora a leitura.
+
+        Funcao propria porque `ler` e `ler_varias` precisam da MESMA preparacao, e o
+        pre-processamento do fast e uma decisao medida (com deskew+perspectiva: moto 3/4;
+        no recorte cru: 2/4, com carro igual). Escrita duas vezes, ela diverge na primeira
+        vez que alguem ajustar so um dos lados - o mesmo motivo que fez
+        `app/visao/consenso.py` existir.
+        """
+        img = crop
+        if crop.ndim == 3:
+            img = self._corrigir_perspectiva(self._deskew(crop))
+        estado.registrar_crop_ocr(img)
+        return img
 
     def ler(self, crop) -> tuple[str, float]:
         if crop is None or crop.size == 0:
@@ -650,27 +756,50 @@ class OCR:
             estado.registrar_crop_ocr(img)
             return self._ler_tesseract(img)
 
-        # fast-plate-ocr: só perspectiva, sem remoção de header.
-        # O modelo ViT foi treinado em placas completas (com a faixa colorida).
-        # Remover o header muda a distribuição de entrada e piora a leitura.
-        if engine == "fast_plate_ocr" and self._fast_plate is not None:
-            img_fp = crop
-            if crop.ndim == 3:
-                img_fp = self._deskew(crop)
-                img_fp = self._corrigir_perspectiva(img_fp)
-            estado.registrar_crop_ocr(img_fp)
-            return self._ler_fast_plate_ocr(img_fp)
+        # fast-plate-ocr: preparacao propria (ver `_preparar_fast`), e a MELHOR leitura do
+        # ensemble. Quem quer o ensemble inteiro chama `ler_varias`.
+        if self._fast_pronto():
+            return self._ler_fast_plate_ocr(self._preparar_fast(crop))
 
         # Outros engines DL: preprocessamento completo (remove header + artefatos)
+        self._ultimo_limpou_mercosul = False
         img = self._preprocessar_dl(crop)
         estado.registrar_crop_ocr(img)
 
+        resultado = None
         if engine == "easyocr" and self._easyocr_reader is not None:
-            return self._ler_easyocr(img)
-        if engine == "paddleocr" and self._paddle is not None:
-            return self._ler_paddleocr(img)
-        if engine == "doctr" and self._doctr is not None:
-            return self._ler_doctr(img)
+            resultado = self._ler_easyocr(img)
+        elif engine == "paddleocr" and self._paddle is not None:
+            resultado = self._ler_paddleocr(img)
+        elif engine == "doctr" and self._doctr is not None:
+            resultado = self._ler_doctr(img)
+
+        if resultado is not None:
+            # `_remover_ruidos_mercosul` PINTA POR CIMA dos cantos esquerdos (20%x28% em
+            # cima, 18%x30% embaixo) para apagar QR do CRLV-e e o marcador "BR". Quando o
+            # crop não é Mercosul de verdade, isso cobre o primeiro caractere de cada
+            # linha e o OCR não acha texto nenhum. Acontece de fato: numa placa ANTIGA de
+            # moto real do posto, `_remover_header` devolveu e_mercosul=True (falso
+            # positivo pela faixa metálica), a limpeza apagou o 'Y' e o '5' e o Paddle
+            # passou de 'NOI'+'5947' para nada.
+            #
+            # Em vez de tentar acertar a classificação do header (mexer nela arrisca as
+            # Mercosul de verdade, que dependem da limpeza), tenta de novo SEM a limpeza
+            # quando ela rodou e o resultado veio vazio. Custa uma passada extra só no
+            # caso que já tinha falhado.
+            if not resultado[0] and self._ultimo_limpou_mercosul:
+                img2 = self._preprocessar_dl(crop, limpar_mercosul=False)
+                estado.registrar_crop_ocr(img2)
+                if engine == "easyocr":
+                    retry = self._ler_easyocr(img2)
+                elif engine == "paddleocr":
+                    retry = self._ler_paddleocr(img2)
+                else:
+                    retry = self._ler_doctr(img2)
+                if retry[0]:
+                    log.debug("OCR recuperado sem a limpeza Mercosul: %r", retry[0])
+                    return retry
+            return resultado
 
         # Fallback se engine não inicializou corretamente
         img_t = self._preprocessar(crop)
@@ -718,26 +847,52 @@ class OCR:
             log.error("Erro EasyOCR: %s", e)
             return "", 0.0
         if not resultados:
-            log.info("EasyOCR: nenhum texto detectado (img %dx%d)", img.shape[1], img.shape[0])
+            log.debug("EasyOCR: nenhum texto detectado (img %dx%d)", img.shape[1], img.shape[0])
             return "", 0.0
         for r in resultados:
-            log.info("EasyOCR box: %r conf=%.2f", r[1].upper(), float(r[2]))
+            log.debug("EasyOCR box: %r conf=%.2f", r[1].upper(), float(r[2]))
         textos = [r[1].upper() for r in resultados]
         confs = [float(r[2]) for r in resultados]
         texto = re.sub(r"[^A-Z0-9]", "", "".join(textos))
         conf_media = sum(confs) / len(confs)
-        log.info("EasyOCR combinado: %r conf=%.2f", texto, conf_media)
+        log.debug("EasyOCR combinado: %r conf=%.2f", texto, conf_media)
         return texto, conf_media
 
+    # Caixa com área abaixo desta fração da maior é texto acessório (cidade/UF, "BRASIL",
+    # "DETRAN"), não uma linha da placa. As duas linhas de uma placa de moto têm áreas
+    # comparáveis (0.60-0.95 da maior, medido); os acessórios ficam bem abaixo (0.02-0.22).
+    FRACAO_LINHA = 0.35
+
     def _ler_paddleocr(self, img) -> tuple[str, float]:
-        """PaddleOCR 3.x: retorna o texto da MAIOR caixa (a placa é o maior texto do crop;
-        'BRASIL'/cidade/estado são menores). Isola a placa do texto ao redor."""
+        """PaddleOCR 3.x → texto da placa a partir das caixas detectadas.
+
+        Carro (1 linha): fica com a MAIOR caixa — a placa é o maior texto do crop e
+        'BRASIL'/cidade/estado são menores, então a maior isola a placa do resto.
+
+        Moto (2 linhas): a mesma regra era DESTRUTIVA. Numa placa de moto as duas linhas
+        (letras em cima, dígitos embaixo) são caixas separadas e de tamanho parecido, então
+        "a maior" jogava fora metade da placa — sempre. Medido nas 27 placas de moto de
+        `testes/dataset.json`: 0/27, e em TODAS o retorno era uma das duas linhas sozinha
+        ('YZA3456' saía '3456', 'NOP5Q67' saía 'NOP'). Não era resolução: são sintéticas e
+        limpas. Aqui as caixas comparáveis à maior são unidas em ORDEM DE LEITURA
+        (cima→baixo, esquerda→direita), que é a ordem dos caracteres na placa.
+
+        A separação carro/moto NÃO é feita pela proporção do crop, apesar de ser o
+        reflexo natural. Esta função recebe a imagem já pré-processada, e `_focar_caracteres`
+        corta o cabeçalho: uma placa de moto de 200x140 (proporção 1.43) chega aqui como
+        200x81 (proporção 2.47) e seria classificada como carro — foi exatamente o que
+        deixou 11 das 27 ainda quebradas na primeira versão desta correção. Quem decide é
+        a geometria das caixas: o filtro de área separa linha-de-placa de texto acessório,
+        e juntar em ordem de leitura é o comportamento certo nos dois casos (num carro cuja
+        placa o Paddle porventura parta em duas caixas, unir também é o certo).
+        """
         try:
             res = self._paddle.predict(img)
         except Exception as e:
             log.error("Erro PaddleOCR: %s", e)
             return "", 0.0
-        melhor_txt, melhor_conf, melhor_area = "", 0.0, -1.0
+
+        caixas: list[tuple[float, float, float, str, float]] = []   # (cy, cx, area, txt, conf)
         for it in res or []:
             try:
                 texts = it.get("rec_texts", []) or []
@@ -749,12 +904,40 @@ class OCR:
             except Exception:
                 continue
             for t, s, b in zip(texts, scores, boxes):
-                area = _area_caixa(b)
-                if area >= melhor_area:
-                    melhor_txt = re.sub(r"[^A-Z0-9]", "", str(t).upper())
-                    melhor_conf = float(s)
-                    melhor_area = area
-        return melhor_txt, melhor_conf
+                txt = re.sub(r"[^A-Z0-9]", "", str(t).upper())
+                if not txt:
+                    continue
+                cy, cx = _centro_caixa(b)
+                caixas.append((cy, cx, _area_caixa(b), txt, float(s)))
+
+        if not caixas:
+            return "", 0.0
+
+        maior = max(caixas, key=lambda c: c[2])
+        if len(caixas) == 1:
+            return maior[3], maior[4]
+
+        # Sem geometria (`rec_boxes`/`rec_polys` ausentes), TODA área vale 0.0 e o filtro
+        # `>= maior * FRACAO_LINHA` vira `>= 0.0`: nada é filtrado, e "BRASIL", cidade e UF
+        # entram concatenados no texto da placa. Sem geometria não dá para decidir o que é
+        # linha da placa, então fica com a caixa de MAIOR confiança em vez de juntar tudo.
+        # (Auditoria 27/08/2026.)
+        if maior[2] <= 0.0:
+            melhor = max(caixas, key=lambda c: c[4])
+            log.debug("PaddleOCR sem geometria de caixa: usando a de maior confiança (%r)",
+                      melhor[3])
+            return melhor[3], melhor[4]
+
+        linhas = [c for c in caixas if c[2] >= maior[2] * self.FRACAO_LINHA]
+        linhas.sort(key=lambda c: (c[0], c[1]))
+        texto = "".join(c[3] for c in linhas)
+        # Confiança da linha PIOR, não a média: a placa só vale inteira, e uma linha
+        # incerta compromete o resultado todo. A média esconderia isso atrás de uma
+        # linha lida com 1.00.
+        conf = min(c[4] for c in linhas)
+        if len(linhas) > 1:
+            log.debug("PaddleOCR moto: %d linhas unidas → %r (conf=%.2f)", len(linhas), texto, conf)
+        return texto, conf
 
     def _ler_doctr(self, img) -> tuple[str, float]:
         try:
@@ -780,26 +963,146 @@ class OCR:
             log.error("Erro docTR: %s", e)
             return "", 0.0
 
-    def _ler_fast_plate_ocr(self, img) -> tuple[str, float]:
+    def _ler_um_membro(self, nome: str, rec, cor: str, img) -> "LeituraOCR":
+        """Uma leitura de UM membro do ensemble. Nunca levanta — devolve ("", 0.0) na falha.
+
+        Engolir a exceção aqui é o que mantém o ensemble útil: um membro que quebra num
+        recorte específico custa um voto, não a leitura inteira.
+        """
         try:
-            # Modelo exige grayscale (H, W)
-            cinza = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
-            result = self._fast_plate.run(cinza, return_confidence=True)
+            if cor == "rgb":
+                entrada = (cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if img.ndim == 3
+                           else cv2.cvtColor(img, cv2.COLOR_GRAY2RGB))
+            else:
+                entrada = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+            result = rec.run(entrada, return_confidence=True)
             if not result:
-                log.info("fast-plate-ocr: sem resultado (img %dx%d)", img.shape[1], img.shape[0])
-                return "", 0.0
+                log.debug("fast-plate-ocr[%s]: sem resultado (img %dx%d)",
+                          nome, img.shape[1], img.shape[0])
+                return LeituraOCR("", 0.0)
             pred = result[0]
             texto = re.sub(r"[^A-Z0-9]", "", pred.plate.upper())
-            conf = float(pred.char_probs.mean()) if pred.char_probs is not None else 0.8
+            # Média sobre os `len(texto)` primeiros slots, não sobre o vetor inteiro. O
+            # modelo devolve 9-10 valores (um por slot) e o texto sai com 7 depois de tirar
+            # o padding — incluir os slots de padding fazia o escalar e o vetor
+            # (`_alinhar_por_char`, que corta em `len(texto)`) descreverem populações
+            # diferentes, então "a confiança" da leitura dependia de quanto padding o modelo
+            # produziu. (Auditoria 27/08/2026.)
+            conf = _conf_escalar(texto, pred.char_probs)
             if pred.char_probs is not None:
                 por_char = " ".join(f"{c:.2f}" for c in pred.char_probs)
-                log.info("fast-plate-ocr: %r conf=%.2f [%s]", texto, conf, por_char)
+                log.debug("fast-plate-ocr[%s]: %r conf=%.2f [%s]", nome, texto, conf, por_char)
             else:
-                log.info("fast-plate-ocr: %r conf=%.2f", texto, conf)
-            return texto, conf
+                log.debug("fast-plate-ocr[%s]: %r conf=%.2f", nome, texto, conf)
+            return LeituraOCR(texto, conf, _alinhar_por_char(texto, pred.char_probs, nome))
         except Exception as e:
-            log.error("Erro fast-plate-ocr: %s", e)
+            log.error("Erro fast-plate-ocr[%s]: %s", nome, e)
+            return LeituraOCR("", 0.0)
+
+    def _ler_fast_plate_varias(self, img) -> list[tuple[str, float]]:
+        """Uma leitura POR MEMBRO do ensemble — a entrada da fusão por caractere.
+
+        Devolve as leituras cruas, inclusive as que discordam entre si: é exatamente a
+        discordância que `consenso_caractere` transforma em placa. Escolher a de maior
+        confiança aqui jogaria fora o mecanismo (ver `FAST_MODELOS_DEFAULT`).
+        """
+        if self._fast_membros:
+            return [self._ler_um_membro(n, r, c, img) for n, r, c in self._fast_membros]
+        if self._fast_plate is not None:
+            # Dublê de teste que injeta `_fast_plate` à mão, sem passar por `carregar()`.
+            return [self._ler_um_membro("fast_plate_ocr", self._fast_plate,
+                                        _cor_do_modelo(self._fast_plate), img)]
+        return []
+
+    def _ler_fast_plate_ocr(self, img) -> tuple[str, float]:
+        """A MELHOR leitura do ensemble, para quem só sabe consumir uma (`ler`).
+
+        Mantém o contrato `(texto, conf)` de que o pipeline contínuo e os dublês dependem.
+        Quem quer o ensemble inteiro usa `ler_varias`.
+        """
+        leituras = [(t, c) for t, c in self._ler_fast_plate_varias(img) if t]
+        if not leituras:
             return "", 0.0
+        return max(leituras, key=lambda tc: tc[1])
+
+
+class LeituraOCR(tuple):
+    """`(texto, confianca)` que carrega, à parte, a confiança POR CARACTERE.
+
+    Subclasse de `tuple` de tamanho 2 DE PROPÓSITO, e não uma 3-tupla: todo consumidor
+    desempacota dois posicionalmente (`for t, c in ocr.ler_varias(...)`, os dublês de teste,
+    `_leituras_do_engine` em ocr/auto.py). Assim a confiança por caractere viaja POR LEITURA
+    sem que nada disso mude. Mesmo padrão, e mesmo motivo, de `BBoxPlaca` em
+    `app/visao/detector.py`.
+
+    `por_char` é `None` em toda leitura que não tem o vetor — engine que não expõe (EasyOCR,
+    PaddleOCR, tesseract), dublê de teste, ou leitura em que o alinhamento não fechou. Quem
+    consome tem de tratar a ausência, nunca presumir que existe: ver
+    `consenso.consenso_caractere`, que aceita peso escalar ou por posição.
+
+    Reconstruir a tupla DESCARTA o atributo (`tuple(l)`, `(l[0], l[1])`). O modo de falha é
+    degradar para peso escalar — que é o comportamento anterior —, nunca indexar errado.
+    """
+
+    def __new__(cls, texto: str, conf: float, por_char=None):
+        obj = super().__new__(cls, (texto, float(conf)))
+        obj.por_char = por_char
+        return obj
+
+
+def _conf_escalar(texto: str, char_probs) -> float:
+    """Confiança média da leitura, sobre os slots que de fato viraram caractere."""
+    if char_probs is None:
+        return 0.8
+    uteis = list(char_probs)[:len(texto)] if texto else list(char_probs)
+    if not uteis:
+        return 0.8
+    return float(sum(float(v) for v in uteis) / len(uteis))
+
+
+def _alinhar_por_char(texto: str, char_probs, nome: str):
+    """Confiança por caractere alinhada ao `texto` já limpo, ou `None` se não der.
+
+    O modelo devolve `char_probs` com um valor por SLOT (9 no `global-plates-mobile-vit-v2`,
+    10 nos `cct-*`), e o texto sai com 7 depois de tirar o padding. O padding é final, então
+    os `len(texto)` primeiros valores alinham — verificado no recorte da RLX2A77, onde
+    `BLX2677` vem com `[0.99, 0.30, 0.97, 0.99, 0.22, 0.99, 0.99]` e as duas posições de
+    confiança baixa são exatamente as duas erradas.
+
+    Devolve `None` em vez de adivinhar quando o vetor é menor que o texto: um alinhamento
+    errado colocaria a confiança de um caractere sobre outro, o que é pior que não ter
+    confiança por caractere nenhuma — o consumidor cai para o escalar e nada se perde além
+    da precisão extra.
+    """
+    if char_probs is None or not texto:
+        return None
+    try:
+        vals = [float(x) for x in char_probs]
+    except (TypeError, ValueError):
+        return None
+    if len(vals) < len(texto):
+        log.debug("fast-plate-ocr[%s]: char_probs (%d) menor que o texto (%d) — usando só a "
+                  "média", nome, len(vals), len(texto))
+        return None
+    return vals[:len(texto)]
+
+
+def _cor_do_modelo(rec) -> str:
+    """'rgb' ou 'grayscale' — o que ESTE modelo do fast-plate-ocr exige na entrada.
+
+    Sai de `config['image_color_mode']` e nunca do nome do modelo: o zoo mistura os dois
+    formatos (o `global-plates-mobile-vit-v2` é grayscale 70x140, os `cct-*` são RGB
+    64x128) e alimentar um modelo RGB com grayscale não degrada a leitura — estoura
+    `InvalidArgument: Got invalid dimensions for input` no onnxruntime, derrubando a
+    passada inteira de OCR.
+
+    Default 'grayscale' quando a config não diz nada: é o que o membro histórico usa.
+    """
+    cfg = getattr(rec, "config", None)
+    if cfg is None:
+        return "grayscale"
+    valor = cfg.get("image_color_mode") if isinstance(cfg, dict) else getattr(cfg, "image_color_mode", None)
+    return "rgb" if str(valor).strip().lower() == "rgb" else "grayscale"
 
 
 def _area_caixa(b) -> float:
@@ -816,3 +1119,18 @@ def _area_caixa(b) -> float:
         xs, ys = a[0::2], a[1::2]
         return float((xs.max() - xs.min()) * (ys.max() - ys.min()))
     return 0.0
+
+
+def _centro_caixa(b) -> tuple[float, float]:
+    """Centro (y, x) da caixa — ordem de leitura: de cima para baixo, da esquerda p/ direita."""
+    if b is None:
+        return (0.0, 0.0)
+    try:
+        a = np.asarray(b, dtype=float).reshape(-1)
+    except Exception:
+        return (0.0, 0.0)
+    if a.size == 4:
+        return ((a[1] + a[3]) / 2, (a[0] + a[2]) / 2)
+    if a.size >= 8 and a.size % 2 == 0:
+        return (float(a[1::2].mean()), float(a[0::2].mean()))
+    return (0.0, 0.0)

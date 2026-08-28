@@ -18,9 +18,18 @@
          overflow:hidden;background:#0f172a;user-select:none;touch-action:none;max-width:760px">
       <img id="video" alt="" style="display:block;width:100%;height:auto;pointer-events:none" draggable="false">
       <canvas id="canvas" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
-      <div id="vazio" style="display:none;width:100%;aspect-ratio:16/9;align-items:center;
-           justify-content:center;color:#94a3b8;font-size:14px;flex-direction:column;gap:8px">
-        <span style="font-size:32px">📷</span><span id="vazio-txt">carregando…</span>
+      <!-- Estado sem imagem: SEMPRE visível quando o <img> não tem quadro, com o
+           motivo e um botão de nova tentativa. `position:relative;z-index:2` porque
+           o canvas é absolute e, sendo posicionado, ficaria por cima engolindo o
+           clique do botão. -->
+      <div id="vazio" style="display:flex;width:100%;aspect-ratio:16/9;align-items:center;
+           justify-content:center;color:#94a3b8;font-size:14px;flex-direction:column;gap:10px;
+           position:relative;z-index:2;text-align:center;padding:18px">
+        <span id="vazio-icone" style="font-size:32px">📷</span>
+        <span id="vazio-txt" style="max-width:440px;line-height:1.5">carregando…</span>
+        <button id="vazio-btn" onclick="tentarNovamente()"
+                style="display:none;background:#1e293b;border:1px solid #334155;color:#e2e8f0;
+                       font-size:13px;padding:6px 14px">Tentar de novo</button>
       </div>
     </div>
 
@@ -103,12 +112,15 @@ const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 
-function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function msg(ok, txt) {
+let _msgTimer = null;
+// `segundos` maior quando a mensagem contém o próximo passo (link para a área da outra
+// câmera do bico): 6s é curto para ler e clicar.
+function msg(ok, txt, segundos = 6) {
   const el = document.getElementById('msg');
   el.className = 'alert ' + (ok ? 'alert-ok' : 'alert-err');
   el.innerHTML = txt;
-  setTimeout(() => { el.innerHTML = ''; el.className = ''; }, 6000);
+  clearTimeout(_msgTimer);
+  _msgTimer = setTimeout(() => { el.innerHTML = ''; el.className = ''; }, segundos * 1000);
 }
 
 // ── Coordenadas ──────────────────────────────────────────────────────────────
@@ -244,20 +256,35 @@ async function salvarTudo() {
   const btn = document.getElementById('btn-salvar');
   btn.disabled = true; btn.textContent = 'Salvando…';
   let n = 0, erro = null;
-  for (const b of _bicos.filter(x => x.sujo)) {
+  const salvos = _bicos.filter(x => x.sujo);
+  for (const b of salvos) {
     try {
+      // Sempre com `camera_id`: um bico de 2 câmeras aparece nos DOIS editores, e sem
+      // dizer de qual se trata a área desenhada aqui sobrescreveria a da outra câmera —
+      // que está em outro sistema de coordenadas.
       const r = b.roi
         ? await fetch(`/api/bicos/${b.id}/roi`, { method: 'PUT',
-            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b.roi) })
-        : await fetch(`/api/bicos/${b.id}/roi`, { method: 'DELETE' });
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...b.roi, camera_id: CAM_ID }) })
+        : await fetch(`/api/bicos/${b.id}/roi?camera_id=${CAM_ID}`, { method: 'DELETE' });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
       b.sujo = false; n++;
     } catch (ex) { erro = `Bico ${b.codigo}: ${ex.message}`; break; }
   }
   btn.textContent = 'Salvar áreas';
   renderLista(); desenhar();
-  if (erro) msg(false, erro);
-  else msg(true, `${n} área(s) salva(s). A próxima leitura já usa a nova configuração.`);
+  if (erro) { msg(false, erro); return; }
+  // Encadeia a segunda câmera: enquanto a outra não tem área, ali a leitura analisa o
+  // quadro inteiro — é exatamente o que o recorte existe para evitar. O link para ela já
+  // existe na lista ao lado; aqui ele é promovido ao momento em que é o próximo passo.
+  const pendente = salvos.find(b => b.roi && b.outraId && !b.outraTemRoi);
+  const proximo = pendente
+    ? ` <a href="/roi-camera/${pendente.outraId}?bico=${pendente.id}"
+           style="color:#166534;font-weight:600">agora a área da
+        ${esc(pendente.outraPapel || 'outra câmera')} do bico ${esc(pendente.codigo)} →</a>`
+    : '';
+  msg(true, `${n} área(s) salva(s). A próxima leitura já usa a nova configuração.${proximo}`,
+      proximo ? 20 : 6);
 }
 
 // ── Lista de bicos ───────────────────────────────────────────────────────────
@@ -267,11 +294,19 @@ function renderLista() {
   document.getElementById('lista-bicos').innerHTML = _bicos.map(b => `
     <div class="bico-item ${b.id === _ativo ? 'ativo' : ''}" onclick="selecionar(${b.id})">
       <span class="bico-cor" style="background:${b.cor}"></span>
-      <span class="bico-nome">${esc(b.codigo)}${b.nome ? ` <span style="font-weight:400;color:#94a3b8">${esc(b.nome)}</span>` : ''}</span>
+      <span class="bico-nome">${esc(b.codigo)}${b.nome ? ` <span style="font-weight:400;color:#94a3b8">${esc(b.nome)}</span>` : ''}
+        ${b.papel ? `<span style="font-weight:400;color:#94a3b8;font-size:12px"> · ${esc(b.papel)}</span>` : ''}</span>
       ${b.sujo ? '<span class="badge badge-warn">não salvo</span>'
                : b.roi ? '<span class="badge badge-ok">ok</span>'
                        : '<span class="badge badge-err">sem área</span>'}
-    </div>`).join('');
+    </div>
+    ${b.outraId ? `<div style="padding:4px 10px 8px 26px;font-size:12px;color:#94a3b8;line-height:1.5">
+        também usa <strong>${esc(b.outraNome || 'outra câmera')}</strong>${b.outraPapel ? ` (${esc(b.outraPapel)})` : ''}
+        ${b.outraTemRoi ? '<span class="badge badge-ok" style="font-size:10px">área ok</span>'
+                        : '<span class="badge badge-err" style="font-size:10px">sem área</span>'}
+        <a href="/roi-camera/${b.outraId}?bico=${b.id}" onclick="event.stopPropagation()"
+           style="color:#16a34a;text-decoration:none">abrir →</a>
+      </div>` : ''}`).join('');
 }
 function selecionar(id) { _ativo = id; _rect = null; renderLista(); desenhar(); }
 
@@ -282,31 +317,69 @@ function ajustarCanvas() {
   desenhar();
 }
 
+let _cancelarVigia = null;      // desarma o watchdog do MJPEG da tentativa anterior
+
+// Sem imagem NUNCA é espaço em branco: mostra ícone, motivo e (em falha) o botão.
+function mostrarVazio(icone, html, comBotao) {
+  video.style.display = 'none';
+  canvas.style.display = 'none';        // não sobrepõe áreas em cima do nada
+  document.getElementById('vazio').style.display = 'flex';
+  document.getElementById('vazio-icone').textContent = icone;
+  document.getElementById('vazio-txt').innerHTML = html;
+  document.getElementById('vazio-btn').style.display = comBotao ? 'inline-block' : 'none';
+}
+
+function mostrarImagem() {
+  video.style.display = 'block';
+  canvas.style.display = 'block';
+  document.getElementById('vazio').style.display = 'none';
+}
+
+// Captura sob demanda (abre o RTSP, pega 1 quadro, fecha). É o caminho normal quando
+// não há pipeline contínuo, e também o plano B quando o ao vivo não entrega quadro:
+// é este endpoint que sabe dizer o motivo real da falha (a resposta do MJPEG não é
+// legível pelo <img>).
+async function capturarSobDemanda(aviso) {
+  mostrarVazio('📷', (aviso ? esc(aviso) + '<br>' : '') + 'Capturando imagem da câmera…', false);
+  try {
+    definirImagem(video, await capturarSnapshot(CAM_ID));
+    // o handler de `load` abaixo cuida de exibir e dimensionar o canvas
+  } catch (ex) {
+    mostrarVazio('⚠️', (aviso ? esc(aviso) + '<br>' : '') + esc(ex.message), true);
+  }
+}
+
+// Botão da caixa de erro: se nem o detalhe da câmera carregou, recomeça do zero;
+// senão só refaz a imagem (o estado do stream pode ter mudado desde então).
+function tentarNovamente() { return _d ? atualizarImagem(true) : carregar(); }
+
 async function atualizarImagem(forcar) {
-  if (_d && _d.ao_vivo) {
-    // MJPEG: fluxo contínuo, basta apontar o src uma vez
-    if (!video.src || forcar) video.src = `/stream/${CAM_ID}.mjpg?t=${Date.now()}`;
-    video.style.display = 'block';
-    document.getElementById('vazio').style.display = 'none';
+  if (_cancelarVigia) { _cancelarVigia(); _cancelarVigia = null; }
+  const modo = (_d && _d.stream_modo) || (_d && _d.ao_vivo ? 'ao_vivo' : 'sob_demanda');
+
+  if (modo === 'ao_vivo' || modo === 'aquecendo') {
+    if (!forcar && video.src && video.naturalWidth) { mostrarImagem(); return; }
+    const aquecendo = modo === 'aquecendo';
+    mostrarVazio('📡', aquecendo
+      ? 'Conectando à câmera — aguardando o primeiro quadro…'
+      : 'Abrindo transmissão ao vivo…', false);
+    definirImagem(video, `/stream/${CAM_ID}.mjpg?t=${Date.now()}`);
+    // Enquanto sobe (RTSP + modelos) o primeiro quadro demora bem mais que no
+    // regime normal — dar o mesmo prazo curto faria desistir de um stream que ia
+    // funcionar.
+    _cancelarVigia = vigiarMjpeg(video, motivo => {
+      _cancelarVigia = null;
+      capturarSobDemanda(motivo);
+    }, aquecendo ? 30000 : MJPEG_TIMEOUT_MS);
     return;
   }
-  const vz = document.getElementById('vazio');
-  document.getElementById('vazio-txt').textContent = 'capturando imagem…';
-  if (forcar) { video.style.display = 'none'; vz.style.display = 'flex'; }
-  try {
-    const r = await fetch(`/api/cameras/${CAM_ID}/snapshot?t=${Date.now()}`);
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'sem imagem');
-    video.src = URL.createObjectURL(await r.blob());
-    video.style.display = 'block'; vz.style.display = 'none';
-  } catch (ex) {
-    document.getElementById('vazio-txt').textContent = ex.message;
-    video.style.display = 'none'; vz.style.display = 'flex';
-  }
+  await capturarSobDemanda();
 }
 
 video.addEventListener('load', () => {
   // O MJPEG nem sempre expõe naturalWidth a tempo; o servidor manda as dimensões reais.
   if (video.naturalWidth) { _frameW = video.naturalWidth; _frameH = video.naturalHeight; }
+  mostrarImagem();
   ajustarCanvas();
 });
 window.addEventListener('resize', desenhar);
@@ -329,10 +402,16 @@ async function testarBico() {
     const d = await r.json();
     if (!r.ok) res.innerHTML = `<span style="color:#b91c1c">${esc(d.detail || 'falha')}</span>`;
     else if (!d.placa) res.innerHTML = `<span style="color:#a16207">${esc(d.mensagem || 'Nenhuma placa')}</span>`;
+    // O link é o que faz a leitura de teste ser encontrável: ela FICA gravada, mas o
+    // histórico esconde testes por padrão (senão inflaria a contagem do posto), então
+    // sem isto o resultado parecia não ter sido registrado em lugar nenhum.
     else res.innerHTML = `
       <div style="font-size:22px;font-weight:700;letter-spacing:3px;font-family:'Consolas',monospace">${esc(d.placa)}</div>
       <div style="margin-top:4px;color:#94a3b8;font-size:12px">
-        ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%</div>`;
+        ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%</div>
+      <a href="/historico?bico_id=${b.id}&origem=teste" target="_blank"
+         style="display:inline-block;margin-top:6px;font-size:12px;color:#16a34a;text-decoration:none">
+        ver testes deste bico no histórico →</a>`;
   } catch (ex) {
     res.innerHTML = `<span style="color:#b91c1c">Erro: ${esc(ex.message)}</span>`;
   } finally {
@@ -349,9 +428,13 @@ window.addEventListener('beforeunload', e => {
 function renderCabecalho() {
   const c = _d.camera;
   document.getElementById('titulo').textContent = c.local || c.nome;
-  document.getElementById('selo-vivo').innerHTML = _d.ao_vivo
-    ? '<span class="badge" style="background:#fee2e2;color:#b91c1c">● AO VIVO</span>'
-    : '<span class="badge badge-warn">imagem sob demanda</span>';
+  const selos = {
+    ao_vivo: '<span class="badge" style="background:#fee2e2;color:#b91c1c">● AO VIVO</span>',
+    aquecendo: '<span class="badge badge-warn">conectando…</span>',
+    sob_demanda: '<span class="badge badge-warn">imagem sob demanda</span>',
+  };
+  document.getElementById('selo-vivo').innerHTML =
+    selos[_d.stream_modo] || (_d.ao_vivo ? selos.ao_vivo : selos.sob_demanda);
   document.getElementById('subtitulo').innerHTML = _d.posto
     ? `${esc(c.local ? c.nome : '')} ${c.local ? '·' : ''} Posto
        <a href="/posto/${_d.posto.id}" style="color:#16a34a">${esc(_d.posto.nome)}</a>`
@@ -361,7 +444,11 @@ function renderCabecalho() {
   const linhas = [
     ["Nome", esc(c.nome)],
     ["Local", esc(c.local || '—')],
-    ["Endereço", esc(c.intelbras_host || c.rtsp_url_custom || '—')],
+    // URL RTSP com credencial embutida vem mascarada (app/web/redacao.py) — "********"
+    // não informa nada aqui.
+    ["Endereço", esc(c.intelbras_host
+        || (c.rtsp_url_custom === '********' ? 'URL personalizada (oculta)' : c.rtsp_url_custom)
+        || '—')],
     ["Canal", esc(c.intelbras_canal || '—')],
     ["Situação", c.ativo ? '<span class="badge badge-ok">ativa</span>'
                          : '<span class="badge badge-err">inativa</span>'],
@@ -374,14 +461,33 @@ function renderCabecalho() {
 }
 
 async function carregar() {
-  const r = await fetch(`/api/cameras/${CAM_ID}/detalhe`);
-  if (!r.ok) { document.getElementById('titulo').textContent = 'Câmera não encontrada'; return; }
+  let r;
+  try {
+    r = await fetch(`/api/cameras/${CAM_ID}/detalhe`);
+  } catch (ex) {
+    document.getElementById('titulo').textContent = 'Sem conexão com o servidor';
+    mostrarVazio('⚠️', esc(ex.message || 'servidor inacessível'), true);
+    return;
+  }
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    document.getElementById('titulo').textContent = 'Câmera não encontrada';
+    mostrarVazio('⚠️', esc(d.detail || `erro ${r.status} ao carregar a câmera`), true);
+    return;
+  }
   _d = await r.json();
 
   if (_d.frame_largura) { _frameW = _d.frame_largura; _frameH = _d.frame_altura; }
+  // `roi_nesta_camera` e não `roi`: o mesmo bico aparece nos editores das duas câmeras
+  // dele, e aqui se edita a área DESTA. Quem decide o slot é o servidor.
   _bicos = _d.bicos.map((b, i) => ({
     id: b.id, codigo: b.codigo, nome: b.nome, cor: CORES[i % CORES.length], sujo: false,
-    roi: b.roi ? (typeof b.roi === 'string' ? JSON.parse(b.roi) : b.roi) : null,
+    roi: b.roi_nesta_camera
+      ? (typeof b.roi_nesta_camera === 'string' ? JSON.parse(b.roi_nesta_camera) : b.roi_nesta_camera)
+      : null,
+    papel: b.papel_nesta_camera,
+    outraId: b.outra_camera_id, outraNome: b.outra_camera_nome,
+    outraPapel: b.outra_papel, outraTemRoi: b.outra_tem_roi,
   }));
   if (_ativo === null || !_bicos.some(b => b.id === _ativo)) {
     _ativo = (BICO_INICIAL && _bicos.some(b => b.id === BICO_INICIAL))

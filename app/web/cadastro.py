@@ -9,6 +9,7 @@ próprio posto. Mesmo padrão de validação/erros já usado no CRUD de câmeras
 """
 from __future__ import annotations
 import json
+import logging
 import re
 import sqlite3
 
@@ -16,15 +17,45 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core import banco
 from app.core import config
+from app.integracoes import apiplacas
 from app.visao import leitura
 from app.web import deps
+from app.seguranca import limitador
+from app.web import redacao
 from app.web import leitura as leitura_rotas
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
 
 def _normalizar_cnpj(cnpj: str) -> str:
     return re.sub(r"\D", "", cnpj or "")
+
+
+def _camera_id_opcional(valor) -> int | None:
+    """`camera_id` vindo de corpo JSON: ausente/vazio = "não especificado"."""
+    if valor in (None, "", 0):
+        return None
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "camera_id deve ser inteiro")
+
+
+def rois_faltando(bico: dict) -> list[int]:
+    """Ids das câmeras deste bico que ainda não têm área desenhada.
+
+    Um bico de duas câmeras com uma área só não está configurado pela metade em termos de
+    resultado: na câmera sem área a leitura analisa o QUADRO INTEIRO, que é justamente o
+    que o recorte existe para evitar. Por isso o checklist conta pares (bico, câmera).
+    """
+    faltando = []
+    if not bico.get("roi"):
+        faltando.append(bico["camera_id"])
+    if bico.get("camera2_id") and not bico.get("roi2"):
+        faltando.append(bico["camera2_id"])
+    return faltando
 
 
 def _cnpj_valido(cnpj: str) -> bool:
@@ -70,14 +101,19 @@ def postos_listar(request: Request):
         cams = banco.cameras_listar(empresa_id=emp["id"])
         ent = entidades.get(emp["entidade_id"])
         saida.append({
-            **emp,
+            # `redacao.empresa` e não `**emp` cru: a api_key do posto saía aqui para
+            # `cliente` e `operador` (auditoria 27/08, K3).
+            **redacao.empresa(emp),
             "entidade_nome": ent["nome"] if ent else "",
             "n_automacoes": len(autos),
             "n_bicos": len(meus_bicos),
             "n_cameras": len(cams),
-            "n_bicos_sem_roi": sum(1 for b in meus_bicos if not b["roi"]),
+            # Conta BICOS com área faltando (é o que a tela lista como pendência), mas a
+            # pendência de um bico de 2 câmeras inclui a área da segunda.
+            "n_bicos_sem_roi": sum(1 for b in meus_bicos if rois_faltando(b)),
             # "pronto" = dá para o roteador chamar e obter leitura útil
-            "pronto": bool(cams and autos and meus_bicos and all(b["roi"] for b in meus_bicos)),
+            "pronto": bool(cams and autos and meus_bicos
+                           and not any(rois_faltando(b) for b in meus_bicos)),
         })
     saida.sort(key=lambda p: (p["entidade_nome"], p["nome"]))
     return saida
@@ -91,25 +127,40 @@ def posto_detalhe(empresa_id: int, request: Request):
         raise HTTPException(404, "Posto não encontrado")
     ent = banco.entidades_obter(emp["entidade_id"])
     cams = {c["id"]: c for c in banco.cameras_listar(empresa_id=empresa_id)}
-    # `ao_vivo` = há pipeline contínuo com o stream aberto → a tela pode exibir MJPEG
-    # em vez de captura sob demanda.
+    # `ao_vivo` = há pipeline contínuo ENTREGANDO frames → a tela pode exibir MJPEG
+    # em vez de captura sob demanda (ver `pipeline.estado_stream`).
     from app.visao import pipeline as pipeline_mod
     for c in cams.values():
-        c["ao_vivo"] = c["id"] in pipeline_mod._instancias
+        c["stream_modo"] = pipeline_mod.estado_stream(c["id"])
+        c["ao_vivo"] = c["stream_modo"] == "ao_vivo"
     autos = []
     for a in banco.automacoes_listar(empresa_id=empresa_id):
         bicos = []
         for b in banco.bicos_listar(automacao_id=a["id"]):
             cam = cams.get(b["camera_id"]) or banco.cameras_obter(b["camera_id"]) or {}
+            faltando = rois_faltando(b)
+            # `cameras` descreve os slots do bico de uma vez; os campos avulsos
+            # (`camera_nome`, `tem_roi`) continuam apontando para a primeira câmera para
+            # as telas que ainda não leem a lista.
+            fontes = []
+            for slot, camera_id, roi, papel in banco.slots_do_bico(b):
+                c = cams.get(camera_id) or banco.cameras_obter(camera_id) or {}
+                fontes.append({"camera_id": camera_id, "papel": papel,
+                               "nome": c.get("nome", "?"), "local": c.get("local", ""),
+                               "tem_roi": bool(roi), "slot": slot})
             bicos.append({**b,
                           "camera_nome": cam.get("nome", "?"),
                           "camera_local": cam.get("local", ""),
+                          "cameras": fontes,
+                          "rois_faltando": faltando,
                           "tem_roi": bool(b["roi"])})
         autos.append({**a, "bicos": bicos})
     return {
-        "empresa": emp,
+        "empresa": redacao.empresa(emp),
         "entidade": ent,
-        "cameras": list(cams.values()),
+        # `cams` foi mutado acima com `stream_modo`; a redação copia, então o dict de
+        # trabalho continua intacto para quem ainda o usa nesta request.
+        "cameras": redacao.cameras(cams.values()),
         "automacoes": autos,
     }
 
@@ -130,27 +181,41 @@ def entidades_listar(request: Request):
 
 
 @router.post("/entidades", dependencies=[Depends(deps.exigir_admin)])
-def entidades_inserir(payload: dict):
+def entidades_inserir(payload: dict, request: Request):
     nome = (payload.get("nome") or "").strip()
     if not nome:
         raise HTTPException(400, "nome é obrigatório")
-    return {"id": banco.entidades_inserir({**payload, "nome": nome})}
+    id_ = banco.entidades_inserir({**payload, "nome": nome})
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="entidade_criada",
+                              alvo_tipo="entidade", alvo_id=id_, detalhe=f"nome={nome}")
+    return {"id": id_}
 
 
 @router.put("/entidades/{id_}", dependencies=[Depends(deps.exigir_admin)])
-def entidades_atualizar(id_: int, payload: dict):
+def entidades_atualizar(id_: int, payload: dict, request: Request):
     nome = (payload.get("nome") or "").strip()
     if not nome:
         raise HTTPException(400, "nome é obrigatório")
     if not banco.entidades_atualizar(id_, {**payload, "nome": nome}):
         raise HTTPException(404, "Entidade não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="entidade_atualizada",
+                              alvo_tipo="entidade", alvo_id=id_, detalhe=f"nome={nome}")
     return {"atualizado": True}
 
 
 @router.delete("/entidades/{id_}", dependencies=[Depends(deps.exigir_admin)])
-def entidades_remover(id_: int):
+def entidades_remover(id_: int, request: Request):
+    entidade = banco.entidades_obter(id_)
     if not banco.entidades_remover(id_):
         raise HTTPException(404, "Entidade não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(
+        usuario_id=quem_id, usuario_nome=quem_nome, acao="entidade_removida",
+        alvo_tipo="entidade", alvo_id=id_,
+        detalhe=f"nome={entidade['nome'] if entidade else '?'} (apaga postos/cameras/automacoes/bicos em cascata)",
+    )
     return {"removido": True}
 
 
@@ -160,11 +225,11 @@ def entidades_remover(id_: int):
 def empresas_listar(request: Request, entidade_id: int | None = None):
     escopo = deps.empresa_do_usuario(request)
     if escopo is None:
-        return banco.empresas_listar(entidade_id=entidade_id)
+        return redacao.empresas(banco.empresas_listar(entidade_id=entidade_id))
     emp = banco.empresas_obter(escopo)
     if not emp or (entidade_id is not None and emp["entidade_id"] != entidade_id):
         return []
-    return [emp]
+    return redacao.empresas([emp])
 
 
 @router.get("/empresas/{id_}")
@@ -173,30 +238,37 @@ def empresas_obter(id_: int, request: Request):
     emp = banco.empresas_obter(id_)
     if not emp:
         raise HTTPException(404, "Empresa não encontrada")
-    return emp
+    return redacao.empresa(emp)
 
 
 @router.post("/empresas/{id_}/api-key", dependencies=[Depends(deps.exigir_admin)])
-def empresas_gerar_api_key(id_: int):
+def empresas_gerar_api_key(id_: int, request: Request):
     """Gera (ou substitui) a api_key própria deste posto — opt-in: a partir daqui
     `/api/leitura` passa a exigir essa chave nas chamadas com este CNPJ. Ver
     app/web/leitura.py:leitura_reativa."""
     chave = banco.empresas_gerar_api_key(id_)
     if chave is None:
         raise HTTPException(404, "Empresa não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    # A CHAVE em si nunca vai pra auditoria (é segredo) — só o fato de que foi gerada.
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="api_key_gerada",
+                              alvo_tipo="empresa", alvo_id=id_)
     return {"api_key": chave}
 
 
 @router.delete("/empresas/{id_}/api-key", dependencies=[Depends(deps.exigir_admin)])
-def empresas_revogar_api_key(id_: int):
+def empresas_revogar_api_key(id_: int, request: Request):
     """Volta o posto ao padrão público (sem chave própria)."""
     if not banco.empresas_revogar_api_key(id_):
         raise HTTPException(404, "Empresa não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="api_key_revogada",
+                              alvo_tipo="empresa", alvo_id=id_)
     return {"revogado": True}
 
 
 @router.put("/empresas/{id_}/retencao", dependencies=[Depends(deps.exigir_admin)])
-def empresas_definir_retencao(id_: int, payload: dict):
+def empresas_definir_retencao(id_: int, payload: dict, request: Request):
     """Prazo de retenção próprio (LGPD por cliente) — `dias=null`/ausente volta a usar
     o `retencao_dias` global. Ver app/operacao/retencao.py."""
     dias = payload.get("dias")
@@ -209,11 +281,14 @@ def empresas_definir_retencao(id_: int, payload: dict):
             raise HTTPException(400, "dias não pode ser negativo")
     if not banco.empresas_definir_retencao(id_, dias):
         raise HTTPException(404, "Empresa não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="retencao_definida",
+                              alvo_tipo="empresa", alvo_id=id_, detalhe=f"dias={dias}")
     return {"retencao_dias_override": dias}
 
 
 @router.post("/empresas", dependencies=[Depends(deps.exigir_admin)])
-def empresas_inserir(payload: dict):
+def empresas_inserir(payload: dict, request: Request):
     nome = (payload.get("nome") or "").strip()
     cnpj = _normalizar_cnpj(payload.get("cnpj", ""))
     if not nome or not cnpj:
@@ -226,11 +301,14 @@ def empresas_inserir(payload: dict):
         id_ = banco.empresas_inserir({**payload, "nome": nome, "cnpj": cnpj})
     except sqlite3.IntegrityError as e:
         raise _integridade(e, f"CNPJ {cnpj} já cadastrado")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="posto_criado",
+                              alvo_tipo="empresa", alvo_id=id_, detalhe=f"nome={nome} cnpj={cnpj}")
     return {"id": id_}
 
 
 @router.put("/empresas/{id_}", dependencies=[Depends(deps.exigir_admin)])
-def empresas_atualizar(id_: int, payload: dict):
+def empresas_atualizar(id_: int, payload: dict, request: Request):
     nome = (payload.get("nome") or "").strip()
     cnpj = _normalizar_cnpj(payload.get("cnpj", ""))
     if not nome or not cnpj:
@@ -245,13 +323,24 @@ def empresas_atualizar(id_: int, payload: dict):
         raise _integridade(e, f"CNPJ {cnpj} já cadastrado")
     if not ok:
         raise HTTPException(404, "Empresa não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="posto_atualizado",
+                              alvo_tipo="empresa", alvo_id=id_, detalhe=f"nome={nome} cnpj={cnpj}")
     return {"atualizado": True}
 
 
 @router.delete("/empresas/{id_}", dependencies=[Depends(deps.exigir_admin)])
-def empresas_remover(id_: int):
+def empresas_remover(id_: int, request: Request):
+    empresa = banco.empresas_obter(id_)
     if not banco.empresas_remover(id_):
         raise HTTPException(404, "Empresa não encontrada")
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(
+        usuario_id=quem_id, usuario_nome=quem_nome, acao="posto_removido",
+        alvo_tipo="empresa", alvo_id=id_,
+        detalhe=f"nome={empresa['nome'] if empresa else '?'} cnpj={empresa['cnpj'] if empresa else '?'} "
+                f"(apaga câmeras/automações/bicos em cascata)",
+    )
     return {"removido": True}
 
 
@@ -329,22 +418,18 @@ def bicos_obter(id_: int, request: Request):
     return bico
 
 
-def _validar_bico(payload: dict) -> None:
-    """Garante que a câmera escolhida pertence ao MESMO posto do bico.
+PAPEIS_CAMERA = ("traseira", "frente")
+
+
+def _validar_camera_do_posto(camera_id: int, automacao: dict) -> dict:
+    """Carrega a câmera e garante que ela pertence ao MESMO posto do bico.
 
     Sem isso, num servidor central seria possível apontar o bico do Posto A para a câmera
     do Posto B — o roteador de um cliente receberia a imagem do pátio de outro.
     """
-    if not payload.get("automacao_id") or not payload.get("camera_id"):
-        raise HTTPException(400, "automacao_id e camera_id são obrigatórios")
-
-    automacao = banco.automacoes_obter(int(payload["automacao_id"]))
-    if not automacao:
-        raise HTTPException(400, "Automação não encontrada")
-    camera = banco.cameras_obter(int(payload["camera_id"]))
+    camera = banco.cameras_obter(camera_id)
     if not camera:
         raise HTTPException(400, "Câmera não encontrada")
-
     if camera.get("empresa_id") != automacao["empresa_id"]:
         emp_cam = banco.empresas_obter(camera["empresa_id"]) if camera.get("empresa_id") else None
         emp_bico = banco.empresas_obter(automacao["empresa_id"])
@@ -354,6 +439,56 @@ def _validar_bico(payload: dict) -> None:
             f"{emp_cam['nome'] if emp_cam else 'nenhuma empresa'} e o bico a "
             f"{emp_bico['nome'] if emp_bico else '?'} — escolha uma câmera do mesmo posto.",
         )
+    return camera
+
+
+def _validar_bico(payload: dict) -> None:
+    """Valida as câmeras do bico (1 obrigatória + 1 opcional) e seus papéis.
+
+    A segunda câmera passa pela MESMA checagem de posto da primeira: ela é uma fonte de
+    imagem como qualquer outra, e deixá-la de fora reabriria por outro campo exatamente
+    o vazamento entre postos que a validação da primeira fecha.
+    """
+    if not payload.get("automacao_id") or not payload.get("camera_id"):
+        raise HTTPException(400, "automacao_id e camera_id são obrigatórios")
+
+    automacao = banco.automacoes_obter(deps.inteiro_ou_400(payload["automacao_id"], "automacao_id"))
+    if not automacao:
+        raise HTTPException(400, "Automação não encontrada")
+
+    camera_id = deps.inteiro_ou_400(payload['camera_id'], 'camera_id')
+    _validar_camera_do_posto(camera_id, automacao)
+
+    # Normaliza os papéis in-place (o payload segue daqui direto para o banco), inclusive
+    # no bico de uma câmera — senão 'TRASEIRA' e 'traseira' viram rótulos diferentes na
+    # tela e nos filtros do histórico.
+    for campo, padrao in (("papel_camera", "traseira"), ("papel_camera2", "frente")):
+        papel = (payload.get(campo) or padrao).strip().lower()
+        if papel not in PAPEIS_CAMERA:
+            raise HTTPException(400, f"{campo} deve ser um de: {', '.join(PAPEIS_CAMERA)}")
+        payload[campo] = papel
+
+    bruto2 = payload.get("camera2_id")
+    if bruto2 in (None, "", 0):
+        return                      # bico de uma câmera — nada mais a validar
+
+    camera2_id = int(bruto2)
+    if camera2_id == camera_id:
+        raise HTTPException(
+            400, "A segunda câmera precisa ser diferente da primeira — o ganho vem de "
+                 "enxergar o veículo por outro ângulo.")
+    _validar_camera_do_posto(camera2_id, automacao)
+
+    # Papéis iguais nas duas câmeras não são só redundância de rótulo: o papel é o NOME
+    # pelo qual a tela distingue as duas fontes (botão "Ler bico X (frente)", aviso
+    # "⚠ frente: não detectou placa", quadro do teste). Com as duas chamadas "traseira" o
+    # operador vê dois rótulos idênticos e não tem como saber em qual câmera mexer — que é
+    # a única coisa que o diagnóstico de duas fontes existe para dizer.
+    if payload["papel_camera"] == payload["papel_camera2"]:
+        raise HTTPException(
+            400, "As duas câmeras não podem enxergar o mesmo lado do veículo — uma é a "
+                 "traseira e a outra a frente. É por esse nome que o diagnóstico da "
+                 "leitura diz qual das duas precisa de ajuste.")
 
 
 @router.post("/bicos", dependencies=[Depends(deps.exigir_admin)])
@@ -391,10 +526,32 @@ def bicos_remover(id_: int):
     return {"removido": True}
 
 
+def _slot_da_camera(bico: dict, camera_id: int | None) -> int:
+    """Descobre a qual câmera do bico um ROI se refere.
+
+    `camera_id` ausente = slot 1, que é o comportamento de sempre — todo chamador antigo
+    continua correto sem mudar nada. Presente, tem que bater com uma das câmeras do bico:
+    o retângulo só faz sentido nas coordenadas de uma câmera específica, então adivinhar
+    aqui gravaria a área certa no lugar errado, sem erro nenhum na hora.
+    """
+    if camera_id is None:
+        return 1
+    if camera_id == bico["camera_id"]:
+        return 1
+    if bico.get("camera2_id") and camera_id == bico["camera2_id"]:
+        return 2
+    validas = [str(bico["camera_id"])] + ([str(bico["camera2_id"])] if bico.get("camera2_id") else [])
+    raise HTTPException(
+        400, f"A câmera {camera_id} não é deste bico — câmeras válidas: {', '.join(validas)}")
+
+
 @router.put("/bicos/{id_}/roi", dependencies=[Depends(deps.exigir_admin)])
 def bicos_salvar_roi(id_: int, payload: dict):
-    """Salva a área de captura (ROI) do bico. Bicos que compartilham câmera mantêm ROIs
-    independentes — a leitura reativa recorta pela área do bico chamado no GET.
+    """Salva a área de captura (ROI) do bico numa das câmeras dele.
+
+    Bicos que compartilham câmera mantêm ROIs independentes — a leitura reativa recorta
+    pela área do bico chamado no GET. `camera_id` no corpo escolhe a câmera quando o bico
+    tem duas; omitido, vale a primeira.
     """
     try:
         x, y, w, h = int(payload["x"]), int(payload["y"]), int(payload["w"]), int(payload["h"])
@@ -402,23 +559,34 @@ def bicos_salvar_roi(id_: int, payload: dict):
         raise HTTPException(400, "x, y, w, h são obrigatórios e devem ser inteiros")
     if w <= 0 or h <= 0:
         raise HTTPException(400, "w e h devem ser positivos")
-    if not banco.bicos_obter(id_):
+    bico = banco.bicos_obter(id_)
+    if not bico:
         raise HTTPException(404, "Bico não encontrado")
-    banco.bico_salvar_roi(id_, {"x": x, "y": y, "w": w, "h": h})
+    slot = _slot_da_camera(bico, _camera_id_opcional(payload.get("camera_id")))
+    banco.bico_salvar_roi(id_, {"x": x, "y": y, "w": w, "h": h}, slot=slot)
     return {"salvo": True}
 
 
 @router.delete("/bicos/{id_}/roi", dependencies=[Depends(deps.exigir_admin)])
-def bicos_limpar_roi(id_: int):
+def bicos_limpar_roi(id_: int, camera_id: int | None = None):
     """Remove a área de captura — leitura reativa desse bico volta a usar o frame completo."""
-    if not banco.bicos_obter(id_):
+    bico = banco.bicos_obter(id_)
+    if not bico:
         raise HTTPException(404, "Bico não encontrado")
-    banco.bico_limpar_roi(id_)
+    banco.bico_limpar_roi(id_, slot=_slot_da_camera(bico, camera_id))
     return {"limpo": True}
 
 
+# Leituras de teste por minuto, por IP. A rota roda `leitura_timeout_seg` (28 s por padrão)
+# segurando uma thread do pool e o lock da câmera. Sem freio, 40 chamadas paralelas
+# esgotavam o threadpool e paravam o servidor inteiro por ~28 s — inclusive `/api/leitura`
+# dos outros postos e o `/login`. Custo do ataque: 40 requisições, de qualquer sessão
+# válida. (Auditoria 27/08/2026, achado K5.)
+_LIMITE_LER_PLACA_MIN = 6
+
+
 @router.post("/bicos/{id_}/ler-placa-teste")
-def bicos_ler_placa_teste(id_: int, request: Request):
+def bicos_ler_placa_teste(id_: int, request: Request, rapido: bool = False):
     """Testa a leitura de um bico direto (sem montar a URL completa de
     entidade+cnpj+automacao+bico) — usado pelo editor de ROI (admin) e pela tela do
     posto (também liberado a 'cliente', escopado ao próprio posto — é diagnóstico
@@ -428,6 +596,13 @@ def bicos_ler_placa_teste(id_: int, request: Request):
     leitura reativa de verdade — senão o botão de teste do painel responde mesmo para
     um cadastro desativado, driblando a trava aplicada em produção.
     """
+    # Freio ANTES de qualquer trabalho: esta rota segura uma thread do pool por até
+    # `leitura_timeout_seg` e o lock da câmera junto.
+    ip = request.client.host if request.client else "?"
+    if not limitador.permitido("ler_placa_teste", ip, _LIMITE_LER_PLACA_MIN, 60):
+        raise HTTPException(
+            429, "Muitas leituras de teste seguidas — aguarde um instante.")
+
     bico, motivo = banco.bico_verificar_ativo(id_)
     if bico is None:
         if motivo in ("bico", "empresa", "automacao"):
@@ -435,18 +610,36 @@ def bicos_ler_placa_teste(id_: int, request: Request):
         nivel = motivo.rsplit("_", 1)[0]
         raise HTTPException(409, f"Nível '{nivel}' está desativado no cadastro")
     deps.checar_acesso_empresa(request, _empresa_do_bico(bico))
-    cam = banco.cameras_obter(bico["camera_id"])
-    if not cam:
+    fontes_db, avisos, falha = banco.cameras_do_bico(bico)
+    if falha is not None:
         raise HTTPException(404, "Câmera do bico não encontrada")
 
     cfg = config.carregar()
-    especificacao = leitura.EspecificacaoCamera.de_camera_db(cam, cfg)
-    roi = json.loads(bico["roi"]) if bico.get("roi") else None
+    # `rapido` passa pela MESMA resolução do endpoint do roteador (inclusive o
+    # `rapido_ativo=nao`): o botão existe para exercitar o que o roteador vai receber, e
+    # um caminho próprio aqui já significaria testar outra coisa.
+    perfil, aviso_perfil = leitura_rotas.perfil_pedido(rapido, cfg)
     try:
-        return leitura.ler_placa(
-            camera_id=bico["camera_id"], especificacao=especificacao, roi=roi, cfg=cfg,
-            pipeline_frame_provider=leitura_rotas.frame_ao_vivo(bico["camera_id"]),
+        resultado = leitura.ler_placa(
+            fontes=leitura_rotas.montar_fontes(fontes_db, cfg, perfil),
+            cfg=cfg, avisos=avisos,
             preview_nome=f"preview_bico_{id_}", bico_id=id_, origem="teste",
+            perfil=perfil,
         )
     except leitura.LeituraError as e:
         raise HTTPException(e.status, e.mensagem)
+    if aviso_perfil:
+        resultado.setdefault("avisos", []).append(aviso_perfil)
+
+    # Dados do veículo em modo CACHE-ONLY: este fluxo é o botão "Testar como o roteador" e
+    # o editor de ROI, clicados em rajada enquanto se ajusta o enquadramento. Cada consulta
+    # à apiplacas custa crédito pré-pago, então ajustar câmera não pode gastar dinheiro.
+    # Mostrar o bloco mesmo assim é melhor que omiti-lo: quem está ajustando vê exatamente
+    # o que o roteador vai receber, e quando o dado falta vem o motivo em vez de silêncio.
+    if config.get_bool(cfg, "apiplacas_ativo") and resultado.get("placa"):
+        try:
+            resultado["veiculo"] = apiplacas.consultar(
+                resultado["placa"], cfg, permitir_gasto=False)
+        except Exception as e:
+            log.error("Falha ao ler cache de veículo no teste do bico %s: %s", id_, e)
+    return resultado

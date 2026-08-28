@@ -1,0 +1,916 @@
+/* Estilos globais do layout autenticado (nav + main + componentes).
+   Extraído de base.html para ser servido como arquivo estático cacheável
+   pelo browser em vez de reenviado inline em cada página.
+
+   A paleta, as fontes e as curvas de animação moram em tokens.css, importado
+   por base.html ANTES deste arquivo. Nenhuma cor literal deve ser escrita aqui:
+   se faltar um valor, ele vira token lá e é usado aqui via var().
+
+   Todos os seletores que já existiam continuam existindo com o mesmo nome —
+   as 25 páginas dependem deles. O que mudou foi só a aparência. */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--fonte);
+  background: var(--bg);
+  color: var(--texto);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Números de largura fixa em toda a interface. Sem isto, um contador que
+     atualiza a cada 15s (os KPIs do dashboard) muda de largura a cada refresh
+     e a linha inteira "pula". */
+  font-variant-numeric: tabular-nums;
+}
+
+/* Anel de foco só para navegação por teclado — mouse não fica com borda presa.
+   Vale para toda a UI porque a tela de campo é operada por teclado em alguns
+   postos (tablet com dock). */
+:focus-visible {
+  outline: 2px solid var(--marca);
+  outline-offset: 2px;
+  border-radius: var(--r-1);
+}
+:focus:not(:focus-visible) { outline: none; }
+
+/* ── Navbar ── */
+nav {
+  background: var(--superficie);
+  border-bottom: 1px solid var(--borda);
+  box-shadow: var(--sombra-1);
+  padding: 0 var(--e-6);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 56px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  flex-wrap: wrap;
+}
+/* Sem backdrop-filter aqui de propósito. A barra é sticky e fica por cima das
+   páginas de câmera, onde o conteúdo embaixo é MJPEG ao vivo: desfocar o fundo
+   obriga o browser a recompor o blur a cada quadro de vídeo. No tablet de campo
+   isso custa fps de verdade. O vidro fica só nos modais, sobre conteúdo parado. */
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+  text-decoration: none;
+  margin-right: var(--e-4);
+  flex-shrink: 0;
+}
+.nav-brand-icon {
+  width: 30px; height: 30px;
+  background: linear-gradient(140deg, var(--marca) 0%, var(--marca-forte) 100%);
+  border-radius: var(--r-1);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(22,163,74,.28);
+  transition: transform var(--t-rapida), box-shadow var(--t-rapida);
+}
+.nav-brand:hover .nav-brand-icon {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(22,163,74,.34);
+}
+.nav-brand-text {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--texto);
+  letter-spacing: -.2px;
+}
+
+nav a:not(.nav-brand) {
+  color: var(--texto-2);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 6px 10px;
+  border-radius: var(--r-1);
+  transition: color var(--t-rapida), background var(--t-rapida);
+  white-space: nowrap;
+  position: relative;
+}
+nav a:not(.nav-brand):hover { color: var(--marca-texto); background: var(--marca-fraca); }
+
+/* Página atual: base.html marca com aria-current="page". Uma barra fina embaixo
+   em vez de fundo colorido — não compete com o hover. */
+nav a[aria-current="page"] { color: var(--marca-texto); font-weight: 600; }
+nav a[aria-current="page"]::after {
+  content: '';
+  position: absolute;
+  left: 10px; right: 10px; bottom: -1px;
+  height: 2px;
+  background: var(--marca);
+  border-radius: 2px 2px 0 0;
+}
+
+.nav-logout { margin-left: auto !important; font-size: 13px !important; color: var(--texto-3) !important; }
+.nav-logout:hover { color: var(--texto-2) !important; background: var(--superficie-3) !important; }
+
+/* Menu suspenso por CLIQUE — hover não existe em tablet, e o técnico usa tablet em campo */
+.nav-menu { position: relative; }
+.nav-menu-trigger {
+  color: var(--texto-2); font-size: 14px; font-weight: 500; background: none; border: none;
+  padding: 6px 10px; border-radius: var(--r-1); white-space: nowrap; cursor: pointer;
+  font-family: inherit; transition: color var(--t-rapida), background var(--t-rapida);
+}
+.nav-menu-trigger:hover { color: var(--marca-texto); background: var(--marca-fraca); }
+.nav-menu-trigger[aria-expanded="true"] { color: var(--marca-texto); background: var(--marca-fraca); }
+
+.nav-menu-itens {
+  display: none; position: absolute; top: calc(100% + 4px); left: 0; min-width: 216px;
+  background: var(--superficie); border: 1px solid var(--borda); border-radius: var(--r-3);
+  padding: 6px;
+  box-shadow: var(--sombra-3); z-index: 200;
+  transform-origin: top left;
+}
+.nav-menu.aberto .nav-menu-itens {
+  display: block;
+  animation: menu-entra var(--t-media) both;
+}
+@keyframes menu-entra {
+  from { opacity: 0; transform: translateY(-4px) scale(.98); }
+  to   { opacity: 1; transform: none; }
+}
+.nav-menu-itens a { display: block; padding: 8px 12px !important; border-radius: var(--r-1); }
+.nav-menu-itens a small { color: var(--texto-3); font-weight: 400; }
+.nav-sep { height: 1px; background: var(--superficie-3); margin: 5px 8px; }
+
+/* Rótulo de seção dentro do menu ("Cadastro avulso"), antes inline no base.html */
+.nav-menu-secao {
+  padding: 6px 12px 4px;
+  font-size: 11px;
+  color: var(--texto-3);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  font-weight: 600;
+}
+
+/* Tabelas largas: rolam dentro do próprio card em vez de estourar a página.
+   São de 5 a 10 colunas e a tela de campo costuma ser um tablet. */
+.tabela-rolavel { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.tabela-rolavel table { min-width: 620px; }
+@media (max-width: 820px) {
+  .card table { display: block; overflow-x: auto; white-space: nowrap; }
+  .grid-status { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+  h1 { font-size: 19px; }
+}
+
+/* ── Layout ── */
+main { padding: var(--e-8) var(--e-6); max-width: 1400px; margin: 0 auto; }
+h1 {
+  font-size: 24px; font-weight: 700; color: var(--texto);
+  margin-bottom: var(--e-5); letter-spacing: -.02em;
+}
+h2 { font-size: 16px; font-weight: 650; color: var(--texto); letter-spacing: -.01em; }
+h3 { font-size: 14px; font-weight: 600; color: var(--texto-2); }
+
+/* Cabeçalho de página: título à esquerda, controles à direita. O padrão
+   `<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">`
+   estava repetido no topo de quase toda página. */
+.pagina-topo {
+  display: flex;
+  align-items: center;
+  gap: var(--e-3);
+  margin-bottom: var(--e-5);
+  flex-wrap: wrap;
+}
+.pagina-topo h1 { margin-bottom: 0; }
+.pagina-topo .acoes { margin-left: auto; display: flex; gap: var(--e-2); align-items: center; }
+
+/* ── Cards ── */
+.card {
+  background: var(--superficie);
+  padding: var(--e-5);
+  border-radius: var(--r-3);
+  margin-bottom: var(--e-4);
+  border: 1px solid var(--borda);
+  box-shadow: var(--sombra-1);
+  transition: box-shadow var(--t-media), border-color var(--t-media);
+}
+.card:hover { box-shadow: var(--sombra-2); }
+
+/* Cabeçalho interno de card — o par `<h2>` + botões que aparece em toda seção. */
+.card-topo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--e-2);
+  margin-bottom: var(--e-4);
+  flex-wrap: wrap;
+}
+.card-topo h2 { margin: 0; }
+
+/* ── Tables ── */
+table { width: 100%; border-collapse: collapse; }
+thead tr { background: var(--superficie-2); }
+th {
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--texto-3);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  border-bottom: 1px solid var(--borda);
+  white-space: nowrap;
+}
+td {
+  padding: 11px 14px;
+  font-size: 14px;
+  color: var(--texto-2);
+  border-bottom: 1px solid var(--superficie-3);
+}
+tr:last-child td { border-bottom: none; }
+tbody tr { transition: background var(--t-rapida); }
+tbody tr:hover { background: var(--marca-fraca); }
+
+/* ── Form elements ── */
+input, select, textarea {
+  padding: 9px 12px;
+  border-radius: var(--r-2);
+  border: 1px solid var(--borda-forte);
+  background: var(--superficie);
+  color: var(--texto);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color var(--t-rapida), box-shadow var(--t-rapida), background var(--t-rapida);
+}
+input:hover:not(:disabled), select:hover:not(:disabled), textarea:hover:not(:disabled) {
+  border-color: var(--texto-3);
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--marca);
+  background: var(--superficie);
+  box-shadow: 0 0 0 3px rgba(22,163,74,.14);
+}
+input:disabled, select:disabled, textarea:disabled {
+  background: var(--superficie-3); color: var(--texto-3); cursor: not-allowed;
+}
+input::placeholder, textarea::placeholder { color: var(--texto-3); }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--marca); }
+
+label { display: block; font-size: 13px; color: var(--texto-2); font-weight: 500; }
+label input, label select { margin-top: var(--e-1); }
+
+/* Select com seta própria: a nativa não acompanha a borda arredondada e muda
+   de desenho entre Chrome no tablet e Firefox no desktop. */
+select:not([multiple]):not([size]) {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 30px;
+}
+
+/* ── Buttons ── */
+button {
+  padding: 9px 16px;
+  border-radius: var(--r-2);
+  border: 1px solid transparent;
+  font-size: 14px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background var(--t-rapida), transform var(--t-rapida),
+              box-shadow var(--t-rapida), border-color var(--t-rapida);
+  font-family: inherit;
+  background: var(--marca);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+button:hover:not(:disabled) { background: var(--marca-forte); box-shadow: var(--sombra-marca); }
+button:active:not(:disabled) { transform: scale(.97); box-shadow: none; }
+button:disabled { opacity: .5; cursor: not-allowed; transform: none !important; box-shadow: none; }
+
+/* Variantes — substituem o `style="background:#fee2e2;color:#b91c1c;border:..."`
+   que estava copiado à mão em cada botão de excluir/cancelar do sistema. */
+.btn-secundario {
+  background: var(--superficie);
+  color: var(--texto-2);
+  border-color: var(--borda-forte);
+}
+.btn-secundario:hover:not(:disabled) {
+  background: var(--superficie-2); color: var(--texto);
+  border-color: var(--texto-3); box-shadow: var(--sombra-1);
+}
+.btn-perigo { background: var(--erro-bg); color: var(--erro); border-color: var(--erro-borda); }
+.btn-perigo:hover:not(:disabled) {
+  background: var(--erro); color: #fff; border-color: var(--erro);
+  box-shadow: 0 4px 14px rgba(185,28,28,.28);
+}
+.btn-fantasma { background: transparent; color: var(--texto-2); }
+.btn-fantasma:hover:not(:disabled) { background: var(--superficie-3); color: var(--texto); box-shadow: none; }
+.btn-pequeno { padding: 5px 10px; font-size: 13px; }
+
+/* Botão ocupado: `<button class="carregando">` troca o conteúdo por um giro.
+   O texto continua no DOM (leitores de tela) mas fica invisível, então o botão
+   não muda de largura no meio da operação. */
+button.carregando { position: relative; color: transparent !important; pointer-events: none; }
+button.carregando::after {
+  content: '';
+  position: absolute;
+  width: 14px; height: 14px;
+  border: 2px solid rgba(255,255,255,.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: girar .6s linear infinite;
+}
+.btn-secundario.carregando::after, .btn-perigo.carregando::after, .btn-fantasma.carregando::after {
+  border-color: rgba(15,23,42,.18); border-top-color: var(--texto-2);
+}
+
+/* ── Indicadores de carregamento ── */
+@keyframes girar { to { transform: rotate(360deg); } }
+
+.spinner {
+  display: inline-block;
+  width: 16px; height: 16px;
+  border: 2px solid var(--borda-forte);
+  border-top-color: var(--marca);
+  border-radius: 50%;
+  animation: girar .6s linear infinite;
+  vertical-align: -3px;
+}
+.spinner-grande { width: 28px; height: 28px; border-width: 3px; }
+
+/* Linha "carregando…" padrão: giro + texto, centralizada. Substitui o texto solto. */
+.carregando-bloco {
+  display: flex; align-items: center; justify-content: center; gap: var(--e-2);
+  padding: var(--e-8) var(--e-4);
+  color: var(--texto-3); font-size: 14px;
+}
+
+/* Esqueleto para tabela/lista enquanto o fetch não volta. Melhor que "carregando…"
+   porque preserva a altura do bloco e a página não salta quando os dados chegam. */
+.esqueleto {
+  background: linear-gradient(90deg, var(--superficie-3) 25%, var(--superficie-2) 50%, var(--superficie-3) 75%);
+  background-size: 200% 100%;
+  animation: esqueleto-brilho 1.4s ease-in-out infinite;
+  border-radius: var(--r-1);
+  height: 12px;
+}
+@keyframes esqueleto-brilho {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+/* ── Painel escuro (câmera / vídeo / log) ──
+   O "modo escuro" do sistema vive aqui: nas superfícies que mostram imagem de
+   câmera. Fundo escuro atrás de vídeo evita a moldura branca piscando entre
+   quadros e dá contraste ao overlay de ROI. */
+.painel-escuro {
+  background: var(--painel);
+  border: 1px solid var(--painel-borda);
+  border-radius: var(--r-3);
+  color: var(--painel-texto);
+  overflow: hidden;
+}
+.painel-escuro h2, .painel-escuro h3 { color: var(--painel-texto); }
+
+/* ── Stream ── */
+.stream-wrapper { max-width: 100%; position: relative; }
+.stream-wrapper img {
+  width: 100%;
+  border-radius: var(--r-2);
+  border: 1px solid var(--painel-borda);
+  background: var(--painel);
+  display: block;
+}
+
+/* Selo "AO VIVO" sobre o vídeo. O ponto pulsa — é a diferença visível entre
+   "transmitindo" e "última imagem congelada", que hoje só dá para saber
+   esperando o quadro mudar. */
+.selo-ao-vivo {
+  position: absolute;
+  top: 10px; left: 10px;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(13,21,32,.78);
+  border: 1px solid var(--painel-borda);
+  color: #fff;
+  font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  padding: 4px 9px;
+  border-radius: var(--r-pill);
+  z-index: 2;
+  pointer-events: none;
+}
+.selo-ao-vivo::before {
+  content: '';
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 0 rgba(239,68,68,.7);
+  animation: pulso-vivo 1.8s ease-out infinite;
+}
+@keyframes pulso-vivo {
+  0%   { box-shadow: 0 0 0 0 rgba(239,68,68,.7); }
+  70%  { box-shadow: 0 0 0 6px rgba(239,68,68,0); }
+  100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+}
+
+/* ── Badges ── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .02em;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  line-height: 1.4;
+}
+.badge-mercosul { background: var(--info-bg);    color: var(--info);    border-color: var(--info-borda); }
+.badge-antigo   { background: var(--superficie-3); color: var(--texto-2); border-color: var(--borda); }
+.badge-ok       { background: var(--ok-bg);      color: var(--ok);      border-color: var(--ok-borda); }
+.badge-warn     { background: var(--atencao-bg); color: var(--atencao); border-color: var(--atencao-borda); }
+.badge-err      { background: var(--erro-bg);    color: var(--erro);    border-color: var(--erro-borda); }
+.badge-alerta   { background: var(--alerta-bg);  color: var(--alerta);  border-color: var(--alerta-borda); }
+.badge-neutro   { background: var(--superficie-3); color: var(--texto-2); border-color: var(--borda); }
+
+/* Ponto de status antes do texto do badge (`<span class="badge badge-ok com-ponto">`) */
+.badge.com-ponto::before {
+  content: '';
+  width: 5px; height: 5px; border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+/* ── Placa ──
+   Placa lida é o dado central do sistema e aparece em tabela, feed, modal e
+   histórico. Ganha um componente próprio para ser sempre igual — e sempre na
+   fonte com glifos desambiguados, porque é o texto que o operador confere. */
+.placa {
+  font-family: var(--fonte-mono);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: .08em;
+  color: var(--texto);
+  background: var(--superficie-2);
+  border: 1px solid var(--borda);
+  border-radius: var(--r-1);
+  padding: 2px 7px;
+  display: inline-block;
+  white-space: nowrap;
+}
+.placa-grande { font-size: 17px; padding: 5px 12px; letter-spacing: .1em; }
+
+/* Texto técnico em geral: CNPJ, id, URL, nome de automação/bico. */
+.mono { font-family: var(--fonte-mono); font-size: 13px; }
+
+/* ── Status grid ── */
+.grid-status {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--e-3);
+}
+.status-cell {
+  background: var(--superficie);
+  padding: 14px 16px;
+  border-radius: var(--r-3);
+  border: 1px solid var(--borda);
+  box-shadow: var(--sombra-1);
+  transition: box-shadow var(--t-media), transform var(--t-media);
+  /* Coluna flex + margin-top:auto no valor. Os itens do grid já esticam para a
+     mesma altura; isto alinha os NÚMEROS pela base, então um rótulo que quebra
+     em duas linhas ("Chamadas do roteador") não derruba só o valor dele para
+     fora da linha dos outros. */
+  display: flex;
+  flex-direction: column;
+}
+.status-cell:hover { box-shadow: var(--sombra-2); transform: translateY(-1px); }
+.status-cell .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--texto-3);
+  letter-spacing: .06em;
+  font-weight: 600;
+}
+.status-cell .value {
+  font-size: 24px;
+  font-weight: 700;
+  margin-top: auto;
+  padding-top: var(--e-1);
+  word-break: break-word;
+  color: var(--texto);
+  letter-spacing: -.02em;
+  line-height: 1.15;
+}
+/* Cores semânticas do número, no lugar de style="color:#..." no template */
+.status-cell .value.v-ok     { color: var(--ok); }
+.status-cell .value.v-alerta { color: var(--alerta); }
+.status-cell .value.v-erro   { color: var(--erro); }
+
+/* Faixa colorida à esquerda para a célula que precisa saltar. */
+.status-cell.destaque { border-left: 3px solid var(--marca); }
+
+/* ── Log pane ──
+   Terminal escuro. Log é texto de máquina, lido em varredura e por longos
+   períodos — é exatamente o caso em que o fundo escuro cansa menos, e é a
+   mesma família visual dos painéis de câmera. */
+.log-pane {
+  font-family: var(--fonte-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 360px;
+  overflow-y: auto;
+  background: var(--painel);
+  border: 1px solid var(--painel-borda);
+  color: var(--painel-texto-2);
+  padding: 12px 14px;
+  border-radius: var(--r-2);
+  margin-top: var(--e-3);
+}
+.log-line {
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(255,255,255,.05);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.log-line:last-child { border-bottom: none; }
+.log-INFO    { color: var(--painel-texto); }
+.log-WARNING { color: #fbbf24; }
+.log-ERROR   { color: #f87171; }
+.log-DEBUG   { color: var(--painel-texto-3); }
+
+/* Barra de rolagem do painel escuro — a clara some no fundo escuro. */
+.log-pane::-webkit-scrollbar-track { background: var(--painel-2); }
+.log-pane::-webkit-scrollbar-thumb { background: var(--painel-3); }
+.log-pane::-webkit-scrollbar-thumb:hover { background: var(--painel-texto-3); }
+
+/* ── Feed ── */
+.feed-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--superficie-3);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--e-3);
+}
+.feed-item:last-child { border-bottom: none; }
+.feed-placa {
+  font-family: var(--fonte-mono);
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--texto);
+  letter-spacing: .06em;
+}
+
+/* ── Alerts ── */
+.alert {
+  padding: 11px 14px;
+  border-radius: var(--r-2);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: var(--e-3);
+  border: 1px solid transparent;
+}
+.alert-err  { background: #fef2f2; color: #dc2626; border-color: var(--erro-borda); }
+.alert-ok   { background: var(--marca-fraca); color: var(--marca); border-color: var(--marca-borda); }
+.alert a { color: inherit; font-weight: 600; }
+
+/* ── Aviso global (toast) ──
+   Posicionamento e sombra saíram do style inline no <div id="aviso-global">
+   do base.html. A entrada é deslizando de cima porque o elemento aparece no
+   topo, sobre o conteúdo: sem movimento ele simplesmente materializa e é fácil
+   de não perceber quando a página está cheia. */
+#aviso-global {
+  display: none;
+  position: fixed;
+  top: 68px;
+  left: 50%;
+  z-index: 300;
+  max-width: min(680px, 94vw);
+  box-shadow: var(--sombra-3);
+  border-radius: var(--r-2);
+  margin-bottom: 0 !important;
+}
+#aviso-global.visivel {
+  display: block;
+  animation: toast-entra var(--t-saida) both;
+}
+#aviso-global.saindo { animation: toast-sai var(--t-media) both; }
+
+@keyframes toast-entra {
+  from { opacity: 0; transform: translate(-50%, -14px) scale(.96); }
+  to   { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+@keyframes toast-sai {
+  from { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  to   { opacity: 0; transform: translate(-50%, -10px) scale(.97); }
+}
+/* O translateX(-50%) da centralização vive dentro das animações acima; este é
+   o estado de repouso para quando a animação não roda (reduced-motion). */
+#aviso-global:not(.visivel):not(.saindo) { transform: translateX(-50%); }
+
+.aviso-corpo { display: flex; gap: 10px; align-items: flex-start; }
+.aviso-texto { flex: 1; }
+.aviso-fechar {
+  cursor: pointer; opacity: .55; font-weight: 700; background: none; border: none;
+  color: inherit; font-size: 14px; padding: 0 2px; line-height: 1.4;
+  transition: opacity var(--t-rapida);
+}
+.aviso-fechar:hover { opacity: 1; background: none; box-shadow: none; }
+
+/* ── Modais ──
+   Cinco páginas repetiam `<style>#modal-overlay.aberto{display:flex!important}</style>`
+   só para isto. Agora o comportamento é do componente; a página só precisa da
+   marcação .modal-overlay > .modal. */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(15,23,42,.45);
+  /* Desfoque permitido aqui: o modal cobre a tela inteira e o que está atrás
+     está parado — não é o caso da navbar sobre vídeo. */
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  z-index: 400;
+  align-items: center;
+  justify-content: center;
+  padding: var(--e-4);
+  overflow-y: auto;
+}
+.modal-overlay.aberto { display: flex; animation: fundo-entra var(--t-media) both; }
+.modal {
+  background: var(--superficie);
+  border-radius: var(--r-4);
+  border: 1px solid var(--borda);
+  box-shadow: var(--sombra-3);
+  padding: var(--e-6);
+  width: 100%;
+  max-width: 520px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.modal-overlay.aberto .modal { animation: modal-entra var(--t-saida) both; }
+.modal-titulo { font-size: 18px; font-weight: 700; color: var(--texto); margin-bottom: var(--e-4); }
+.modal-acoes {
+  display: flex; justify-content: flex-end; gap: var(--e-2);
+  margin-top: var(--e-5); padding-top: var(--e-4); border-top: 1px solid var(--borda);
+}
+@keyframes fundo-entra { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modal-entra {
+  from { opacity: 0; transform: translateY(12px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── Visualizador de imagem ──
+   Auditar uma leitura é comparar o RECORTE (o que o OCR leu) com o QUADRO inteiro
+   (qual veículo era). Com <a target="_blank"> isso virava duas abas soltas, sem zoom
+   controlável e sem caminho de volta para a linha da tabela. Aqui as imagens da mesma
+   leitura ficam no mesmo palco, com zoom e arrasto — que é o gesto necessário para
+   conferir uma placa de moto, que chega ao banco com poucas dezenas de pixels.
+
+   Painel escuro pelo mesmo critério das telas de câmera (ver tokens.css): atrás de
+   imagem, o claro rouba contraste do que se está tentando enxergar.
+   z-index acima do .modal-overlay — a imagem pode ser aberta de dentro de um modal. */
+.visu {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: rgba(8, 12, 18, .96);
+  /* Mesmo critério do .modal-overlay: cobre a tela inteira sobre conteúdo parado. */
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  flex-direction: column;
+}
+.visu.aberto { display: flex; animation: fundo-entra var(--t-media) both; }
+
+.visu-topo {
+  display: flex;
+  align-items: center;
+  gap: var(--e-3);
+  padding: var(--e-3) var(--e-4);
+  border-bottom: 1px solid var(--painel-borda);
+  background: var(--painel);
+  flex-wrap: wrap;
+}
+.visu-titulo {
+  font-family: var(--fonte-mono);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: .04em;
+  color: var(--painel-texto);
+}
+.visu-sub { font-size: 12.5px; color: var(--painel-texto-2); }
+.visu-ferramentas { display: flex; align-items: center; gap: var(--e-1); margin-left: auto; }
+
+/* Botões da barra: fundo do painel, não o verde da marca — aqui nada é ação
+   destrutiva nem primária, é tudo controle de visualização. */
+.visu-btn {
+  background: var(--painel-3);
+  color: var(--painel-texto);
+  border: 1px solid var(--painel-borda);
+  border-radius: var(--r-1);
+  padding: 6px 10px;
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1;
+  min-width: 32px;
+  box-shadow: none;
+}
+.visu-btn:hover:not(:disabled) { background: #2b3a4d; box-shadow: none; }
+.visu-btn:disabled { opacity: .35; }
+.visu-btn.ativo { background: var(--marca); border-color: var(--marca); color: #fff; }
+.visu-zoom {
+  font-family: var(--fonte-mono);
+  font-size: 12px;
+  color: var(--painel-texto-2);
+  min-width: 52px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.visu-palco {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: var(--e-4);
+  /* touch-action: o pinch e o arrasto são tratados no JS; sem isto o navegador
+     do tablet aplica o próprio scroll/zoom por cima e o gesto briga com a página. */
+  touch-action: none;
+  user-select: none;
+  cursor: zoom-in;
+}
+.visu-palco.ampliado { cursor: grab; }
+.visu-palco.arrastando { cursor: grabbing; }
+/* Sem max-width/max-height: o tamanho é o natural da imagem e QUEM enquadra é o
+   transform do JS. Com o limite em CSS, o recorte de uma placa (uns 60px de largura)
+   aparecia como um selo no meio de um palco preto — justamente a imagem que mais
+   precisa ser ampliada. `flex: none` impede o flex de reencolher a imagem grande. */
+.visu-img {
+  flex: none;
+  max-width: none;
+  max-height: none;
+  transform-origin: center center;
+  will-change: transform;
+  -webkit-user-drag: none;
+  /* Sem border-radius: o raio é multiplicado pelo scale — num recorte a 2000% o
+     canto arredondado vira um chanfro gigante que come parte da placa. */
+}
+/* O recorte da placa tem poucos pixels: ampliado com interpolação vira um borrão
+   liso que esconde o traço da letra. Este modo mostra o pixel como ele é — é o que
+   permite decidir se o 8 era mesmo um B. */
+.visu-img.pixels { image-rendering: pixelated; }
+.visu-erro { color: var(--painel-texto-2); font-size: 14px; }
+
+.visu-tira {
+  display: flex;
+  justify-content: center;
+  gap: var(--e-2);
+  padding: var(--e-3);
+  border-top: 1px solid var(--painel-borda);
+  background: var(--painel);
+  flex-wrap: wrap;
+}
+.visu-tira button {
+  background: var(--painel-2);
+  border: 1px solid var(--painel-borda);
+  border-radius: var(--r-1);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  box-shadow: none;
+}
+.visu-tira button:hover { background: var(--painel-3); box-shadow: none; }
+.visu-tira button[aria-current="true"] { border-color: var(--marca); background: var(--painel-3); }
+.visu-tira img { height: 40px; max-width: 130px; object-fit: contain; display: block; border-radius: 3px; }
+.visu-tira span { font-size: 10.5px; color: var(--painel-texto-2); }
+.visu-tira button[aria-current="true"] span { color: var(--painel-texto); }
+
+/* Miniatura clicável na tabela — abre o visualizador em vez de uma aba nova.
+   É um <button> e não um <img onclick>: o operador que navega por teclado precisa
+   chegar na imagem com Tab e abrir com Enter, o que um <img> não dá de graça.
+   As regras zeram o botão verde padrão; o :hover precisa do :not(:disabled) para
+   ter a mesma especificidade da regra global de button e vencer por ordem. */
+.thumb {
+  display: inline-flex;
+  padding: 0;
+  border: 1px solid var(--borda);
+  border-radius: var(--r-1);
+  background: var(--superficie-2);
+  cursor: zoom-in;
+  vertical-align: middle;
+  overflow: hidden;
+}
+.thumb:hover:not(:disabled) {
+  border-color: var(--marca);
+  background: var(--superficie-2);
+  box-shadow: var(--sombra-2);
+}
+.thumb img { display: block; }
+
+/* ── Estado vazio ── */
+.vazio {
+  text-align: center;
+  padding: var(--e-8) var(--e-5);
+  color: var(--texto-3);
+  font-size: 14px;
+}
+.vazio h2 { color: var(--texto); margin-bottom: var(--e-2); }
+.vazio p { color: var(--texto-2); font-size: 14px; line-height: 1.6; margin: 0 auto var(--e-4); max-width: 520px; }
+
+/* Bloco de código copiável (URL de exemplo, snippet de integração) */
+code, .cod {
+  font-family: var(--fonte-mono);
+  font-size: 12.5px;
+  background: var(--superficie-3);
+  color: var(--texto);
+  padding: 2px 6px;
+  border-radius: var(--r-1);
+  border: 1px solid var(--borda);
+}
+.cod-bloco {
+  display: inline-block;
+  padding: 10px 14px;
+  font-size: 13px;
+  word-break: break-all;
+  text-align: left;
+}
+
+/* ── Barra de proporção (usada no "Por que está falhando") ── */
+.barra {
+  background: var(--superficie-3);
+  border-radius: var(--r-pill);
+  height: 6px;
+  overflow: hidden;
+}
+.barra > div {
+  height: 100%;
+  background: linear-gradient(90deg, #ef4444, #dc2626);
+  border-radius: var(--r-pill);
+  transition: width var(--t-saida);
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--borda-forte); border-radius: var(--r-pill); }
+::-webkit-scrollbar-thumb:hover { background: var(--texto-3); }
+
+/* ── Utilitários ──
+   Existem para retirar os style="" dos templates. Nome curto e previsível; a
+   regra é que só entram aqui padrões que já apareciam repetidos na marcação. */
+.flex        { display: flex; }
+.flex-centro { display: flex; align-items: center; }
+.flex-entre  { display: flex; align-items: center; justify-content: space-between; }
+.flex-fim    { display: flex; align-items: center; justify-content: flex-end; }
+.flex-col    { display: flex; flex-direction: column; }
+.flex-quebra { flex-wrap: wrap; }
+.flex-1      { flex: 1; }
+.ml-auto     { margin-left: auto; }
+
+.g-1 { gap: var(--e-1); } .g-2 { gap: var(--e-2); } .g-3 { gap: var(--e-3); } .g-4 { gap: var(--e-4); }
+
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--e-4); }
+@media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+.m-0  { margin: 0; }
+.mb-0 { margin-bottom: 0; }
+.mb-2 { margin-bottom: var(--e-2); }
+.mb-3 { margin-bottom: var(--e-3); }
+.mb-4 { margin-bottom: var(--e-4); }
+.mt-3 { margin-top: var(--e-3); }
+.mt-4 { margin-top: var(--e-4); }
+
+.t-centro  { text-align: center; }
+.t-mudo    { color: var(--texto-3); }
+.t-suave   { color: var(--texto-2); }
+.t-ok      { color: var(--ok); }
+.t-alerta  { color: var(--alerta); }
+.t-erro    { color: var(--erro); }
+.t-13      { font-size: 13px; }
+.t-forte   { font-weight: 650; }
+.nao-quebra{ white-space: nowrap; }
+.oculto    { display: none !important; }
+
+/* Link dentro de tabela/card, na cor da marca */
+.link { color: var(--marca-texto); text-decoration: none; font-weight: 550; }
+.link:hover { text-decoration: underline; }
+
+/* ── Responsive ── */
+@media (max-width: 720px) {
+  main { padding: var(--e-4); }
+  nav { height: auto; padding: var(--e-2) var(--e-3); gap: 2px; }
+  nav a:not(.nav-brand) { font-size: 12px; padding: 5px 7px; }
+  nav a[aria-current="page"]::after { display: none; }
+  .nav-logout { margin-left: 0 !important; }
+  #aviso-global { top: auto; bottom: 16px; }
+  .modal { padding: var(--e-5); border-radius: var(--r-3); }
+}

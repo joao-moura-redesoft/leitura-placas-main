@@ -114,10 +114,27 @@ def automacoes(request: Request):
 
 
 @router.get("/bicos")
-def bicos(request: Request):
-    if (r := _pagina_admin(request)) is not None:
-        return r
-    return templates.TemplateResponse(request, "bicos.html", _ctx(request))
+def bicos(request: Request, automacao_id: int | None = None):
+    """A tela de bicos avulsa foi aposentada — mesmo caminho da antiga "Ao Vivo" global.
+
+    Ela cadastrava o mesmo bico que o modal de /posto/{id}, mas com regras próprias: não
+    barrava escolher a mesma câmera nos dois slots e não avisava que trocar a segunda
+    câmera apaga a área já desenhada nela (a área está em coordenadas do frame antigo).
+    Duas portas para o mesmo cadastro divergem sempre, e aqui a divergência custava um
+    desenho perdido em silêncio.
+
+    A tela do posto é a que tem o contexto que a decisão exige: as câmeras daquele posto,
+    a imagem ao vivo de cada uma e o checklist do que falta para operar.
+    """
+    # O destino contextual sai só para admin. `automacao_id` é um inteiro sequencial: para
+    # um usuário 'cliente' o redirecionamento revelaria a que posto cada automação pertence
+    # (bastava iterar e ler o Location), e a página anterior era admin-only justamente por
+    # isso. Cliente vai para /postos, que já mostra apenas o posto dele.
+    if automacao_id is not None and deps.eh_admin(request):
+        automacao = banco.automacoes_obter(automacao_id)
+        if automacao:
+            return RedirectResponse(f"/posto/{automacao['empresa_id']}", status_code=303)
+    return RedirectResponse("/postos", status_code=303)
 
 
 @router.get("/roi-camera/{camera_id}")
@@ -137,8 +154,18 @@ def roi_camera(request: Request, camera_id: int, bico: int | None = None):
 
 
 @router.get("/roi-bico/{bico_id}")
-def roi_bico(bico_id: int):
-    """Compatibilidade: links antigos por bico caem no editor da câmera dele."""
+def roi_bico(request: Request, bico_id: int):
+    """Compatibilidade: links antigos por bico caem no editor da câmera dele.
+
+    Admin-only como o destino (`/roi-camera` acima): sem o gate, este redirecionamento
+    resolvia bico_id → camera_id para qualquer usuário logado, e bico_id é um inteiro
+    sequencial pequeno — bastava iterar e ler o `Location` para mapear a relação
+    bico/câmera de todos os postos. Mesma classe do vazamento fechado no preview de bico
+    (ver a mudança em app/web/api.py que tirou o JPEG de dentro de static/). O acesso em si
+    já estava barrado no destino; o que escapava era a relação.
+    """
+    if (r := _pagina_admin(request)) is not None:
+        return r
     b = banco.bicos_obter(bico_id)
     if not b:
         return RedirectResponse("/postos", status_code=303)
@@ -157,6 +184,13 @@ def testes(request: Request):
     if (r := _pagina_admin(request)) is not None:
         return r
     return templates.TemplateResponse(request, "testes.html", _ctx(request))
+
+
+@router.get("/auditoria")
+def auditoria(request: Request):
+    if (r := _pagina_admin(request)) is not None:
+        return r
+    return templates.TemplateResponse(request, "auditoria.html", _ctx(request))
 
 
 @router.get("/documentacao")

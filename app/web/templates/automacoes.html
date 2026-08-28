@@ -67,7 +67,6 @@ let _itens = [];
 let _empresas = [];
 let _editandoId = null;
 
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function nomeEmpresa(id) {
   const e = _empresas.find(x => x.id === id);
@@ -109,7 +108,7 @@ function renderTabela() {
       <td>${esc(it.nome || '—')}</td>
       <td>${ativo}</td>
       <td>
-        <a href="/bicos?automacao_id=${it.id}" style="display:inline-flex;align-items:center;padding:8px 12px;
+        <a href="/posto/${it.empresa_id}" style="display:inline-flex;align-items:center;padding:8px 12px;
            border-radius:7px;background:#0f172a;color:#fff;font-size:14px;font-weight:500;
            text-decoration:none;margin-right:4px">Bicos</a>
         <button onclick="editar(${it.id})" style="background:#16a34a;margin-right:4px">Editar</button>
@@ -130,7 +129,7 @@ function abrirModal(it = null) {
   document.getElementById('modal-overlay').classList.add('aberto');
 }
 
-function fecharModal() { document.getElementById('modal-overlay').classList.remove('aberto'); }
+function fecharModal() { fecharOverlay('modal-overlay'); }
 
 function editar(id) {
   const it = _itens.find(x => x.id === id);

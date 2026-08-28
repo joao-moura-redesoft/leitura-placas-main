@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """
-Gera imagens sintéticas de placas brasileiras para o dataset de testes.
+Gera imagens sintéticas de placas brasileiras.
+
+NÃO USE PARA MEDIR ACURÁCIA. Em 12/08/2026 as 36 sintéticas foram removidas do dataset
+porque não inflavam o número — invertiam o sinal. Com elas o ensemble com PaddleOCR
+media 95,2% contra 90,5% do AutoOCR; só com fotos reais a ordem inverte (4/5 contra 5/5).
+Placa sintética é nítida, frontal e em alta resolução: ela mede a fonte, não o problema.
+
+Continua útil para checar o VALIDADOR e casos de caractere ambíguo (O/0, I/1, Q/O), onde
+saber o gabarito por construção é justamente a vantagem. Se gerar imagens, mantenha-as
+fora de `testes/dataset.json`.
 """
 from __future__ import annotations
 import json

@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Minha Conta — ALPR{% endblock %}
+{% block conteudo %}
+<h1>Minha Conta</h1>
+
+<div class="card" style="margin-bottom:16px;max-width:460px">
+  <h3 style="margin-top:0;margin-bottom:10px">Dados</h3>
+  <p style="margin:0 0 4px"><strong id="mc-nome">—</strong></p>
+  <p style="margin:0 0 4px;color:#64748b;font-size:14px" id="mc-email">—</p>
+  <span class="badge badge-mercosul" id="mc-papel" style="margin-top:6px;display:inline-flex"></span>
+</div>
+
+<div class="card" style="max-width:460px">
+  <h3 style="margin-top:0;margin-bottom:10px">Trocar senha</h3>
+  <form id="form-senha" onsubmit="trocarSenha(event)">
+    <label style="display:block;margin-bottom:12px">Senha atual
+      <input id="s-atual" type="password" required style="width:100%;box-sizing:border-box;margin-top:4px">
+    </label>
+    <label style="display:block;margin-bottom:12px">Nova senha (mín. 8 caracteres)
+      <input id="s-nova" type="password" required minlength="8" style="width:100%;box-sizing:border-box;margin-top:4px">
+    </label>
+    <label style="display:block;margin-bottom:16px">Confirmar nova senha
+      <input id="s-confirma" type="password" required style="width:100%;box-sizing:border-box;margin-top:4px">
+    </label>
+    <button type="submit" style="background:#16a34a">Salvar nova senha</button>
+  </form>
+</div>
+
+<div class="card" style="max-width:640px;margin-top:16px">
+  <h3 style="margin-top:0;margin-bottom:4px">Sessões ativas</h3>
+  <p style="margin:0 0 12px;color:#64748b;font-size:13px">
+    Todo lugar em que sua conta está logada agora. Se não reconhecer algum, revogue —
+    ele vai precisar entrar de novo com a senha.
+  </p>
+  <div class="tabela-rolavel">
+  <table>
+    <thead><tr><th>Criada em</th><th>Expira em</th><th></th><th>Ações</th></tr></thead>
+    <tbody id="tb-sessoes"></tbody>
+  </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function carregar() {
+  const r = await fetch('/api/usuarios/eu');
+  if (!r.ok) return;
+  const u = await r.json();
+  document.getElementById('mc-nome').textContent = u.nome;
+  document.getElementById('mc-email').textContent = u.email;
+  const rotulo = { admin: 'admin', operador: 'operador', cliente: 'cliente' }[u.papel] || u.papel;
+  document.getElementById('mc-papel').textContent = rotulo;
+}
+
+async function trocarSenha(e) {
+  e.preventDefault();
+  const nova = document.getElementById('s-nova').value;
+  const confirma = document.getElementById('s-confirma').value;
+  if (nova !== confirma) { avisar('As senhas novas não conferem.', 'err'); return; }
+  const res = await fetch('/api/usuarios/eu/senha', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ senha_atual: document.getElementById('s-atual').value, senha_nova: nova }),
+  });
+  if (res.ok) {
+    document.getElementById('form-senha').reset();
+    avisar('Senha trocada. Suas outras sessões (outros navegadores/aparelhos) foram desconectadas.', 'ok');
+  } else {
+    await avisarResposta(res);
+  }
+}
+
+
+async function carregarSessoes() {
+  const r = await fetch('/api/usuarios/eu/sessoes');
+  if (!r.ok) return;
+  const sessoes = await r.json();
+  const tb = document.getElementById('tb-sessoes');
+  tb.innerHTML = sessoes.map(s => `<tr>
+    <td>${new Date(s.criado_em).toLocaleString('pt-BR')}</td>
+    <td>${new Date(s.expira_em * 1000).toLocaleString('pt-BR')}</td>
+    <td>${s.atual ? '<span class="badge badge-ok">Esta sessão</span>' : ''}</td>
+    <td>${s.atual ? '—' : `<button onclick="revogarSessao('${esc(s.token)}')" style="background:#dc2626">Revogar</button>`}</td>
+  </tr>`).join('');
+}
+
+async function revogarSessao(token) {
+  const res = await fetch(`/api/usuarios/eu/sessoes/${token}`, { method: 'DELETE' });
+  if (res.ok) { avisar('Sessão revogada.', 'ok'); await carregarSessoes(); }
+  else await avisarResposta(res);
+}
+
+carregar();
+carregarSessoes();
+</script>
+{% endblock %}

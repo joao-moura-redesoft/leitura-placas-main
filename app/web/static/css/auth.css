@@ -1,0 +1,424 @@
+/* Estilos das páginas de autenticação (login, esqueci senha, redefinir, criar admin).
+   Extraído de auth_base.html para ser servido como arquivo estático cacheável.
+
+   Paleta e fontes vêm de tokens.css, carregado antes deste arquivo pelo
+   auth_base.html — as mesmas do layout autenticado, para que a transição do
+   login para o dashboard não pareça dois produtos diferentes. */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--fonte);
+  background: var(--marca-escura);
+  /* Brilho radial atrás do card: tira o fundo do "verde chapado" sem custar
+     uma imagem para baixar. */
+  background-image:
+    radial-gradient(1200px 600px at 15% -10%, rgba(22,163,74,.30), transparent 60%),
+    radial-gradient(900px 500px at 100% 110%, rgba(6,78,59,.55), transparent 55%);
+  background-color: #06180d;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--e-5);
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible { outline: 2px solid var(--marca); outline-offset: 2px; border-radius: var(--r-1); }
+:focus:not(:focus-visible) { outline: none; }
+
+/* ── Container principal ── */
+.auth-wrapper {
+  display: flex;
+  width: 100%;
+  max-width: 1000px;
+  min-height: 580px;
+  border-radius: var(--r-4);
+  overflow: hidden;
+  box-shadow: 0 32px 80px -20px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06);
+  animation: auth-entra 520ms cubic-bezier(.16, 1, .3, 1) both;
+}
+@keyframes auth-entra {
+  from { opacity: 0; transform: translateY(16px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── Painel esquerdo (formulário) ── */
+.auth-left {
+  flex: 0 0 460px;
+  background: var(--superficie);
+  padding: 48px 52px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.auth-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 36px;
+}
+.auth-logo-icon {
+  width: 36px; height: 36px;
+  background: linear-gradient(140deg, var(--marca) 0%, var(--marca-forte) 100%);
+  border-radius: var(--r-2);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(22,163,74,.32);
+}
+.auth-logo-icon svg { color: #fff; }
+.auth-logo-text {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--texto);
+  letter-spacing: -.02em;
+}
+
+.auth-title {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--texto);
+  margin-bottom: 6px;
+  line-height: 1.15;
+  letter-spacing: -.03em;
+}
+.auth-sub {
+  font-size: 14px;
+  color: var(--texto-2);
+  margin-bottom: 28px;
+}
+
+/* ── Campos ── */
+.field { margin-bottom: var(--e-4); }
+.field label {
+  display: block;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--texto-2);
+  margin-bottom: 6px;
+}
+.input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.input-wrap .icon {
+  position: absolute;
+  left: 13px;
+  color: var(--texto-3);
+  display: flex;
+  pointer-events: none;
+  transition: color var(--t-rapida);
+}
+.input-wrap:focus-within .icon { color: var(--marca); }
+.input-wrap input {
+  width: 100%;
+  padding: 11px 12px 11px 39px;
+  border: 1px solid var(--borda-forte);
+  border-radius: var(--r-2);
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--texto);
+  background: var(--superficie-2);
+  transition: border-color var(--t-rapida), box-shadow var(--t-rapida), background var(--t-rapida);
+  outline: none;
+}
+.input-wrap input:hover { border-color: var(--texto-3); }
+.input-wrap input:focus {
+  border-color: var(--marca);
+  background: var(--superficie);
+  box-shadow: 0 0 0 3px rgba(22,163,74,.14);
+}
+.input-wrap input::placeholder { color: var(--texto-3); }
+/* Senha tem o botão de olho à direita — o texto não pode passar por baixo dele. */
+.input-wrap input[type="password"], .input-wrap:has(.toggle-pass) input { padding-right: 40px; }
+
+/* toggle senha */
+.toggle-pass {
+  position: absolute;
+  right: 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--texto-3);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  transition: color var(--t-rapida);
+}
+.toggle-pass:hover { color: var(--texto-2); }
+
+/* ── Linha lembrar / esqueceu ── */
+.auth-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 22px;
+  font-size: 13px;
+}
+.auth-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--texto-2);
+  cursor: pointer;
+  font-size: 13px;
+}
+.auth-row input[type="checkbox"] {
+  width: 15px; height: 15px;
+  accent-color: var(--marca);
+}
+/* Linha só com o link à direita (login não tem "lembrar-me") */
+.auth-row.so-direita { justify-content: flex-end; }
+/* Link "Esqueci minha senha" — era style="color:#16a34a;..." inline no login.html */
+.auth-link { color: var(--marca-texto); text-decoration: none; font-weight: 550; }
+.auth-link:hover { text-decoration: underline; }
+
+/* ── Botão principal ── */
+.btn-primary {
+  width: 100%;
+  padding: 12px;
+  background: linear-gradient(140deg, var(--marca) 0%, var(--marca-forte) 100%);
+  color: #fff;
+  border: none;
+  border-radius: var(--r-pill);
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: box-shadow var(--t-rapida), transform var(--t-rapida), filter var(--t-rapida);
+  letter-spacing: .01em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+.btn-primary:hover { box-shadow: var(--sombra-marca); filter: brightness(1.06); }
+.btn-primary:active { transform: scale(.985); box-shadow: none; }
+.btn-primary:disabled { opacity: .6; cursor: not-allowed; transform: none; box-shadow: none; }
+
+/* Estado ocupado — o POST de login pode demorar (hash de senha é lento de
+   propósito) e sem retorno o usuário reenvia o formulário. */
+.btn-primary.carregando { color: transparent; pointer-events: none; position: relative; }
+.btn-primary.carregando svg { visibility: hidden; }
+.btn-primary.carregando::after {
+  content: '';
+  position: absolute;
+  width: 16px; height: 16px;
+  border: 2px solid rgba(255,255,255,.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: girar .6s linear infinite;
+}
+@keyframes girar { to { transform: rotate(360deg); } }
+
+/* ── Badge primeiro acesso ── */
+.badge-admin {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--marca-fraca);
+  color: var(--marca-texto);
+  font-size: 11px;
+  font-weight: 650;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  margin-bottom: 14px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  border: 1px solid var(--marca-borda);
+}
+
+/* ── Rodapé do form ── */
+.auth-footer {
+  margin-top: 18px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--texto-2);
+}
+.auth-footer a { color: var(--marca-texto); text-decoration: none; font-weight: 550; }
+.auth-footer a:hover { text-decoration: underline; }
+
+/* ── Alertas ── */
+.alert {
+  padding: 11px 14px;
+  border-radius: var(--r-2);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: var(--e-1);
+  margin-bottom: var(--e-2);
+  border: 1px solid transparent;
+  animation: alerta-entra var(--t-media) both;
+}
+.alert-err { background: #fef2f2; color: #dc2626; border-color: var(--erro-borda); }
+.alert-ok  { background: var(--marca-fraca); color: var(--marca); border-color: var(--marca-borda); }
+@keyframes alerta-entra {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── Grid 2 colunas ── */
+.row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+/* ── Painel direito (ilustração) ── */
+.auth-right {
+  flex: 1;
+  background: linear-gradient(150deg, #0b3d1e 0%, #166534 45%, #06180d 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--e-10);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Malha fina de fundo — insinua a grade de análise de imagem sem virar ruído. */
+.auth-right::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  background-image:
+    linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.05) 1px, transparent 1px);
+  background-size: 34px 34px;
+  mask-image: radial-gradient(circle at 50% 50%, #000 30%, transparent 78%);
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, #000 30%, transparent 78%);
+}
+/* Anéis concêntricos (mantidos do desenho original, agora com halo suave). */
+.auth-right::after {
+  content: '';
+  position: absolute;
+  width: 420px; height: 420px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.10);
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: inset 0 0 0 60px rgba(255,255,255,.02), 0 0 120px rgba(22,163,74,.20);
+}
+
+.right-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--e-6);
+}
+
+/* Card central da ilustração — vidro. Aqui o backdrop-filter é barato: o que
+   está atrás é gradiente estático, não vídeo. */
+.illus-card {
+  background: rgba(255,255,255,.10);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,.20);
+  border-radius: var(--r-4);
+  padding: 22px 26px;
+  width: 268px;
+  box-shadow: 0 20px 50px -12px rgba(0,0,0,.45);
+}
+.illus-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid rgba(255,255,255,.13);
+  /* Entrada escalonada: as três linhas aparecem em sequência, como leituras
+     chegando. É a única animação de "enfeite" da tela, e roda uma vez só. */
+  animation: linha-entra 560ms cubic-bezier(.16, 1, .3, 1) both;
+}
+.illus-row:nth-child(1) { animation-delay: 200ms; }
+.illus-row:nth-child(2) { animation-delay: 340ms; }
+.illus-row:nth-child(3) { animation-delay: 480ms; }
+.illus-row:last-child { border-bottom: none; }
+@keyframes linha-entra {
+  from { opacity: 0; transform: translateX(-10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.illus-avatar {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.22);
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px;
+}
+.illus-lines { flex: 1; }
+.illus-line-1 {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255,255,255,.65);
+  margin-bottom: 5px;
+  width: 80%;
+}
+.illus-line-2 {
+  height: 6px;
+  border-radius: 4px;
+  background: rgba(255,255,255,.30);
+  width: 55%;
+}
+/* A placa da ilustração usa a MESMA fonte mono da placa real do sistema —
+   é uma amostra do produto, não um enfeite genérico. */
+.illus-badge {
+  background: rgba(255,255,255,.16);
+  border: 1px solid rgba(255,255,255,.28);
+  border-radius: var(--r-1);
+  padding: 3px 8px;
+  font-family: var(--fonte-mono);
+  font-size: 11px;
+  letter-spacing: .06em;
+  color: #fff;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+/* Ícones flutuantes ao redor */
+.float-icon {
+  position: absolute;
+  width: 52px; height: 52px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.96);
+  box-shadow: 0 8px 24px -6px rgba(0,0,0,.45);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 2;
+  animation: flutuar 6s ease-in-out infinite;
+}
+.float-icon.top-left  { top: 28%;  left: 12%; animation-delay: 0s;   }
+.float-icon.mid-left  { top: 48%;  left: 6%;  animation-delay: -2s;  }
+.float-icon.bot-left  { top: 68%;  left: 14%; animation-delay: -4s;  }
+@keyframes flutuar {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-7px); }
+}
+
+/* Linha conectando ícones ao card */
+.connector {
+  position: absolute;
+  height: 2px;
+  background: rgba(255,255,255,.25);
+  z-index: 1;
+  transform-origin: left center;
+}
+
+.right-text { text-align: center; color: #fff; max-width: 320px; }
+/* text-wrap:balance evita a última linha com uma palavra só ("...automático de
+   / placas"), que é como este título quebrava no painel de 320px. */
+.right-text h2 {
+  font-size: 21px; font-weight: 700; margin-bottom: 8px;
+  letter-spacing: -.02em; line-height: 1.3;
+  text-wrap: balance;
+}
+.right-text p  { font-size: 13px; color: rgba(255,255,255,.72); line-height: 1.6; }
+
+/* ── Responsivo ── */
+@media (max-width: 720px) {
+  body          { padding: var(--e-3); }
+  .auth-wrapper { max-width: 420px; flex-direction: column; min-height: unset; }
+  .auth-left    { flex: none; padding: 36px 28px; }
+  .auth-right   { display: none; }
+  .row-2        { grid-template-columns: 1fr; }
+}

@@ -9,8 +9,9 @@
 </div>
 <p style="color:#64748b;margin:0 0 20px;font-size:14px">
   Cada câmera pertence a um posto (empresa) e o campo <strong>Local</strong> diz onde ela
-  está instalada. Bomba/lado e área de captura pertencem ao
-  <a href="/bicos" style="color:#16a34a">bico</a> — uma câmera pode servir vários bicos.
+  está instalada. Bomba/lado e área de captura pertencem ao bico, cadastrado na
+  <a href="/postos" style="color:#16a34a">tela do posto</a> — uma câmera pode servir
+  vários bicos, e um bico pode usar duas câmeras (traseira + frente).
 </p>
 
 <div class="card" style="margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -49,7 +50,8 @@
   <table id="tabela-cameras">
     <thead>
       <tr>
-        <th>Posto</th><th>Local</th><th>Nome</th><th>Tipo</th><th>Host / Índice</th><th>Ativo</th><th>Ações</th>
+        <th>Posto</th><th>Local</th><th>Nome</th><th>Tipo</th><th>Host / Índice</th>
+        <th>Bicos</th><th>Ativo</th><th>Ações</th>
       </tr>
     </thead>
     <tbody id="tbody"></tbody>
@@ -268,6 +270,7 @@ const params = new URLSearchParams(location.search);
 const FILTRO_EMPRESA = params.get('empresa_id') ? parseInt(params.get('empresa_id')) : null;
 
 let _cameras = [];
+let _bicos = [];
 let _empresas = [];
 let _editandoId = null;
 
@@ -284,10 +287,26 @@ async function carregarEmpresas() {
     || '<option value="">— cadastre uma empresa primeiro —</option>';
 }
 
+// Quem depende de cada câmera. Uma câmera pode ser a única de um bico ou o SEGUNDO ângulo
+// de outro — e essa segunda dependência era invisível aqui: o motivo de a remoção falhar
+// (409 "câmera em uso") só aparecia depois da tentativa.
+function usosDaCamera(camId) {
+  const usos = [];
+  _bicos.forEach(b => {
+    const par = !!b.camera2_id;
+    if (b.camera_id === camId) usos.push({ codigo: b.codigo, papel: par ? (b.papel_camera || 'traseira') : '' });
+    else if (b.camera2_id === camId) usos.push({ codigo: b.codigo, papel: b.papel_camera2 || 'frente' });
+  });
+  return usos;
+}
+
 async function carregarCameras() {
   const url = FILTRO_EMPRESA ? `/api/cameras?empresa_id=${FILTRO_EMPRESA}` : '/api/cameras';
   const res = await fetch(url);
   _cameras = await res.json();
+  // Uma chamada só para todos os bicos: o filtro por câmera existe (`/api/bicos?camera_id=`,
+  // que já casa os dois slots), mas seria uma requisição por linha da tabela.
+  _bicos = await fetch('/api/bicos').then(r => r.json()).catch(() => []);
   if (FILTRO_EMPRESA) {
     const badge = document.getElementById('filtro-badge');
     badge.style.display = '';
@@ -310,12 +329,20 @@ function renderTabela() {
       ? '<span class="badge badge-ok">Ativo</span>'
       : '<span class="badge badge-err">Inativo</span>';
     const semEmpresa = !cam.empresa_id;
+    const usos = usosDaCamera(cam.id);
+    // O ângulo só vem preenchido para bico de 2 câmeras — é ali que saber "esta é a
+    // frente do bico 3" muda o que a pessoa faz com a câmera.
+    const detalhe = usos.filter(u => u.papel)
+      .map(u => `bico ${esc(u.codigo)} · ${esc(u.papel)}`).join('<br>');
     tbody.innerHTML += `<tr>
       <td${semEmpresa ? ' style="color:#b91c1c"' : ''}>${esc(nomeEmpresa(cam.empresa_id))}</td>
       <td>${esc(cam.local || '—')}</td>
       <td>${esc(cam.nome)}</td>
       <td>${cam.camera_tipo}</td>
       <td>${esc(hostOuIndice)}</td>
+      <td>${usos.length
+            ? `${usos.length}${detalhe ? `<div style="color:#94a3b8;font-size:12px">${detalhe}</div>` : ''}`
+            : '<span style="color:#94a3b8">—</span>'}</td>
       <td>${ativo}</td>
       <td style="white-space:nowrap">
         <a href="/roi-camera/${cam.id}" style="display:inline-flex;align-items:center;padding:8px 12px;
@@ -344,7 +371,17 @@ function abrirModal(cam = null) {
   document.getElementById('cam-subtype').value = cam ? cam.intelbras_subtype : '1';
   document.getElementById('cam-formato').value = cam ? cam.intelbras_formato : 'padrao';
   document.getElementById('cam-indice').value = cam ? cam.camera_indice : '0';
-  document.getElementById('cam-rtsp-url').value = cam ? (cam.rtsp_url_custom || '') : '';
+  // A URL RTSP carrega usuário e senha embutidos, então /api/cameras a devolve MASCARADA
+  // (app/web/redacao.py). Campo em branco com aviso no placeholder, mesma convenção do
+  // campo de senha: em branco = "não mexi", e o servidor preserva o valor atual
+  // (`cameras_atualizar`). Encher o campo com "********" faria o operador achar que essa
+  // é a URL, e obrigaria a limpar antes de digitar a nova.
+  const urlRtsp = document.getElementById('cam-rtsp-url');
+  const temUrl = cam && cam.rtsp_url_custom === '********';
+  urlRtsp.value = (cam && !temUrl) ? (cam.rtsp_url_custom || '') : '';
+  urlRtsp.placeholder = temUrl
+    ? 'URL já configurada — deixe em branco para manter, ou digite uma nova'
+    : 'rtsp://admin:senha@10.0.200.15:554/stream1';
   document.getElementById('cam-ativo').checked = cam ? !!cam.ativo : true;
   document.getElementById('teste-resultado').textContent = '';
   document.getElementById('teste-snapshot').style.display = 'none';
@@ -352,9 +389,7 @@ function abrirModal(cam = null) {
   document.getElementById('modal-overlay').classList.add('aberto');
 }
 
-function fecharModal() {
-  document.getElementById('modal-overlay').classList.remove('aberto');
-}
+function fecharModal() { fecharOverlay('modal-overlay'); }
 
 function editarCamera(id) {
   const cam = _cameras.find(c => c.id === id);
@@ -399,8 +434,17 @@ async function salvarCamera(e) {
     const metodo = _editandoId ? 'PUT' : 'POST';
     const res = await fetch(url, { method: metodo, headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     if (res.ok) {
+      // O cadastro foi salvo, mas o pipeline pode não ter assumido a config nova (thread
+      // anterior travada — o servidor se recusa a abrir uma 2ª conexão RTSP concorrente).
+      // Sem este aviso a tela dizia "salvo" e o stream seguia no enquadramento antigo,
+      // sem ninguém saber por que.
+      const corpo = await res.json().catch(() => ({}));
       fecharModal();
       await carregarCameras();
+      if (corpo.pipeline_aplicado === false) {
+        avisar('Câmera salva, mas o pipeline não assumiu a configuração nova: a thread '
+             + 'anterior ainda está no ar. O supervisor tenta de novo em alguns segundos.', 'err');
+      }
     } else {
       await avisarResposta(res);
     }
@@ -414,7 +458,16 @@ async function removerCamera(id) {
   const cam = _cameras.find(c => c.id === id);
   if (!confirm(`Remover câmera "${cam?.nome}"?`)) return;
   const res = await fetch(`/api/cameras/${id}`, { method: 'DELETE' });
-  if (res.ok) await carregarCameras();
+  if (!res.ok) return avisarResposta(res);
+  // Removida do cadastro não é o mesmo que conexão liberada: se a thread do pipeline
+  // não confirmou morte, a instância fica retendo o RTSP até o supervisor conseguir
+  // encerrá-la. Avisar importa porque o sintoma seguinte é a câmera recusar conexão.
+  const corpo = await res.json().catch(() => ({}));
+  await carregarCameras();
+  if (corpo.pipeline_liberado === false) {
+    avisar('Câmera removida do cadastro, mas a conexão dela ainda não foi liberada '
+         + '(thread do pipeline travada). O supervisor segue tentando encerrá-la.', 'err');
+  }
 }
 
 async function testarCamera() {
@@ -468,10 +521,6 @@ async function testarCamera() {
     resultado.textContent = '✗ Erro de rede: ' + ex.message;
     resultado.style.color = '#f87171';
   }
-}
-
-function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 // ── Scan RTSP ────────────────────────────────────────────────────────────────
@@ -584,9 +633,7 @@ function abrirModalLote() {
   atualizarContadorLote();
 }
 
-function fecharModalLote() {
-  document.getElementById('modal-lote').classList.remove('aberto');
-}
+function fecharModalLote() { fecharOverlay('modal-lote'); }
 
 function atualizarContadorLote() {
   const n = document.getElementById('lote-tbody').querySelectorAll('tr').length;

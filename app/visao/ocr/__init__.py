@@ -11,7 +11,9 @@ from app.visao.ocr.auto import (
     AutoOCRPaddle,
     MultiOCR,
     obter_ocr_leitura,
+    obter_ocr_rapido,
     ocr_leitura_lock,
+    ocr_rapido_lock,
 )
 
 __all__ = [
@@ -21,5 +23,7 @@ __all__ = [
     "AutoOCRPaddle",
     "MultiOCR",
     "obter_ocr_leitura",
+    "obter_ocr_rapido",
     "ocr_leitura_lock",
+    "ocr_rapido_lock",
 ]

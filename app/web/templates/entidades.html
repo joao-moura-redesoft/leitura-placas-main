@@ -46,7 +46,6 @@
 let _itens = [];
 let _editandoId = null;
 
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 async function carregar() {
   const res = await fetch('/api/entidades');
@@ -87,7 +86,7 @@ function abrirModal(it = null) {
   document.getElementById('modal-overlay').classList.add('aberto');
 }
 
-function fecharModal() { document.getElementById('modal-overlay').classList.remove('aberto'); }
+function fecharModal() { fecharOverlay('modal-overlay'); }
 
 function editar(id) {
   const it = _itens.find(x => x.id === id);

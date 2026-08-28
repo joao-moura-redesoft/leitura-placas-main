@@ -41,3 +41,12 @@ def limpar_antigos(inatividade_seg: float = 3600) -> int:
         for k in vazios:
             del _contadores[k]
         return len(vazios)
+
+
+def _resetar_para_teste() -> None:
+    """Zera todos os contadores — a suíte de testes chama isto entre casos (ver
+    testes/unitarios/conftest.py), senão chamadas de /login de um teste anterior
+    contam contra o limite de outro (todas batem no mesmo IP "testclient" do
+    TestClient, já que o dict é global ao processo, não por request)."""
+    with _lock:
+        _contadores.clear()

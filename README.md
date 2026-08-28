@@ -20,10 +20,12 @@ numa foto fresca da câmera, e devolve a placa. Contrato completo em
 - **GPU-adaptivo**: detecção e OCR usam CUDA automaticamente quando disponível, caem para CPU sem erro quando não — sem mudar código entre dev e produção
 - **Placas suportadas**: Mercosul carro e moto, padrão antigo carro e moto
 - **Câmeras**: RTSP genérico, **Intelbras VIP** (protocolo Dahua), USB, CSI — uma conexão RTSP por vez por câmera (lock por câmera evita 2ª conexão quando bicos compartilham câmera)
+- **Dados do veículo por placa** (apiplacas.com.br): a resposta do roteador ganha o **tipo de combustível**, marca/modelo/ano/cor e espécie do veículo lido. Cada consulta custa crédito pré-pago, então a resposta é guardada no banco e a mesma placa só é paga uma vez — o cache é compartilhado por todos os postos do servidor. Desligado por padrão; com a API fora, sem saldo ou lenta, a leitura continua funcionando normalmente
 - **Painel Integração**: chamadas do roteador (sucesso/falha), taxa de sucesso, acordo médio, e em qual nível do cadastro uma chamada foi recusada
 - **Histórico** com posto/bico de origem, recorte da placa e quadro inteiro de cada leitura
 - **Modo contínuo opcional** (pipeline por câmera, tracker IoU/ByteTrack, streaming MJPEG/HLS) — inerte por padrão; útil para diagnóstico visual, mas não é o modo de operação alvo
-- **Autenticação**: login com bcrypt para o painel, com dois papéis — `admin` (vê e edita tudo, gerido em `/usuarios`) e `cliente` (restrito a UM posto: vê postos/câmeras/histórico/integração só dele, sem acesso a configuração do sistema nem ao cadastro de outros clientes). `GET /api/leitura` continua público por padrão (rede interna); cada posto pode opcionalmente ganhar uma **api_key própria** (`/empresas` → "API/LGPD") — só aquele CNPJ passa a exigir a chave, os demais continuam públicos
+- **Autenticação**: login com bcrypt para o painel, com três papéis (`/usuarios`) — `admin` (vê e edita tudo), `operador` (vê todos os postos e opera o dia a dia, mas não configura o sistema nem mexe no cadastro estrutural) e `cliente` (restrito a UM posto: vê postos/câmeras/histórico/integração só dele). Qualquer usuário logado troca a própria senha e gerencia as próprias sessões ativas em `/minha-conta`, sem depender de admin; "esqueci minha senha" (`/esqueci-senha`) e convite de usuário por e-mail (requer SMTP configurado em Configuração → Sistema) reaproveitam o mesmo link de uso único. `GET /api/leitura` continua público por padrão (rede interna); cada posto pode opcionalmente ganhar uma **api_key própria** (`/empresas` → "API/LGPD") — só aquele CNPJ passa a exigir a chave, os demais continuam públicos
+- **Auditoria** (`/auditoria`, admin): quem fez o quê — login, gestão de usuários, cadastro estrutural, api_key/retenção por posto, configuração do sistema
 - **Retenção por cliente**: prazo de apagamento de detecções/chamadas (LGPD) é global por padrão, mas cada posto pode ter um prazo próprio (`/empresas` → "API/LGPD")
 - **Rate limiting** simples em memória no login (força bruta) e em `/api/leitura` (abuso/varredura de CNPJ)
 - **Lista branca/negra** com alertas via webhook
@@ -140,8 +142,15 @@ Edite via UI em `/configuracao` ou diretamente em `config.txt`. Principais parâ
 |-------|--------|-----------|
 | `detector_backend` | `open_image_models` | `open_image_models` (MIT, padrão) ou `onnx` (modelo local, ver licença acima) |
 | `veiculo_dois_estagios_get` | `sim` | Detecção em 2 estágios (veículo→placa) na leitura sob demanda |
-| `ocr_engine` | `auto` | `auto`, `easyocr`, `fast_plate_ocr`, `tesseract`, `paddleocr`, `doctr` |
-| `ocr_leitura_paddle` | `sim` | Reforço PaddleOCR na leitura sob demanda (ajuda placa antiga borrada) |
+| `tiles_fallback_get` | `sim` | Quando nada é detectado, revarre o recorte em janelas sobrepostas — é o que recupera placa de **moto** parada na bomba (ver [Placa de moto](#placa-de-moto--o-caso-difícil)) |
+| `tiles_lado_alvo` | `300` | Lado alvo da janela, em px do recorte analisado |
+| `tiles_sobreposicao` | `0.30` | Sobreposição entre janelas. Faixa útil estreita (0.25–0.35): mais que isso e a janela volta a ser o recorte inteiro, que é o enquadramento que falha |
+| `tiles_conf` | `0.15` | Limiar de confiança só nas janelas (mais permissivo de propósito) |
+| `ocr_engine` | `auto` | `auto` = ensemble: todos os engines leem e a fusão por caractere decide. Também `easyocr`, `fast_plate_ocr`, `tesseract`, `paddleocr`, `doctr` |
+| `ocr_fast_modelos` | — | Membros do ensemble fast-plate-ocr (vírgula). Vazio = os três do default. Medido: 1 modelo dá carro 13/26, os três dão 17/26 |
+| `ocr_leitura_paddle` | `sim` | PaddleOCR como voto a mais na leitura sob demanda: +1 carro em 26, ao custo de 747 ms por recorte |
+| `ocr_leitura_easyocr` | `nao` | EasyOCR no pool. Desligada por medição: contribui zero para a fusão e acerta 1/26 sozinha, custando 212 ms. Ligue para remedir no posto |
+| `acordo_metrica` | `string` | Como `acordo` é medido: `string` (fração das leituras idênticas à emitida) ou `caractere` (concordância média por posição). Trocar exige recalibrar `leitura_acordo_minimo` |
 | `leitura_timeout_seg` | `28` | Teto de tempo do loop reject-retry por chamada |
 | `leitura_acordo_minimo` | `0.80` | Concordância mínima entre leituras para parar antecipadamente |
 | `salvar_frame_deteccao` | `sim` | Guarda o quadro inteiro de cada detecção, além do recorte (Histórico) |
@@ -152,10 +161,54 @@ Edite via UI em `/configuracao` ou diretamente em `config.txt`. Principais parâ
 | `streaming_modo` | `mjpeg` | `mjpeg` ou `hls` (HLS requer FFmpeg) — modo contínuo |
 | `rtsp_transporte` | `tcp` | `tcp` (estável) ou `udp` |
 | `api_key` | — | Se preenchida, exige `X-API-Key` nas rotas autenticadas do PAINEL inteiro (não em `/api/leitura`, hoje público). Chave GLOBAL do servidor — diferente da api_key OPCIONAL por posto (`/empresas` → "API/LGPD"), que só afeta `/api/leitura` daquele CNPJ específico |
+| `apiplacas_ativo` | `nao` | Liga a consulta de dados do veículo. **Desligado por padrão porque cada consulta custa crédito pré-pago** |
+| `apiplacas_token` | — | Token da conta na apiplacas.com.br. Mascarado na API do painel |
+| `apiplacas_modo` | `manual` | Quem dispara a consulta paga. `manual` = nada consulta sozinho, você gasta pelo botão no Histórico; `automatico` = a primeira leitura de cada placa consulta. Use `manual` enquanto a cota for curta |
+| `apiplacas_ttl_dias` | `180` | Dias até reconsultar a mesma placa. Combustível/marca/modelo não mudam; `situacao` e município, sim. `0` = nunca reconsultar |
+| `apiplacas_ttl_negativo_dias` | `30` | Dias até reconsultar placa que a base não conhece. A causa comum não é veículo novo, é leitura de OCR errada |
+| `apiplacas_exigir_confirmada` | `sim` | Não gasta consulta em leitura sem consenso, que pode ser a placa errada. Mesmo assim ela ainda mostra o dado se já estiver em cache |
+| `apiplacas_max_por_dia` | `500` | Teto de gasto diário, contado no banco (sobrevive a reinício). `0` = sem teto |
+| `log_arquivo` | `alpr.log` | Log em arquivo com rotação, mais o dump do `faulthandler` em `alpr-nativo.log`. Vazio = só stderr. **Sem isto, "caiu do nada" não tem o que investigar:** `/api/logs` lê um buffer em memória que morre com o processo, e queda nativa não deixa traceback Python |
+| `log_arquivo_mb` / `log_arquivo_backups` | `10` / `3` | Teto de 30 MB no disco do posto |
 
 Lista completa de chaves em `app/core/config.py` (`PADROES`), editável via `/configuracao`.
 
+### Estabilidade de bibliotecas nativas
+
+O processo carrega OpenCV, onnxruntime e (se ligados) PyTorch via EasyOCR e Paddle. Cada um
+traz o seu runtime de OpenMP, e no Windows o conflito produz falta nativa na carga de DLL.
+Medido no log de 24/08/2026, num único processo: **1030** `Unknown C++ exception from
+OpenCV code`, **2061** dumps de `Windows fatal exception` e uma `access violation` dentro de
+um `import` — contra 11.273 inferências bem-sucedidas. As falhas ocupavam a janela de
+3,5 min em que os modelos carregavam **em paralelo** com o pipeline de câmera já rodando
+CLAHE e inferência; nela o detector de veículo estava morto e `deteccoes.tipo_veiculo`
+chegou nulo ao banco, indistinguível de "não havia veículo".
+
+Três defesas, aplicadas em 25/08/2026:
+
+1. `app/core/nativo.py` desliga o threading interno do OpenCV e o OpenCL no boot do
+   servidor — o mesmo ajuste que `testes/unitarios/conftest.py` já fazia só na suíte.
+   **Custo medido** em quadro 1280x720, no `AjustadorAmbiente` completo, com as duas
+   câmeras em paralelo num host de 4 núcleos: 41,7 ms/rodada com 4 threads contra 57,2 ms
+   com o ajuste. Desligar o OpenCL é gratuito — o custo todo é da redução de threads. Com
+   `deteccao_fps_max = 1` o orçamento é de 1000 ms/quadro, então isso é **5,7%** dele.
+   `OPENCV_NUM_THREADS` fica disponível para o dia em que o FPS de detecção subir muito.
+2. O `lifespan` **sequencia** aquecer-modelos e subir-pipeline, em vez de paralelizar.
+3. Variáveis de ambiente de OpenMP, no `entrypoint.sh` e no `docker-compose.yml`
+   (`OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `KMP_DUPLICATE_LIB_OK=TRUE`). São variáveis e
+   não código porque precisam existir antes de o runtime nativo carregar. Quem roda fora do
+   Docker deve exportá-las.
+
+Falha repetida de inferência agora dá **uma** linha de `ERROR` ("INOPERANTE") depois de 10
+falhas seguidas, e outra quando recupera — antes eram 849 WARNINGs idênticos que ninguém
+leria.
+
 ## API REST
+
+Guia completo para **outro sistema se acoplar ao nosso** — autenticação, o que enviar, o
+que volta em cada desfecho, consulta de histórico, webhook/WebSocket e checklist de
+integração: [docs/API_INTEGRACAO.md](docs/API_INTEGRACAO.md). É o documento para entregar
+a quem vai desenvolver o outro lado.
 
 O contrato do endpoint que o roteador do posto chama — `GET /api/leitura` — está
 documentado à parte, com todos os formatos de resposta e recomendações para quem for
@@ -164,6 +217,31 @@ desenvolver esse lado: [docs/INTEGRACAO_ROTEADOR.md](docs/INTEGRACAO_ROTEADOR.md
 A referência completa de todos os endpoints (cadastro multi-tenant, câmeras, histórico,
 diagnóstico, testes), com um executor interativo, fica em `/documentacao` dentro da
 própria aplicação — inclui exemplos conferidos contra a resposta real de cada rota.
+
+### Custo da consulta de dados do veículo
+
+O enriquecimento com dados do veículo usa a apiplacas.com.br, que cobra **por consulta**,
+em crédito pré-pago. O desenho todo gira em torno de pagar **uma vez por placa**:
+
+- a resposta é guardada na tabela `veiculos` e reaproveitada por **todos os postos** do
+  servidor — a placa que um posto pagou já vem de graça no outro;
+- a resposta **inteira** é guardada, não só os campos que exibimos hoje: expor um campo
+  novo amanhã não custa uma reconsulta do histórico;
+- leitura sem consenso (`confirmada: false`) não gasta — pode ser a placa errada;
+- o botão "Testar como o roteador" e a tela de detalhe da placa **nunca** consultam a API:
+  mostram só o que já está em cache;
+- há teto por minuto e por dia, e o sistema para de tentar sozinho quando o provedor
+  responde "sem saldo" ou "token inválido" (insistir nesses dois não pode dar certo).
+
+Com `apiplacas_modo=manual` (o padrão), **nada consulta sozinho** — nem o abastecimento. O
+combustível aparece no Histórico para as placas já consultadas, e a consulta é disparada por
+você: por placa, ou em lote nas placas mais vistas que ainda não têm dados, sempre mostrando
+quantos créditos vai gastar antes de confirmar. Com volume contratado, troque para
+`automatico` e o enriquecimento passa a acontecer no próprio abastecimento.
+
+Saldo e uso ficam em `/configuracao` → Sistema → "Dados do veículo (API Placas)". Quando o
+crédito acaba, **a leitura continua funcionando**: o payload sai com `veiculo.consulta`
+igual a `"indisponivel"` e o motivo aparece no painel Integração.
 
 Principais grupos:
 
@@ -193,7 +271,7 @@ Documentação Swagger automática do FastAPI: `http://localhost:14000/docs`.
   "tentativas": 6,
   "parada_motivo": "acordo",
   "snapshot": "/static/snapshots/20260721T185912_PGK2D93.jpg",
-  "frame_url": "/static/snapshots/preview_bico_2.jpg"
+  "frame_url": "/api/bicos/2/preview.jpg"
 }
 ```
 
@@ -251,6 +329,8 @@ leitura-placas/
 │   │   └── dns_server.py    # DNS local embutido (opcional)
 │   ├── seguranca/
 │   │   └── sessao.py        # bcrypt + sessões em memória
+│   ├── integracoes/
+│   │   └── apiplacas.py     # Consulta paga de dados do veículo + cache na tabela `veiculos`
 │   └── web/                 # Rotas + assets
 │       ├── api.py           # Câmeras, histórico, config, diagnóstico
 │       ├── leitura.py       # GET /api/leitura (endpoint reativo)
@@ -294,10 +374,93 @@ o contrato da integração multi-tenant.
 
 ## Precisão OCR
 
-Dataset de 42 placas (sintéticas + fotos reais):
+Medido em 25/08/2026 com `python testes/run_testes.py` sobre as **29 fotos reais** de
+`testes/dataset.json` (as sintéticas saíram no commit `d49a78f` — elas invertiam o sinal
+da medição, ver "Placa de moto"):
 
-| Engine | Acurácia |
-|--------|---------|
-| `auto` (AutoOCR) | **92.9%** (39/42) |
+| `ocr_engine=auto` | antes | depois |
+|---|---|---|
+| total | 12/29 — 41,4% | **18/29 — 62,1%** |
+| carro | 10/26 — 38,5% | **16/26 — 61,5%** |
+| mercosul | 8/19 — 42,1% | **14/19 — 73,7%** |
+| antigo | 4/10 — 40,0% | 4/10 — 40,0% |
+| latência/recorte (contínuo) | 307,9 ms | **142,2 ms** |
 
-Limitação conhecida: caractere `Q` em posição 4 de placas Mercosul é sistematicamente lido como `O` pelos modelos EasyOCR e fast-plate-ocr (ambiguidade visual do Arial Bold em baixa resolução).
+O "antes" é a arbitragem entre engines: o `AutoOCR` escolhia um engine pelo layout do
+recorte e usava o outro só como fallback. O "depois" é pool plano — todos os membros leem
+e a fusão por caractere decide (`app/visao/consenso.py`). O ganho vem de diversidade de
+MODELO: um modelo do fast-plate-ocr dá carro 13/26, três dão 17/26. Rodar o MESMO modelo
+em 3 variantes de imagem mede 11/26 — pior que ele sozinho.
+
+Limitação conhecida: caractere `Q` em posição 4 de placas Mercosul é sistematicamente lido
+como `O` pelos modelos EasyOCR e fast-plate-ocr (ambiguidade visual do Arial Bold em baixa
+resolução).
+
+## Placa de moto — o caso difícil
+
+A placa de moto é o pior cenário do sistema, e por um motivo físico: ela é pequena
+(~200×170 mm contra 400×130 do carro), fica baixa e inclinada, e a moto costuma parar
+mais longe da câmera que o carro. Medido numa cena real de posto (frame 1280×720, moto
+parada na bomba), a placa chega com **38×35 px** — contra ~56×30 do carro na mesma cena,
+que sai com confiança 0.87.
+
+**Detecção** (resolvido). O detector faz *letterbox* de tudo o que recebe para o lado do
+input do modelo (608 px), então numa área de bico grande a placa de moto chegava pequena
+demais e não era detectada. O que foi medido nessa cena:
+
+| Enquadramento entregue ao detector | Resultado |
+|---|---|
+| Área do bico inteira (397×610) | nada, mesmo baixando o limiar a 0.05 |
+| Mesma área ampliada 2× / 3× | nada — inútil por construção: o modelo reduz de volta a 608 |
+| Recorte fechado só na placa (38–153 px) | nada — não é só escala, o modelo precisa do veículo em volta |
+| Janelas de ~250–320 px pegando moto + placa | **conf 0.19–0.81** |
+
+Não é escala, é **enquadramento** — e o loop de leitura repetia no tempo, nunca no
+espaço: com a área do bico fixa, as 12 tentativas eram 12 recortes idênticos, logo 12
+falhas idênticas. Daí o fallback `tiles_fallback_get` (ver `BuscaEmTiles` em
+`app/visao/detector.py`), que revarre o recorte em janelas sobrepostas quando a passada
+normal não acha nada. Custo zero quando acha (o caso comum, carro).
+
+O estágio de veículo não ajuda aqui: o YOLOX classifica a moto ocluída pelo piloto e
+pelo frentista como `bicycle` (0.50) ou só vê `person`. Incluir `bicycle` em
+`veiculo_classes` foi testado e **não resolve** — o recorte resultante (98×119) é fechado
+demais, cai no terceiro caso da tabela.
+
+**OCR — dois defeitos corrigidos.** A placa de moto tem **duas linhas** (letras em cima,
+dígitos embaixo) e isso quebrava o OCR de duas formas independentes, nenhuma delas de
+resolução:
+
+1. **`_ler_paddleocr` ficava só com a MAIOR caixa.** Regra certa para carro — a placa é o
+   maior texto do crop e 'BRASIL'/cidade/UF são menores — e destrutiva para moto, onde as
+   duas linhas são caixas separadas de tamanho parecido: metade da placa era descartada,
+   sempre. Medido nas 27 placas de moto de `testes/dataset.json`: **0/27**, e em todas o
+   retorno era uma linha sozinha (`YZA3456` saía `3456`, `NOP5Q67` saía `NOP`). Não era
+   resolução — são sintéticas e limpas. Agora as caixas de tamanho comparável são unidas
+   em ordem de leitura.
+2. **`_remover_ruidos_mercosul` apagava o 1º caractere de cada linha.** Ela pinta os cantos
+   esquerdos (20%×28% em cima, 18%×30% embaixo) para cobrir o QR do CRLV-e e o marcador
+   "BR". Numa placa **antiga** de moto real do posto, `_remover_header` devolveu
+   `e_mercosul=True` por engano (faixa metálica), a limpeza cobriu o `Y` e o `5`, e o
+   Paddle passou de `NOI`+`5947` para nada. Agora, se a limpeza rodou e o OCR voltou vazio,
+   a leitura é repetida sem ela.
+
+| PaddleOCR no dataset | antes | depois |
+|---|---|---|
+| moto (27) | 0/27 — 0% | 22/27 — 81,5% (26/27 com o hint `mercosul_moto`) |
+| carro (14) | 13/14 — 92,9% | 13/14 — 92,9% (sem regressão, mesma falha) |
+| total (41) | 13/41 — 31,7% | 35/41 — 85,4% |
+
+> **Esta tabela não vale mais, e fica aqui como registro do erro.** As 27 motos eram
+> **sintéticas**: o dataset tinha 42 fotos e o commit `d49a78f`
+> ("Remove as placas sinteticas do dataset de testes") o cortou para 29, justamente porque
+> foto sintética invertia o sinal da medição. Hoje há 2 motos reais rotuladas, e no recorte
+> real da OSL2659 o Paddle devolve string vazia. O hint `mercosul_moto` citado aqui foi
+> removido em 25/08/2026 — ele reescrevia caractere que o modelo havia lido com 0,99 de
+> confiança. Os números válidos hoje estão em "Precisão OCR" acima.
+
+**O que ainda não fecha.** Na moto real de 38×35 px, a leitura foi de `''` (nada) para
+`NOT5947` — 5 dos 7 caracteres. Os dígitos saem certos e confiantes (`5947` a 0,998); as
+letras não. A ~10 px de altura de caractere não há informação para recuperar, e ampliar o
+recorte não cria o que a câmera não capturou. A saída aqui é de campo: aproximar/zoomar a
+câmera, ou uma câmera dedicada ao box da moto, de modo que a placa chegue com ≥ 80–100 px
+de largura.

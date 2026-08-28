@@ -12,12 +12,19 @@ frames_cameras_limpos: dict = {} # camera_db_id -> frame limpo (sem overlay, p/ 
 ultimo_frame_ts: dict = {}       # camera_db_id -> timestamp do último frame válido
 ultimas_deteccoes: deque = deque(maxlen=20)
 logs_recentes: deque = deque(maxlen=200)
-fps_atual: float = 0.0
+_fps_global: float = 0.0   # só para o ramo camera_id=None de atualizar_fps (hoje sem chamador)
 iniciado_em: float = time.time()
-pipeline_rodando: bool = False
 emissoes_recentes: dict[int, list] = {}  # camera_db_id -> [(placa, timestamp), ...]
 frames_processados: int = 0
-camera_conectada: bool = False
+# `pipeline_rodando()`/`camera_conectada()`/`fps_atual()` (funções, abaixo) são agregados
+# COMPUTADOS a partir dos dicts por câmera — "algum pipeline rodando", "alguma câmera
+# conectada", "soma de fps". Não são globals mantidas em sincronia à mão: chegaram a ser, e
+# `esquecer_camera` (abaixo) esquecia de recomputá-las depois do `pop`, deixando o agregado
+# fantasma até a próxima chamada de `marcar_pipeline`/`marcar_conexao`. Virar função elimina
+# a classe inteira do problema — não há mais o que dessincronizar.
+pipelines_rodando: dict[int, bool] = {}   # camera_db_id -> pipeline vivo
+cameras_conectadas: dict[int, bool] = {}  # camera_db_id -> conexão de câmera ok
+fps_cameras: dict[int, float] = {}        # camera_db_id -> fps daquela câmera
 modelo_carregado: bool = False
 ocr_engine_ativo: str = ""
 camera_tipo: str = ""
@@ -37,10 +44,19 @@ def obter_frame():
         return frame_atual
 
 
-def registrar_frame_camera(camera_id: int, frame) -> None:
+def registrar_frame_camera(camera_id: int, frame, ts: float | None = None) -> None:
+    """Publica o frame anotado da câmera e atualiza o relógio de frescor.
+
+    `ts` é o instante em que a FONTE produziu o quadro — não o instante em que o pipeline
+    publicou. Os dois divergem no caminho de republicação (`pipeline._loop_camera` reemite o
+    mesmo quadro quando a câmera não entregou nada novo, para o stream não piscar), e é
+    justamente essa divergência que o watchdog precisa enxergar: medindo a SAÍDA, uma câmera
+    congelada parecia saudável para sempre. Omitir `ts` mantém o comportamento antigo (agora),
+    que é o correto para quem acabou de ler um quadro novo da câmera.
+    """
     with lock:
         frames_cameras[camera_id] = frame
-        ultimo_frame_ts[camera_id] = time.time()
+        ultimo_frame_ts[camera_id] = time.time() if ts is None else ts
 
 
 def obter_frame_camera(camera_id: int):
@@ -72,6 +88,9 @@ def esquecer_camera(camera_id: int) -> None:
         ultimo_frame_ts.pop(camera_id, None)
         emissoes_recentes.pop(camera_id, None)
         ambiente.pop(camera_id, None)
+        pipelines_rodando.pop(camera_id, None)
+        cameras_conectadas.pop(camera_id, None)
+        fps_cameras.pop(camera_id, None)
 
 
 def adicionar_deteccao(deteccao: dict) -> None:
@@ -103,9 +122,84 @@ def registrar_emissao(camera_db_id: int, placa: str) -> None:
         lst.append((placa, time.time()))
 
 
-def atualizar_fps(valor: float) -> None:
-    global fps_atual
-    fps_atual = valor
+def atualizar_fps(valor: float, camera_id: int | None = None) -> None:
+    """Registra o FPS. Com `camera_id`, guarda POR CÂMERA (o correto num servidor
+    multi-câmera); `fps_atual()` devolve a soma, que é o número que o dashboard quer dizer.
+
+    Escreve SOB O LOCK — era o único escritor do módulo que não pegava, num dict que
+    outras threads leem. (Auditoria 27/08/2026, achado M9.)
+    """
+    global _fps_global
+    with lock:
+        if camera_id is None:
+            _fps_global = valor
+            return
+        fps_cameras[camera_id] = valor
+
+
+def _fps_atual_sob_lock() -> float:
+    """Sem lock próprio — para `fps_atual()` e `snapshot_status()` (que já segura o
+    lock, não-reentrante) compartilharem a MESMA fórmula em vez de reimplementá-la."""
+    return round(sum(fps_cameras.values()), 1) if fps_cameras else _fps_global
+
+
+def _pipeline_rodando_sob_lock() -> bool:
+    return bool(pipelines_rodando)
+
+
+def _camera_conectada_sob_lock() -> bool:
+    return any(cameras_conectadas.values())
+
+
+def fps_atual() -> float:
+    """Soma do fps de cada câmera viva — o número que o dashboard quer dizer."""
+    with lock:
+        return _fps_atual_sob_lock()
+
+
+def pipeline_rodando() -> bool:
+    """"Algum pipeline está rodando" — computado a partir de `pipelines_rodando`, nunca
+    mantido à parte (ver o comentário na declaração dos dicts, acima)."""
+    with lock:
+        return _pipeline_rodando_sob_lock()
+
+
+def camera_conectada() -> bool:
+    """"Alguma câmera está conectada" — computado a partir de `cameras_conectadas`."""
+    with lock:
+        return _camera_conectada_sob_lock()
+
+
+def marcar_pipeline(camera_db_id: int, rodando: bool) -> None:
+    """Estado do pipeline DESTA câmera. `pipeline_rodando()` devolve "algum está rodando".
+
+    Antes desta função, `pipeline_rodando` era um booleano único que todo Pipeline
+    escrevia: parar a câmera 2 fazia o painel anunciar "pipeline parado" com outras cinco
+    no ar. Mesma história de `camera_conectada`, que acusava a câmera errada. (Auditoria
+    27/08/2026, achado M9.)
+    """
+    with lock:
+        if rodando:
+            pipelines_rodando[camera_db_id] = True
+        else:
+            pipelines_rodando.pop(camera_db_id, None)
+            fps_cameras.pop(camera_db_id, None)
+
+
+def marcar_conexao(camera_db_id: int, conectada: bool) -> None:
+    """Conexão DESTA câmera. `camera_conectada()` devolve "alguma está conectada"."""
+    with lock:
+        cameras_conectadas[camera_db_id] = conectada
+
+
+def cameras_no_ar() -> dict:
+    """Visão por câmera, para o dashboard não depender de um booleano agregado."""
+    with lock:
+        return {
+            "pipelines": dict(pipelines_rodando),
+            "conectadas": dict(cameras_conectadas),
+            "fps": dict(fps_cameras),
+        }
 
 
 def registrar_ambiente(camera_id: int, perfil: str, **metricas) -> None:
@@ -127,13 +221,16 @@ def incrementar_frame() -> None:
 
 
 def snapshot_status() -> dict:
+    # `lock` não é reentrante — não pode chamar `pipeline_rodando()`/`fps_atual()`/
+    # `camera_conectada()` daqui dentro (elas tentam pegar o mesmo lock de novo). Os
+    # `_..._sob_lock()` existem por isso: mesma fórmula das três, sem lock próprio.
     with lock:
         return {
-            "pipeline": pipeline_rodando,
-            "fps": fps_atual,
+            "pipeline": _pipeline_rodando_sob_lock(),
+            "fps": _fps_atual_sob_lock(),
             "uptime_seg": uptime_segundos(),
             "frames_processados": frames_processados,
-            "camera_conectada": camera_conectada,
+            "camera_conectada": _camera_conectada_sob_lock(),
             "camera_tipo": camera_tipo,
             "modelo_carregado": modelo_carregado,
             "ocr_engine": ocr_engine_ativo,

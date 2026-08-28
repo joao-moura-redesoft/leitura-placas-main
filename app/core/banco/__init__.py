@@ -11,11 +11,14 @@ continua funcionando — os submódulos são detalhe interno.
   _cadastro   câmeras e a árvore entidade → empresa → automação → bico
   _chamadas   log das chamadas do roteador
   _acesso     usuários e sessões
+  _auditoria  log de auditoria e tokens de reset/convite de senha
+  _veiculos   cache dos dados de veiculo consultados na apiplacas
 """
 from __future__ import annotations
 
 from ._base import (
     caminho,
+    inicio_do_dia_local,
     conexao,
     cursor,
     definir_caminho,
@@ -23,19 +26,35 @@ from ._base import (
 )
 from ._esquema import inicializar
 from ._deteccoes import (
+    ORIGENS_FILTRO,
     atualizar_deteccao,
+    contagem_com_imagem,
     contar_deteccoes_placa,
     deteccoes_e_chamadas_antigas,
+    imagens_excedentes,
     listar_deteccoes,
     listas_buscar,
     listas_inserir,
     listas_listar,
+    listas_obter,
     listas_remover,
     registrar_deteccao,
     remover_deteccao,
     stats,
     ultima_deteccao_bico,
     ultima_deteccao_camera,
+)
+from ._veiculos import (
+    CAMPOS_CURADOS,
+    STATUS_VEICULO,
+    veiculos_consultas_desde,
+    veiculos_obter,
+    veiculos_obter_varios,
+    veiculos_pendentes,
+    veiculos_remover,
+    veiculos_salvar,
+    veiculos_stats,
+    veiculos_valido,
 )
 from ._cadastro import (
     automacoes_atualizar,
@@ -54,6 +73,8 @@ from ._cadastro import (
     bicos_obter_por_codigo,
     bicos_remover,
     cameras_atualizar,
+    cameras_do_bico,
+    slots_do_bico,
     cameras_inserir,
     cameras_listar,
     cameras_obter,
@@ -85,12 +106,22 @@ from ._acesso import (
     sessao_renovar,
     sessao_resolver,
     sessoes_limpar_expiradas,
+    sessoes_listar_do_usuario,
     sessoes_remover_do_usuario,
     usuarios_atualizar,
     usuarios_contar_admins_ativos,
     usuarios_definir_senha,
     usuarios_listar,
+    usuarios_marcar_login,
     usuarios_remover,
+)
+from ._auditoria import (
+    auditoria_listar,
+    auditoria_registrar,
+    reset_token_criar,
+    reset_token_consumir,
+    reset_token_resolver,
+    reset_tokens_limpar_expirados,
 )
 
 __all__ = [n for n in dir() if not n.startswith("_")]

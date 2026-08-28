@@ -150,6 +150,26 @@ class TestIntegracaoComPipeline:
         pipeline_mod.parar_camera(42)
         assert 42 not in stream._cache_jpeg
 
+    def test_thread_viva_nao_descarta_nada_e_avisa_o_chamador(self, monkeypatch):
+        """O outro lado do contrato, que não tinha teste nenhum.
+
+        Quando a thread do pipeline não confirma que morreu, `parar_camera` devolve False
+        e NÃO desregistra a instância nem limpa o cache — de propósito: a thread zumbi
+        ainda pode estar usando `self.camera`, e liberar a câmera aqui faria uma próxima
+        chamada achá-la livre e abrir uma segunda conexão RTSP concorrente. Sem este
+        teste, alguém "simplificando" o early-return devolveria a câmera ao pool com a
+        thread antiga viva, e o sintoma (câmera Intelbras recusando a 2ª conexão)
+        apareceria só em campo.
+        """
+        import app.visao.pipeline as pipeline_mod
+        monkeypatch.setattr(pipeline_mod, "parar_camera", _PARAR_CAMERA_REAL)
+        monkeypatch.setitem(pipeline_mod._instancias, 42, _PipelineFalso(parou=False))
+        stream._jpeg_cacheado(42, _frame(), 75)
+
+        assert pipeline_mod.parar_camera(42) is False
+        assert 42 in stream._cache_jpeg            # cache preservado
+        assert 42 in pipeline_mod._instancias      # instância NÃO desregistrada
+
     def test_parar_todas_descarta_o_cache_inteiro(self, monkeypatch):
         import app.visao.pipeline as pipeline_mod
         monkeypatch.setattr(pipeline_mod, "parar_todas", _PARAR_TODAS_REAL)
@@ -162,7 +182,17 @@ class TestIntegracaoComPipeline:
 
 
 class _PipelineFalso:
-    """Dublê mínimo: só precisa responder a `.parar()` sem tocar em câmera de verdade."""
+    """Dublê mínimo: só precisa responder a `.parar()` sem tocar em câmera de verdade.
 
-    def parar(self):
-        pass
+    `parar()` DEVOLVE BOOL, e isso não é detalhe: desde que `Pipeline.parar()` passou a
+    sinalizar "a thread confirmou que morreu?", `pipeline.parar_camera` desiste antes de
+    desregistrar/limpar quando a resposta é falsa. Um dublê devolvendo `None` (como este
+    fazia) cai justamente nesse ramo e faz o teste do cache falhar por motivo errado —
+    parecia regressão do cache, era o dublê desatualizado.
+    """
+
+    def __init__(self, parou: bool = True):
+        self._parou = parou
+
+    def parar(self) -> bool:
+        return self._parou

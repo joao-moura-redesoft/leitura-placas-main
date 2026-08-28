@@ -168,7 +168,7 @@
   <div class="etapa-card" style="max-width:1040px">
     <h2 class="etapa-titulo">Cadastro de Câmeras</h2>
     <p class="etapa-subtitulo">Toda câmera pertence a um posto (empresa). Bomba/lado e área de captura
-      são configurados depois, por bico, em <a href="/bicos" style="color:#93c5fd">Bicos</a>.</p>
+      são configurados depois, por bico, na <a href="/postos" style="color:#93c5fd">tela do posto</a>.</p>
 
     <div id="setup-sem-empresa" class="alerta alerta-info" style="display:none">
       Nenhuma empresa cadastrada ainda. Como a câmera precisa pertencer a um posto, crie primeiro a
@@ -324,10 +324,6 @@ function irParaEtapa(n) {
 
 let _setupId = 0;
 let _camsSalvas = 0;
-
-function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
 
 function atualizarContadorSetup() {
   const n = document.getElementById('setup-tbody').querySelectorAll('tr').length;

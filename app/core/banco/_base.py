@@ -91,6 +91,26 @@ def _agora() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def inicio_do_dia_local(fuso: str = "America/Sao_Paulo") -> str:
+    """Meia-noite de HOJE no fuso do posto, em ISO-8601 UTC — pronto para comparar com
+    `criado_em`.
+
+    Existe porque `date('now')` do SQLite é UTC: num posto em BRT (UTC-3), o contador de
+    "hoje" zerava às 21h locais e incluía as leituras das 21h-24h da véspera. O
+    armazenamento continua em UTC; o que muda é onde o dia começa.
+    """
+    from zoneinfo import ZoneInfo
+    try:
+        tz = ZoneInfo(fuso)
+    except Exception:
+        # Fuso inválido no config não pode derrubar o dashboard: cai para UTC, que é o
+        # comportamento antigo, e quem olhar o número vê no máximo o deslocamento de antes.
+        tz = timezone.utc
+    agora_local = datetime.now(timezone.utc).astimezone(tz)
+    meia_noite = agora_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return meia_noite.astimezone(timezone.utc).isoformat()
+
+
 def _normalizar_codigo(codigo: str) -> str:
     """Tolera diferença de espaço/maiúscula no código vindo do roteador.
 

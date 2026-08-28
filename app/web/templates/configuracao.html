@@ -229,6 +229,38 @@
   </div>
 
   <div class="card">
+    <h2 style="margin-top:0;">Varredura em Janelas (recupera placa de moto)</h2>
+    <p style="margin-top:0;color:#64748b;font-size:.85rem">
+      Quando a leitura não acha <strong>nenhuma</strong> placa no recorte do bico, revarre
+      esse recorte em janelas sobrepostas menores. É o que recupera placa de <strong>moto
+      parada na bomba</strong>: o detector redimensiona tudo o que recebe para 608 px, então
+      numa área grande a placa de moto (~38 px) chega pequena demais — e ampliar a área não
+      resolve, o modelo reduz de volta. O que funciona é variar o enquadramento.
+      Custa passadas extras <em>só</em> nas leituras que iriam falhar de todo jeito.
+    </p>
+    <div class="grid-form">
+      <label>Ativa na leitura (Ler Placa / GET) <span class="help" data-tip="Recomendado: Sim. Só entra quando a passada normal não achou nada, então não afeta a latência das leituras de carro.">?</span>
+        <select name="tiles_fallback_get">
+          <option value="sim">Sim — recupera placa pequena</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Lado da janela (px) <span class="help" data-tip="Tamanho alvo de cada janela, em pixels do recorte analisado. Medido em cena real: janelas de ~250-320px pegam moto+placa juntas e detectam; o recorte inteiro não. Recomendado: 300.">?</span>
+        <input type="number" step="10" min="64" max="1280" name="tiles_lado_alvo">
+      </label>
+      <label>Sobreposição <span class="help" data-tip="Sobreposição entre janelas vizinhas. FAIXA ÚTIL ESTREITA: 0.25 a 0.35. Acima disso cada janela cresce até virar o recorte inteiro, que é justamente o enquadramento que falha (medido: 0.40 e 0.50 não acham nada). Recomendado: 0.30 — não mexa sem medir.">?</span>
+        <input type="number" step="0.05" min="0" max="0.9" name="tiles_sobreposicao">
+      </label>
+      <label>Máx. janelas por foto <span class="help" data-tip="Teto de janelas varridas por tentativa — freio de latência (~200ms por janela em CPU). Se o recorte pedir mais janelas que o teto, as janelas ficam maiores em vez de deixar parte do recorte sem varrer. Recomendado: 6.">?</span>
+        <input type="number" step="1" min="1" max="24" name="tiles_max_janelas">
+      </label>
+      <label>Confiança mínima (janelas) <span class="help" data-tip="Limiar só das janelas, mais permissivo que o geral de propósito: aqui já se sabe que o caminho normal falhou, e a placa de moto sai raspando o limiar (0.19 a 0.37 medido). Um recorte ruim ainda tem que passar pelo OCR, pela validação de formato e pelo consenso entre fotos. Recomendado: 0.15.">?</span>
+        <input type="number" step="0.01" min="0" max="1" name="tiles_conf">
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
     <h2 style="margin-top:0;">Modo de Detecção</h2>
     <div class="grid-form">
       <label>Detecção automática <span class="help" data-tip="Sim = detecta placas continuamente no stream em tempo real. Não = detecção só ocorre ao clicar 'Ler Placa'.">?</span>
@@ -263,6 +295,39 @@
       </label>
       <label>Concordância mínima <span class="help" data-tip="Fração (0 a 1) do peso das leituras que precisa concordar com a placa eleita para parar antecipadamente com confiança. Recomendado: 0.80 (80%).">?</span>
         <input type="number" step="0.05" min="0.3" max="1" name="leitura_acordo_minimo">
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Modo de captura rápida</h2>
+    <p style="margin-top:0;color:#64748b;font-size:.85rem">
+      Perfil opcional que o sistema do posto aciona por chamada, com
+      <code>?rapido=1</code> em <code>/api/leitura</code>. Ele responde em poucos segundos
+      em vez de dezenas, usando os mesmos modelos do stream ao vivo: uma foto, sem
+      varredura em janelas e sem o reforço de OCR para placa borrada. <strong>Lê menos</strong>
+      — placa borrada e moto de longe tendem a não sair — e por isso é escolha de quem
+      chama, não o padrão. A concordância mínima acima continua valendo igual nos dois
+      perfis: o que muda é a chance de a leitura sair "a conferir".
+    </p>
+    <div class="grid-form">
+      <label>Permitir o modo rápido <span class="help" data-tip="Desligar faz o servidor ignorar o parâmetro `rapido=1` e rodar a leitura completa, avisando quem chamou. É o interruptor para um posto onde o perfil leve se mostrou ruim demais, sem precisar mexer no sistema do posto.">?</span>
+        <select name="rapido_ativo">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Timeout do modo rápido (s) <span class="help" data-tip="Tempo máximo do loop quando a chamada pede o modo rápido. Recomendado: 5.">?</span>
+        <input type="number" step="0.5" min="1" max="60" name="rapido_timeout_seg">
+      </label>
+      <label>Máximo de fotos (rápido) <span class="help" data-tip="Limite de fotos no modo rápido. Duas, e não uma: é a segunda que permite o loop parar por concordância em vez de por tempo esgotado. Recomendado: 2.">?</span>
+        <input type="number" name="rapido_max_tentativas" min="1" max="10">
+      </label>
+      <label>Fotos mínimas (rápido) <span class="help" data-tip="Mínimo de fotos antes de o modo rápido poder parar. Recomendado: 1.">?</span>
+        <input type="number" name="rapido_snapshots_votacao" min="1" max="5">
+      </label>
+      <label>Espera pelo 1º frame (s) <span class="help" data-tip="Quanto esperar a câmera ao vivo publicar um quadro antes de desistir. É a maior economia do modo: no perfil completo são 20 segundos, e essa espera acontece ANTES do loop, fora do timeout. Recomendado: 2.">?</span>
+        <input type="number" step="0.5" min="0.5" max="30" name="rapido_espera_frame_seg">
       </label>
     </div>
   </div>
@@ -388,10 +453,16 @@
 <div class="tab-pane" id="tab-saidas">
 
   <div class="card">
-    <h2 style="margin-top:0;">Snapshot</h2>
+    <h2 style="margin-top:0;">Snapshot e retenção de imagens</h2>
     <div class="grid-form">
-      <label>Salvar snapshot <span class="help" data-tip="Grava uma imagem JPEG do recorte da placa a cada detecção confirmada. Arquivos salvos em static/snapshots/ com nome TIMESTAMP_PLACA.jpg.">?</span>
+      <label>Salvar snapshot <span class="help" data-tip="Grava uma imagem JPEG do recorte da placa a cada detecção confirmada. Arquivos salvos em static/snapshots/ com nome TIMESTAMP_PLACA.jpg. Custa cerca de 2,6 KB por leitura.">?</span>
         <select name="salvar_snapshot">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Salvar quadro inteiro <span class="help" data-tip="Guarda também a foto do quadro inteiro da câmera, com a placa marcada — permite conferir depois se pegou o veículo certo e se a área do bico está bem posicionada. É o MAIOR consumidor de disco do sistema: cerca de 376 KB por leitura, 145x o recorte da placa. Desligue em produção se o espaço importar mais que a conferência visual.">?</span>
+        <select name="salvar_frame_deteccao">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
         </select>
@@ -399,7 +470,18 @@
       <label>Qualidade JPEG <span class="help" data-tip="Qualidade da imagem snapshot (10 = mínima, 100 = máxima). Valores entre 75 e 85 oferecem boa legibilidade com arquivo menor.">?</span>
         <input type="number" name="snapshot_qualidade" min="10" max="100">
       </label>
+      <label>Leituras com foto <span class="help" data-tip="Quantas leituras recentes continuam guardando imagem. Ao passar do teto, a mais antiga perde as fotos e a LINHA CONTINUA no histórico — placa, hora, bico e confiança seguem disponíveis, só a coluna de imagem fica vazia. Fotos já classificadas em Testes nunca são apagadas. 0 = sem teto. Referência: 2000 leituras ocupam ~760 MB com o quadro inteiro ligado, ~5 MB sem ele.">?</span>
+        <input type="number" name="retencao_max_imagens" min="0" step="100">
+      </label>
+      <label>Dias de retenção <span class="help" data-tip="Dias que uma leitura e uma chamada do roteador ficam guardadas antes de serem apagadas POR INTEIRO (linha e imagens). É a política de privacidade — cada posto pode ter prazo próprio em Empresas. 0 = nunca apaga.">?</span>
+        <input type="number" name="retencao_dias" min="0">
+      </label>
     </div>
+    <p style="margin:10px 0 0;color:#64748b;font-size:.85rem">
+      São duas políticas diferentes: <strong>dias de retenção</strong> apaga a leitura inteira
+      (privacidade); <strong>leituras com foto</strong> apaga só a imagem e preserva o
+      histórico (disco). A imagem é quase todo o custo — a linha ocupa ~200 bytes.
+    </p>
   </div>
 
   <div class="card">
@@ -463,6 +545,114 @@
                   style="white-space:nowrap">Copiar</button>
         </div>
       </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Segurança</h2>
+    <div class="grid-form">
+      <label>Cookie só em HTTPS <span class="help" data-tip="Marca o cookie de sessão como 'Secure' — só é enviado em conexões HTTPS. Ligue quando o servidor estiver atrás de um proxy reverso com TLS; deixe desligado para acesso local (http://localhost) ou o login para de funcionar.">?</span>
+        <select name="cookie_secure">
+          <option value="nao">Não — acesso local/sem TLS</option>
+          <option value="sim">Sim — servidor atrás de HTTPS</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">E-mail (SMTP)</h2>
+    <p style="margin-top:0;color:#64748b;font-size:14px">
+      Opcional — sem isto configurado, "esqueci minha senha" e "convidar por e-mail"
+      (em Usuários) ficam desligados e mostram um aviso em vez de quebrar.
+    </p>
+    <div class="grid-form">
+      <label>Servidor SMTP <span class="help" data-tip="Host do servidor de e-mail, ex.: smtp.gmail.com. Vazio = recurso de e-mail desligado.">?</span>
+        <input type="text" name="smtp_host" placeholder="smtp.suaempresa.com">
+      </label>
+      <label>Porta <span class="help" data-tip="Porta do SMTP. 587 (STARTTLS) é o padrão mais comum.">?</span>
+        <input type="number" name="smtp_porta" min="1" max="65535">
+      </label>
+      <label>Usuário SMTP <span class="help" data-tip="Usuário de autenticação no servidor de e-mail. Vazio = envia sem autenticação (raro, só servidores internos).">?</span>
+        <input type="text" name="smtp_usuario" autocomplete="off">
+      </label>
+      <label>Senha SMTP <span class="help" data-tip="Senha (ou senha de app) do usuário SMTP acima. Fica mascarada depois de salva.">?</span>
+        <input type="password" name="smtp_senha" autocomplete="new-password" placeholder="(sem alteração)">
+      </label>
+      <label>Remetente <span class="help" data-tip="Endereço que aparece como remetente dos e-mails. Vazio = usa o usuário SMTP.">?</span>
+        <input type="email" name="smtp_remetente" placeholder="alpr@suaempresa.com">
+      </label>
+      <label>TLS <span class="help" data-tip="Criptografia STARTTLS na conexão com o servidor de e-mail. Deixe 'Sim' salvo instrução em contrário do seu provedor de e-mail.">?</span>
+        <select name="smtp_tls">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label style="grid-column: 1 / -1;">URL pública do servidor <span class="help" data-tip="Usada para montar os links nos e-mails (ex.: https://alpr.suaempresa.com). Vazio = usa o endereço da própria requisição — funciona na maioria dos casos, mas atrás de proxy reverso o link pode sair com o host interno errado.">?</span>
+        <input type="text" name="url_base" placeholder="https://alpr.suaempresa.com">
+      </label>
+    </div>
+  </div>
+
+
+  <div class="card">
+    <h2 style="margin-top:0;">Dados do veículo (API Placas)</h2>
+    <p style="margin-top:0;color:#64748b;font-size:14px">
+      Acrescenta à resposta do roteador o <strong>tipo de combustível</strong> e os dados do
+      veículo da placa lida, consultados na apiplacas.com.br. <strong>Cada consulta custa
+      crédito pré-pago</strong> — por isso a resposta é guardada no banco e a mesma placa só
+      é paga uma vez, valendo para todos os postos deste servidor. Desligado, o payload do
+      roteador fica exatamente como era antes.
+    </p>
+    <p id="apiplacas-estado" style="margin:0 0 12px;font-size:14px;font-weight:600;color:#64748b"></p>
+    <div class="grid-form">
+      <label>Consultar dados do veículo <span class="help" data-tip="Liga o enriquecimento. Desligado, a resposta de /api/leitura não ganha nenhum campo novo — nada muda para quem já integra.">?</span>
+        <select name="apiplacas_ativo">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Token da apiplacas <span class="help" data-tip="Token da sua conta na apiplacas.com.br (menu Painel do Usuário, no site deles). Fica mascarado depois de salvo. Vazio = recurso inerte, mesmo com a opção acima em Sim.">?</span>
+        <input type="password" name="apiplacas_token" autocomplete="new-password" placeholder="(sem alteração)">
+      </label>
+      <label>Quem dispara a consulta <span class="help" data-tip="Manual: nada consulta sozinho — o abastecimento entrega só o que já está em cache, e você gasta pelo botão no Histórico. Automático: a primeira leitura de cada placa consulta (1 crédito) e as seguintes vêm do cache. Use manual enquanto a cota for curta.">?</span>
+        <select name="apiplacas_modo">
+          <option value="manual">Manual — só quando eu pedir</option>
+          <option value="automatico">Automático — no abastecimento</option>
+        </select>
+      </label>
+      <label>Reconsultar após (dias) <span class="help" data-tip="Depois deste prazo a placa é consultada de novo, para atualizar situação e município. Combustível, marca e modelo não mudam nunca. 180 dias = cerca de 2 consultas por veículo por ano. 0 = nunca reconsultar.">?</span>
+        <input type="number" name="apiplacas_ttl_dias" min="0">
+      </label>
+      <label>Reconsultar placa inexistente após (dias) <span class="help" data-tip="Prazo para placas que a apiplacas não encontrou. A causa mais comum não é veículo novo, é leitura de OCR errada — uma placa que nunca vai existir e que seria recomprada a cada vencimento. 0 = nunca reconsultar.">?</span>
+        <input type="number" name="apiplacas_ttl_negativo_dias" min="0">
+      </label>
+      <label>Só consultar leitura confirmada <span class="help" data-tip="Sim = não gasta consulta em leitura sem consenso, que pode ser a placa errada (ou nenhuma placa). Ponha Não se o atendente usa marca/modelo/cor para conferir placas duvidosas — mesmo com Sim, a leitura duvidosa ainda mostra o dado se ele já estiver em cache.">?</span>
+        <select name="apiplacas_exigir_confirmada">
+          <option value="sim">Sim</option>
+          <option value="nao">Não</option>
+        </select>
+      </label>
+      <label>Tempo máximo da consulta (s) <span class="help" data-tip="Quanto esperar pela apiplacas antes de desistir e responder sem os dados do veículo. Só a primeira leitura de cada placa espera isso; as seguintes vêm do banco, instantâneas.">?</span>
+        <input type="text" name="apiplacas_timeout_seg">
+      </label>
+      <label>Máx. consultas por minuto <span class="help" data-tip="Freio de rajada, somando todos os postos. Existe para limitar o dano de um laço ou retry mal configurado no roteador. 0 = sem limite.">?</span>
+        <input type="number" name="apiplacas_max_por_minuto" min="0">
+      </label>
+      <label>Máx. consultas por dia <span class="help" data-tip="Teto de gasto diário, contado no banco (sobrevive a reinício do servidor). 0 = sem limite.">?</span>
+        <input type="number" name="apiplacas_max_por_dia" min="0">
+      </label>
+      <label>Pausa após erro de saldo/token (s) <span class="help" data-tip="Quando a apiplacas responde 'sem saldo' ou 'token inválido', insistir não pode dar certo — só atrasa cada abastecimento. O sistema para de tentar por este tempo. Salvar um token novo aqui libera a pausa na hora.">?</span>
+        <input type="number" name="apiplacas_pausa_erro_seg" min="0">
+      </label>
+      <label>Custo por consulta (R$) <span class="help" data-tip="Usado só para estimar o gasto mostrado abaixo. Ajuste se o seu contrato com a apiplacas tiver outro preço.">?</span>
+        <input type="text" name="apiplacas_custo_consulta">
+      </label>
+      <div style="grid-column: 1 / -1;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button type="button" onclick="verSaldoApiPlacas(this)">Consultar saldo</button>
+        <span id="apiplacas-saldo" style="color:#64748b;font-size:14px"></span>
+        <span id="apiplacas-uso" style="color:#64748b;font-size:14px;margin-left:auto"></span>
+      </div>
     </div>
   </div>
 
@@ -737,6 +927,70 @@ function setValor(name, valor) {
 }
 
 /* ─── Chave de integração ──────────────────────────────────────────────── */
+// Saldo e uso da apiplacas. O saldo bate no provedor (tem freio de 6/hora no servidor);
+// o uso sai do nosso banco e mostra o que o cache economizou — a diferença entre placas
+// em cache e consultas pagas é exatamente o que não se repagou.
+async function carregarUsoApiPlacas() {
+  const alvo = document.getElementById('apiplacas-uso');
+  const estado = document.getElementById('apiplacas-estado');
+  if (!alvo) return;
+  try {
+    const r = await fetch('/api/apiplacas/uso');
+    if (!r.ok) return;
+    const u = await r.json();
+    alvo.textContent = `${u.total} placa(s) em cache · ${u.consultas} consulta(s) paga(s)`
+      + (u.custo_consulta ? ` · ~R$ ${u.gasto_estimado.toFixed(2)}` : '');
+
+    // O token é mascarado no GET, e mascarado IGUAL nos dois casos ("" tanto para salvo
+    // quanto para vazio) — sem este aviso a tela não diz se o recurso está de pé, e o modo
+    // de falha aqui é silencioso: o combustível simplesmente para de vir no payload.
+    const campo = form.querySelector('[name="apiplacas_token"]');
+    if (campo) campo.placeholder = u.token_configurado ? '(sem alteração)' : 'cole aqui o token da sua conta';
+    if (estado) {
+      if (!u.ativo) {
+        estado.textContent = 'Desligado — a resposta do roteador não inclui dados do veículo.';
+        estado.style.color = '#64748b';
+      } else if (!u.token_configurado) {
+        estado.textContent = 'Ligado, mas SEM TOKEN — nenhuma consulta será feita. Preencha o token abaixo.';
+        estado.style.color = '#f87171';
+      } else {
+        estado.textContent = 'Ativo — token configurado.';
+        estado.style.color = '#16a34a';
+      }
+    }
+  } catch { /* painel não pode quebrar por causa disto */ }
+}
+
+async function verSaldoApiPlacas(botao) {
+  const alvo = document.getElementById('apiplacas-saldo');
+
+  // O saldo é consultado pelo SERVIDOR, com o token que está no config.txt — não com o
+  // que está na tela. Como o campo sempre carrega vazio (o GET mascara), qualquer valor
+  // nele é digitação ainda não salva: consultar agora usaria o token ANTIGO e diria
+  // "não configurado" com um token visivelmente preenchido na tela.
+  const campo = form.querySelector('[name="apiplacas_token"]');
+  if (campo && campo.value.trim()) {
+    alvo.textContent = 'salve a configuração antes — o saldo usa o token já gravado';
+    alvo.style.color = '#f87171';
+    return;
+  }
+  alvo.style.color = '#64748b';
+  botao.disabled = true;
+  alvo.textContent = 'consultando...';
+  try {
+    const r = await fetch('/api/apiplacas/saldo');
+    const d = await r.json();
+    alvo.textContent = d.qtd_consultas !== null && d.qtd_consultas !== undefined
+      ? `saldo: ${d.qtd_consultas} consulta(s)`
+      : (d.erro || 'não foi possível consultar');
+  } catch {
+    alvo.textContent = 'não foi possível consultar';
+  } finally {
+    botao.disabled = false;
+  }
+  carregarUsoApiPlacas();
+}
+
 async function copiarApiKey(botao) {
   const campo = form.querySelector('[name="api_key"]');
   if (!campo.value) return avisar('Ainda não há chave — reinicie o servidor para gerá-la.', 'err');
@@ -853,6 +1107,16 @@ async function salvar() {
       return;
     }
     _iniciarPollingInstalacao();
+    // Devolve TODOS os campos sensíveis (token, senhas, chave) ao estado mascarado —
+    // `GET /api/config` agora devolve a máscara de verdade (achado A7), então recarregar
+    // a tela inteira é o que repõe cada um no estado certo (mascarado se continua
+    // configurado, vazio se acabou de ser limpo de propósito), em vez do reset manual de
+    // UM campo que já ficava errado assim que outro segredo mudasse de estado. Sem isto
+    // o valor digitado continuaria na tela depois de salvo, e o aviso "salve antes de
+    // consultar o saldo" (que usa "campo preenchido = digitação não salva" como sinal)
+    // passaria a mentir.
+    await carregar();
+    carregarUsoApiPlacas();
     if (json.pipeline_reiniciado) {
       statusEl.textContent = 'Salvo e pipeline reiniciado com sucesso.';
       statusEl.style.color = '#16a34a';
@@ -920,5 +1184,6 @@ async function testarConexao() {
 }
 
 carregar();
+carregarUsoApiPlacas();
 </script>
 {% endblock %}
