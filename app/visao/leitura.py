@@ -567,6 +567,16 @@ def lock_camera(camera_id: int) -> threading.Lock:
 # frame borrado, e barato perto do orçamento total.
 RODADAS_MINIMAS = 2
 
+# Piso de fotos que o log contrafactual (`leitura_log_parcial`) simula. É 2 e não 1 porque
+# 1 é medidamente inseguro: com o ensemble real (3 fast + paddle), `n_votos_leitura >= 2`
+# fecha DENTRO da primeira foto, então o laço pararia sem nenhuma segunda foto para
+# confirmar — e as 4 leituras são do MESMO recorte, logo concordam sobre um falso positivo
+# do detector se houver um. Ver `testes/unitarios/test_parada_antecipada.py`, que fixa isso.
+#
+# 2 é também o maior valor que não mexe em `confirmada`: `consenso.confirmada` usa
+# `min(2, n_min)`, que satura — 2, 3, 4 e 12 são a MESMA regra de confirmação.
+PISO_CONTRAFACTUAL = 2
+
 
 @dataclass
 class FonteLeitura:
@@ -948,6 +958,10 @@ def _ler_placa(
     # Lido UMA vez por leitura: a parada antecipada e a decisao final tem de usar a MESMA
     # metrica, senao o loop para com um numero e o banco grava outro.
     metrica_acordo = _acordo_metrica(cfg)
+    # Instrumentacao, nao comportamento: com ela ligada o laco ELEGE a partir da 2a foto e
+    # registra o que teria emitido ali, mas continua parando pelo piso real (`n_min`).
+    log_parcial = str(cfg.get("leitura_log_parcial", "nao")).strip().lower() in (
+        "sim", "true", "1")
 
     def _leituras_do_continuo() -> list[tuple[str, float]]:
         """Leituras que o pipeline continuo ja fez nas cameras deste bico.
@@ -1174,15 +1188,55 @@ def _ler_placa(
             # ENTRE frames de verdade. Sem essa segunda checagem, o loop parava ali,
             # abrindo mão do resto do orçamento de tempo/tentativas que poderia confirmar
             # (ou contradizer) essa única leitura.
-            if tentativas >= n_min and candidatos:
+            # `PISO_CONTRAFACTUAL` (2) e nao `n_min`: com `leitura_log_parcial` ligado a
+            # eleicao passa a rodar a partir da 2a foto, para o log poder responder "com
+            # `snapshots_votacao=2`, esta chamada teria parado aqui, e com que placa?".
+            # Sem isso a pergunta so e respondivel trocando o valor em producao e
+            # observando o resultado — que e a aposta que este log existe para evitar.
+            #
+            # A eleicao extra e segura: `_eleger_placa` e pura (devolve `dict(max(...))`,
+            # nao muta `candidatos` nem estado global). `_leituras_do_continuo()` NAO e —
+            # ela consulta o tracker do pipeline — por isso e chamada UMA vez e o
+            # resultado reaproveitado, nunca duas vezes na mesma iteracao.
+            piso = min(n_min, PISO_CONTRAFACTUAL) if log_parcial else n_min
+            if tentativas >= piso and candidatos:
                 eleito_parcial = _eleger_placa(candidatos, metrica_acordo,
                                                _leituras_do_continuo())
                 # A MESMA contagem que decide `confirmada` no fim. Se a parada usasse fotos
                 # e a confirmacao usasse leituras, o laco correria ate o timeout mesmo com
                 # evidencia suficiente - e `web/leitura.py::_status` rebaixa por timeout,
                 # anulando o ganho. Os dois gates tem de olhar o mesmo numero.
-                if (eleito_parcial and eleito_parcial["acordo"] >= acordo_min
-                        and eleito_parcial["n_votos_leitura"] >= 2):
+                fecha = bool(eleito_parcial
+                             and eleito_parcial["acordo"] >= acordo_min
+                             and eleito_parcial["n_votos_leitura"] >= 2)
+                if log_parcial and eleito_parcial:
+                    # INFO e nao DEBUG de proposito: com `log_level=debug` cada modelo do
+                    # ensemble emite uma linha por recorte e esta se perderia no meio. Sob
+                    # flag propria (default "nao"), uma linha por foto e greppavel e
+                    # sobrevive a producao com `log_level=info`.
+                    #
+                    # `placa` aqui e a ELEITA nesta foto, ainda ANTES de
+                    # `_mesclar_com_historico` (que roda depois do laco e pode trocar a placa
+                    # ao fundir com uma leitura recente do mesmo bico). Isso e o certo para a
+                    # pergunta: as duas alternativas — parar na 2a ou na 3a — passariam pelo
+                    # MESMO merge, entao comparar as eleicoes isola a variavel.
+                    #
+                    # NAO existe coluna `confirmaria`: ela seria
+                    # `confirmada(acordo, votos, acordo_min, 2)`, que expande para
+                    # `acordo >= acordo_min and votos >= 2` — exatamente `pararia`. Medido em
+                    # 20 combinacoes de (acordo, votos): identicas em todas. Uma coluna
+                    # sempre igual a outra nao informa, e sugere que informa.
+                    log.info(
+                        "leitura-parcial bico=%s foto=%d/%s placa=%s padrao=%s acordo=%.3f "
+                        "votos_leitura=%d votos_snap=%d cands=%d pararia=%s t_ms=%d",
+                        bico_id, tentativas, n_min, eleito_parcial["placa"],
+                        eleito_parcial["padrao"], eleito_parcial["acordo"],
+                        eleito_parcial["n_votos_leitura"], eleito_parcial["n_votos_snap"],
+                        len(candidatos), fecha,
+                        int((time.time() - inicio_absoluto) * 1000))
+                # O piso REAL continua sendo `n_min` — o log nao pode mudar quando o laco
+                # para, senao ele mede a si mesmo em vez de medir a producao.
+                if tentativas >= n_min and fecha:
                     parada_motivo = "acordo"
                     break
     finally:

@@ -142,6 +142,24 @@ PADROES: dict[str, str] = {
     # 0.80 = para assim que 80%+ do peso das leituras concordar com a placa eleita.
     "leitura_acordo_minimo": "0.80",
 
+    # Log CONTRAFACTUAL da parada antecipada. Com "sim", cada leitura emite uma linha INFO
+    # `leitura-parcial` por foto a partir da 2ª, dizendo o que teria sido ELEITO ali
+    # (`placa`, `acordo`, `pararia`) — sem mudar quando o laço de fato para, que continua
+    # regido por `snapshots_votacao`. É a eleição crua, antes de `_mesclar_com_historico`:
+    # as duas alternativas passariam pelo mesmo merge, então comparar as eleições isola a
+    # variável.
+    #
+    # Existe para responder "baixar `snapshots_votacao` de 3 para 2 muda a placa emitida?"
+    # com dado de campo, em vez de trocando o valor em produção e observando o estrago. Medido
+    # ao vivo: das 12 chamadas `ok` do histórico, 7 pararam em EXATAMENTE 3 fotos, ou seja
+    # bateram no piso e pararam na primeira oportunidade — cada uma dessas economizaria uma
+    # foto inteira (~7s nesta máquina).
+    #
+    # Custo: uma eleição a mais por foto (`_eleger_placa` é pura e roda sobre ~12 strings de
+    # 7 chars, microssegundos). Default "nao" porque é instrumentação de campanha de medição,
+    # não de operação.
+    "leitura_log_parcial": "nao",
+
     # ── Modo de captura RÁPIDA (`GET /api/leitura?rapido=1`) ───────────────────────
     # Perfil opt-in que troca acurácia por tempo de resposta: uma foto, orçamento curto e
     # os MESMOS modelos que o stream ao vivo usa (t-512 sem varredura em janelas, OCR sem
