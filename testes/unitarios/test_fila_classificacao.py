@@ -56,9 +56,14 @@ def test_arquivo_e_caminho_de_disco_nao_de_url(area):
     ilegíveis reportadas como 17,9%.
     """
     for c in t.listar_candidatos()["candidatos"]:
-        assert Path(c["arquivo"]).exists(), f"{c['arquivo']} não abre a partir da raiz"
-        assert not c["arquivo"].startswith("/")        # caminho, não URL
-        assert c["url"].startswith("/")                # e a URL continua sendo URL
+        p = Path(c["arquivo"])
+        assert p.exists(), f"{c['arquivo']} não abre a partir da raiz"
+        # Aponta para o diretório REAL no disco (`_SNAPSHOTS`/`_FOTOS_TESTE`), não para o
+        # prefixo de URL `static/snapshots/…` — que era o bug. Não dá pra testar isso com
+        # `startswith('/')`: no runner Linux o tmp_path da fixture já começa com `/` e a
+        # asserção reprovava um caminho de disco legítimo.
+        assert p.parent in (t._SNAPSHOTS, t._FOTOS_TESTE)
+        assert c["url"].startswith("/") and c["url"] != c["arquivo"]   # URL continua URL
 
 
 def test_preview_nunca_entra_na_fila(area):
