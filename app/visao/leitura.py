@@ -256,7 +256,8 @@ def _acordo_metrica(cfg: dict | None) -> str:
 
 
 def _eleger_placa(candidatos: list[dict], metrica: str = "string",
-                  leituras_extra: list[tuple[str, float]] | None = None) -> dict | None:
+                  leituras_extra: list[tuple[str, float]] | None = None,
+                  com_alternativa: bool = False) -> dict | None:
     """Elege a placa final por consenso de caractere entre TODOS os candidatos acumulados.
 
     Reusada tanto pela checagem de parada antecipada do loop de leitura (a cada frame)
@@ -376,16 +377,35 @@ def _eleger_placa(candidatos: list[dict], metrica: str = "string",
     # grupo é que decide) e continua marcada, em vez de errada e marcada como antes.
     # Trocar para o grupo INFLA o acordo e é o que `acordo_metrica` vai medir em produção
     # antes de virar default; não mudar aqui sem recalibrar `leitura_acordo_minimo`.
+    def _acordo_string() -> float:
+        peso_total = sum(w for _, w in leituras)
+        return sum(w for p, w in leituras if p == placa_eleita) / max(peso_total, 1e-6)
+
     if metrica == "caractere":
         # Escala nova: concordancia media por POSICAO, dentro do grupo que votou. Mede o que
         # a fusao faz, mas move o ponto de corte de `leitura_acordo_minimo` - por isso so
         # entra quando pedida explicitamente.
         acordo = acordo_por_caractere(placa_eleita, pool)
     else:
-        peso_total = sum(w for _, w in leituras)
-        acordo = sum(w for p, w in leituras if p == placa_eleita) / max(peso_total, 1e-6)
+        acordo = _acordo_string()
     melhor["confianca"] = round(melhor["confianca"] * max(acordo, 0.34), 3)
     melhor["acordo"] = round(acordo, 3)
+    # A OUTRA metrica, so quando pedida (`leitura_log_parcial`): serve para responder, com
+    # o MESMO pool e a MESMA placa eleita, se `acordo_metrica=caractere` resolveria os casos
+    # em que a leitura esta certa e o acordo nao fecha. Sem isso seria preciso uma segunda
+    # campanha, e a coleta depende do movimento do posto — o recurso escasso aqui.
+    #
+    # Nao entra no payload nem no banco: e instrumentacao, e quem consome `acordo` tem de
+    # ver UM numero so, o da metrica configurada.
+    #
+    # As duas escalas NAO olham o mesmo conjunto, e isso e deliberado (ver o comentario
+    # acima): `string` mede sobre `leituras` (pool inteiro, inclusive o que o agrupamento
+    # descartou) e `caractere` sobre `pool` (so o grupo vencedor). Trocar a escala sem
+    # recalibrar `leitura_acordo_minimo` move o corte de todas as leituras do posto.
+    if com_alternativa:
+        melhor["acordo_alt"] = round(
+            _acordo_string() if metrica == "caractere"
+            else acordo_por_caractere(placa_eleita, pool), 3)
     melhor["n_votos_snap"] = n_votos_snap
     melhor["n_votos_leitura"] = n_votos_leitura
     return melhor
@@ -1201,7 +1221,8 @@ def _ler_placa(
             piso = min(n_min, PISO_CONTRAFACTUAL) if log_parcial else n_min
             if tentativas >= piso and candidatos:
                 eleito_parcial = _eleger_placa(candidatos, metrica_acordo,
-                                               _leituras_do_continuo())
+                                               _leituras_do_continuo(),
+                                               com_alternativa=log_parcial)
                 # A MESMA contagem que decide `confirmada` no fim. Se a parada usasse fotos
                 # e a confirmacao usasse leituras, o laco correria ate o timeout mesmo com
                 # evidencia suficiente - e `web/leitura.py::_status` rebaixa por timeout,
@@ -1226,11 +1247,17 @@ def _ler_placa(
                     # `acordo >= acordo_min and votos >= 2` — exatamente `pararia`. Medido em
                     # 20 combinacoes de (acordo, votos): identicas em todas. Uma coluna
                     # sempre igual a outra nao informa, e sugere que informa.
+                    # `acordo` e o da metrica CONFIGURADA (a que decide `pararia`);
+                    # `acordo_alt` e a outra escala sobre o mesmo pool. Ter as duas lado a
+                    # lado responde, na mesma campanha, se trocar `acordo_metrica`
+                    # resolveria os casos de leitura certa que nao fecha o acordo.
                     log.info(
-                        "leitura-parcial bico=%s foto=%d/%s placa=%s padrao=%s acordo=%.3f "
+                        "leitura-parcial bico=%s foto=%d/%s placa=%s padrao=%s "
+                        "metrica=%s acordo=%.3f acordo_alt=%.3f "
                         "votos_leitura=%d votos_snap=%d cands=%d pararia=%s t_ms=%d",
                         bico_id, tentativas, n_min, eleito_parcial["placa"],
-                        eleito_parcial["padrao"], eleito_parcial["acordo"],
+                        eleito_parcial["padrao"], metrica_acordo,
+                        eleito_parcial["acordo"], eleito_parcial.get("acordo_alt", -1.0),
                         eleito_parcial["n_votos_leitura"], eleito_parcial["n_votos_snap"],
                         len(candidatos), fecha,
                         int((time.time() - inicio_absoluto) * 1000))

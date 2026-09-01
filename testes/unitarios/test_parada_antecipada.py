@@ -183,3 +183,98 @@ class TestPisoNaoMexeEmConfirmada:
         """O unico valor que muda a regra — e o motivo de `rapido_snapshots_votacao=1`
         merecer atencao: em modo rapido uma leitura de voto unico volta confirmada."""
         assert confirmada(0.9, 1, 0.80, 1) is True
+
+
+class TestAcordoAlternativo:
+    """`com_alternativa` calcula a OUTRA escala de acordo, so para instrumentacao.
+
+    Serve para uma campanha unica responder duas perguntas: o piso de fotos (`pararia`) e
+    se `acordo_metrica=caractere` resolveria os casos de leitura certa cujo acordo nao
+    fecha. A coleta depende do movimento do posto, entao rodar duas campanhas custaria dias.
+    """
+
+    @staticmethod
+    def _candidatos():
+        """Duas fotos que discordam em 1 caractere — o caso em que as escalas divergem.
+
+        Por string: uma das duas leituras bate com a eleita, entao o acordo e ~0,5.
+        Por caractere: elas concordam em 6 das 7 posicoes, entao o acordo e ~0,9.
+        """
+        def c(placa, conf):
+            return {"placa": placa, "confianca": conf, "padrao": "mercosul",
+                    "detalhes_ocr": [{"engine": "fast", "placa": placa,
+                                      "padrao": "mercosul", "confianca": conf}]}
+        return [c("ABC1D23", 0.95), c("ABC1D28", 0.95)]
+
+    def test_sem_o_parametro_a_chave_nem_existe(self):
+        """Producao nao paga o calculo extra."""
+        r = leitura_mod._eleger_placa(self._candidatos(), "string")
+        assert "acordo_alt" not in r
+
+    def test_com_o_parametro_traz_a_OUTRA_escala(self):
+        por_string = leitura_mod._eleger_placa(self._candidatos(), "string",
+                                               com_alternativa=True)
+        por_char = leitura_mod._eleger_placa(self._candidatos(), "caractere",
+                                            com_alternativa=True)
+        # o `acordo` de uma e o `acordo_alt` da outra, e vice-versa
+        assert por_string["acordo_alt"] == pytest.approx(por_char["acordo"], abs=1e-3)
+        assert por_char["acordo_alt"] == pytest.approx(por_string["acordo"], abs=1e-3)
+        # e elas realmente divergem neste caso, senao o teste nao provaria nada
+        assert por_string["acordo"] != pytest.approx(por_char["acordo"], abs=1e-2)
+
+    def test_nao_muda_a_placa_nem_o_acordo_principal(self):
+        """Instrumentacao nao pode mexer no numero que a producao consome."""
+        sem = leitura_mod._eleger_placa(self._candidatos(), "string")
+        com = leitura_mod._eleger_placa(self._candidatos(), "string", com_alternativa=True)
+        assert com["placa"] == sem["placa"]
+        assert com["acordo"] == sem["acordo"]
+        assert com["confianca"] == sem["confianca"]
+
+    def test_acordo_alt_nunca_chega_ao_payload(self, ambiente, visao_falsa):
+        """Guarda: `acordo` publico tem de ser UM numero, o da metrica configurada.
+
+        A eleicao final de `_ler_placa` nao passa `com_alternativa`, entao a chave nao
+        existe la — mas isso e um invariante a duas inferencias de distancia, e o tipo de
+        coisa que um refactor futuro quebra em silencio.
+        """
+        visao_falsa(_DetectorFalso(), _OcrEnsemble())
+        r = _ler("3", leitura_log_parcial="sim")
+        assert "acordo_alt" not in r, "instrumentacao vazou para a resposta do roteador"
+
+    def test_caractere_INFLA_quando_as_fotos_veem_veiculos_diferentes(self):
+        """A armadilha que a campanha tem de saber ler, e a razao de `string` ser o default.
+
+        Medido: duas fotos lendo placas COMPLETAMENTE diferentes (`ABC1D23` e `XYZ9Q88`)
+        dao acordo 0,500 por string e **1,000** por caractere. A causa nao e bug: por
+        caractere o acordo e medido sobre o GRUPO vencedor de `agrupar_por_veiculo`, e o
+        grupo ja descartou a outra leitura — sobra uma leitura sozinha, que concorda 100%
+        consigo mesma.
+
+        Ou seja, trocar `acordo_metrica` para `caractere` conserta o caso "1 caractere de
+        ruido no mesmo veiculo" E QUEBRA o caso "as duas cameras enxergam veiculos
+        diferentes", que e justamente onde `confirmada=False` esta protegendo o roteador.
+        Ver `fusao-precisa-de-duas-trancas`: "o denominador e o pool INTEIRO, e isto e
+        deliberado... trocar para o grupo INFLA o acordo".
+
+        Na campanha, `votos_snap` desempata: `acordo_alt` alto com `votos_snap=1` e o caso
+        inflado, nao o caso bom.
+        """
+        def c(placa):
+            return {"placa": placa, "confianca": 0.95, "padrao": "mercosul",
+                    "detalhes_ocr": [{"engine": "fast", "placa": placa,
+                                      "padrao": "mercosul", "confianca": 0.95}]}
+
+        ruido_1_char = leitura_mod._eleger_placa(
+            [c("ABC1D23"), c("ABC1D28")], "string", com_alternativa=True)
+        veiculos_distintos = leitura_mod._eleger_placa(
+            [c("ABC1D23"), c("XYZ9Q88")], "string", com_alternativa=True)
+
+        # nas duas a metrica string da o mesmo: 1 de 2 leituras bate com a eleita
+        assert ruido_1_char["acordo"] == pytest.approx(0.5, abs=0.01)
+        assert veiculos_distintos["acordo"] == pytest.approx(0.5, abs=0.01)
+
+        # mas por caractere o caso PERIGOSO pontua MAIS que o caso benigno
+        assert veiculos_distintos["acordo_alt"] > ruido_1_char["acordo_alt"]
+        assert veiculos_distintos["acordo_alt"] == pytest.approx(1.0, abs=0.01)
+        # e o sinal que denuncia: uma unica foto sustentando a eleita
+        assert veiculos_distintos["n_votos_snap"] == 1
