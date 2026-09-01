@@ -1,0 +1,12 @@
+# Dependências SÓ de teste/desenvolvimento — não entram na imagem de produção.
+# requirements.txt é o runtime; este arquivo é o que o CI (.github/workflows/testes.yml)
+# instala por cima para rodar `pytest testes/unitarios`.
+#
+# Versões fixas nas testadas no dev, pela mesma razão do requirements.txt.
+
+-r requirements.txt
+
+pytest==9.1.1
+# fastapi.testclient.TestClient (usado no conftest da suíte) importa httpx e falha
+# no import se ele não estiver presente.
+httpx==0.28.1

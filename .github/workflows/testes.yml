@@ -38,8 +38,11 @@ jobs:
             tesseract-ocr tesseract-ocr-por \
             libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 ffmpeg
 
-      - name: Instala dependências Python (mesmas do requirements.txt de produção — CPU)
-        run: pip install -r requirements.txt
+      # requirements-dev.txt já puxa o requirements.txt de produção (-r) e acrescenta
+      # só pytest + httpx (TestClient). pip install -r requirements.txt sozinho não
+      # traz pytest — era o que fazia esta rodada quebrar com "No module named pytest".
+      - name: Instala dependências Python (produção CPU + ferramentas de teste)
+        run: pip install -r requirements-dev.txt
 
       - name: Roda a suíte unitária
         run: python -m pytest testes/unitarios -q
