@@ -16,6 +16,8 @@ placas.db-journal
 placas.db-wal
 placas.db-shm
 *.log
+# rotacionados por log_arquivo_backups: alpr.log.1, .2, .3
+*.log.[0-9]*
 
 # Modelos (baixados no entrypoint)
 models/*.onnx
