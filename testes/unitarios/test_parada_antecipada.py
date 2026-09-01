@@ -278,3 +278,42 @@ class TestAcordoAlternativo:
         assert veiculos_distintos["acordo_alt"] == pytest.approx(1.0, abs=0.01)
         # e o sinal que denuncia: uma unica foto sustentando a eleita
         assert veiculos_distintos["n_votos_snap"] == 1
+
+
+class TestTrancaDeFotos:
+    """`n_fotos` impede confirmar apoiado em leituras que vieram todas da MESMA foto.
+
+    Motivada por medicao de campo (01/09/2026): das 4 chamadas em que a parada fecharia na
+    2a foto, uma tinha `votos_snap=1, cands=1` — 4 leituras de engine sobre UM recorte.
+    """
+
+    def test_duas_leituras_de_uma_foto_so_nao_confirmam(self):
+        """O caso `QFB3107`: acordo alto, 4 leituras de engine, mas UMA foto."""
+        assert confirmada(0.90, 4, 0.80, 3) is True, "sem a tranca, passava"
+        assert confirmada(0.90, 4, 0.80, 3, n_fotos=1) is False
+        assert confirmada(0.90, 4, 0.80, 3, n_fotos=2) is True
+
+    def test_nao_substitui_a_regra_das_leituras(self):
+        """A regra dos 2 votos foi calibrada (86% reais / 4% falsos). As duas SOMAM."""
+        assert confirmada(0.90, 1, 0.80, 3, n_fotos=5) is False, "1 leitura nao passa"
+        assert confirmada(0.50, 9, 0.80, 3, n_fotos=5) is False, "acordo baixo nao passa"
+
+    @pytest.mark.parametrize("n_min", [2, 3, 4, 12])
+    def test_satura_igual_a_regra_de_votos(self, n_min):
+        """`min(2, n_min)` nas duas trancas: 2 fotos bastam, nao `n_min` fotos."""
+        assert confirmada(0.90, 4, 0.80, n_min, n_fotos=2) is True
+        assert confirmada(0.90, 4, 0.80, n_min, n_fotos=1) is False
+
+    def test_perfil_rapido_nao_e_quebrado_por_esta_mudanca(self):
+        """Com `n_min=1` a tranca exige 1 foto — o rapido segue funcionando como antes.
+
+        Que ele CONFIRME com uma foto so continua sendo um problema (medido: 4 de 9
+        leituras divergindo, todas confirmadas), mas o conserto e subir
+        `rapido_snapshots_votacao`, nao esta funcao.
+        """
+        assert confirmada(1.0, 3, 0.80, 1, n_fotos=1) is True
+
+    def test_continuo_nao_passa_n_fotos_e_nao_muda(self):
+        """`pipeline.py` chama sem `n_fotos`: la um voto JA E um frame distinto."""
+        assert confirmada(0.90, 2, 0.80, 3) is True
+        assert confirmada(0.90, 1, 0.80, 3) is False

@@ -285,7 +285,8 @@ def acordo_por_caractere(placa: str | None, leituras: list[tuple[str, float]]) -
     return de_acordo / peso_total
 
 
-def confirmada(acordo: float, n_votos: int, acordo_min: float, n_min: int) -> bool:
+def confirmada(acordo: float, n_votos: int, acordo_min: float, n_min: int,
+               n_fotos: int | None = None) -> bool:
     """Decide se a placa eleita é uma leitura sólida ou só a candidata menos ruim.
 
     Vale como confirmada quando o acordo bate o mínimo E pelo menos 2 leituras
@@ -312,5 +313,27 @@ def confirmada(acordo: float, n_votos: int, acordo_min: float, n_min: int) -> bo
     `frames_consenso` ou `tracker_votos_emitir`): nesse modo o operador abriu mão da
     votação entre leituras, e exigir 2 votos deixaria TODA leitura não-confirmada — o
     oposto do ajuste que ele pediu. Com os padrões (3, 3 e 2), exige os 2 votos de verdade.
+
+    `n_fotos` (opcional) é a segunda tranca, e ela existe porque `n_votos` conta LEITURAS
+    DE ENGINE, que podem vir todas da MESMA foto. Com o ensemble (3 fast + paddle) uma
+    única foto rende 3-4 leituras e fecha `n_votos >= 2` sozinha — e as 4 olham o MESMO
+    recorte, então concordam sobre um falso positivo do detector se houver um.
+
+    Medido ao vivo em 01/09/2026 (campanha de 20 leituras no ALTIPLANO): das 4 chamadas em
+    que a parada antecipada fecharia na 2ª foto, 3 tinham 2 fotos concordando e uma tinha
+    `votos_snap=1, cands=1` — apoiada numa foto só. Exigir `n_fotos` barra exatamente essa
+    e mantém as outras três.
+
+    NÃO substitui `n_votos`: a regra das 2 leituras foi calibrada em 80 recortes reais
+    contra 80 falsos positivos (86% das reais passam, 4% dos falsos), e a regra por FOTOS
+    sozinha media 0% e 0% — com 1 foto no orçamento ela nunca fecha. As duas somam.
+
+    Opcional (default `None` = não checa) porque o contínuo chama esta função com outra
+    semântica de voto: em `pipeline.py` um voto JÁ É um frame distinto, então a tranca de
+    fotos seria a mesma condição contada duas vezes. Só a leitura reativa passa o número.
     """
-    return acordo >= acordo_min and n_votos >= min(2, n_min)
+    if acordo < acordo_min or n_votos < min(2, n_min):
+        return False
+    if n_fotos is not None and n_fotos < min(2, n_min):
+        return False
+    return True

@@ -1227,9 +1227,21 @@ def _ler_placa(
                 # e a confirmacao usasse leituras, o laco correria ate o timeout mesmo com
                 # evidencia suficiente - e `web/leitura.py::_status` rebaixa por timeout,
                 # anulando o ganho. Os dois gates tem de olhar o mesmo numero.
+                # A MESMA regra da confirmacao final (`_confirmada` logo abaixo do laco),
+                # incluindo a tranca de FOTOS. Sem ela o laco parava apoiado em leituras
+                # que vinham todas da mesma foto: medido em 01/09/2026, a chamada
+                # `QFB3107` fechava na foto 2 com `votos_snap=1, cands=1` — 4 leituras de
+                # engine sobre UM recorte, que concordam sobre o falso positivo se houver
+                # um. As outras 3 do mesmo dia tinham 2 fotos e seguem passando.
+                #
+                # Parada e confirmacao TEM de olhar o mesmo numero: se a parada fosse mais
+                # frouxa, o laco pararia cedo e o resultado sairia nao-confirmado assim
+                # mesmo — gastando o orcamento sem entregar o selo.
                 fecha = bool(eleito_parcial
-                             and eleito_parcial["acordo"] >= acordo_min
-                             and eleito_parcial["n_votos_leitura"] >= 2)
+                             and _confirmada(eleito_parcial["acordo"],
+                                             eleito_parcial["n_votos_leitura"],
+                                             acordo_min, n_min,
+                                             n_fotos=eleito_parcial["n_votos_snap"]))
                 if log_parcial and eleito_parcial:
                     # INFO e nao DEBUG de proposito: com `log_level=debug` cada modelo do
                     # ensemble emite uma linha por recorte e esta se perderia no meio. Sob
@@ -1423,7 +1435,8 @@ def _ler_placa(
     # cada voto e uma passada de OCR em frame DIFERENTE, entao ha varias leituras
     # independentes de verdade. Aqui, com o GET conseguindo 1 foto em 28 s, "2 fotos" era
     # inalcancavel e nada era confirmado; "2 leituras" e o que o ensemble de fato produz.
-    confirmada = _confirmada(acordo_final, n_votos_leitura, acordo_min, n_min)
+    confirmada = _confirmada(acordo_final, n_votos_leitura, acordo_min, n_min,
+                             n_fotos=n_votos_snap)
 
     # Tipo estimado do candidato ELEITO, e o sinal cru por trás dele (`_eleger_placa`
     # devolve uma cópia do candidato, então as chaves vêm juntas). `.get` e não indexação:
