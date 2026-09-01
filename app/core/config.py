@@ -174,6 +174,19 @@ PADROES: dict[str, str] = {
     # para o caso de o perfil leve se mostrar ruim demais num posto específico, sem
     # precisar mexer no roteador.
     "rapido_ativo": "sim",
+
+    # 2 estagios (veiculo->placa) no perfil rapido, INDEPENDENTE do continuo.
+    #
+    # Vazio (default) = segue `veiculo_dois_estagios_live`, o comportamento historico.
+    # "sim"/"nao" desempatam os dois consumidores dessa decisao, que tem necessidades
+    # opostas: o continuo roda em todo quadro das duas cameras e e diagnostico; o rapido
+    # roda 1-2x por abastecimento e e o que o roteador le.
+    #
+    # Medido em 01/09/2026 (dataset de 54 fotos, `--caminho live`, que E o detector do
+    # rapido): com 2 estagios 44/54, sem 44->35/54 -- nove placas. E ao vivo, desligar o 2
+    # estagios do CONTINUO levou a chamada rapida de 5,2-11,1s para 2,1-2,3s, porque para
+    # de disputar CPU. Com uma chave so, as duas medicoes se anulam.
+    "rapido_dois_estagios": "",
     # Teto do laço no perfil rápido.
     #
     # Medido em 26/08/2026 sobre 8 quadros REAIS do posto, nesta máquina (CPU-only, dev):

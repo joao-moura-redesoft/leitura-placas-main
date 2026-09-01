@@ -979,13 +979,40 @@ def obter_detector_rapido(cfg: dict):
     O que se perde em relação ao completo está medido no histórico do projeto: a varredura
     em janelas é o que fez moto sair de 0/12 para 12/12. Placa de moto distante NÃO vai
     ser lida aqui — é o preço declarado do modo.
+
+    **Exceção à delegação: `rapido_dois_estagios`.** O 2 estágios era o único ponto em que
+    "ser igual ao ao-vivo" custava caro, porque a MESMA chave governa dois consumidores com
+    necessidades opostas:
+
+      - o contínuo roda em TODO quadro publicado, nas duas câmeras, e é diagnóstico;
+      - o rápido roda 1-2 vezes por abastecimento e é o que o roteador lê.
+
+    Medido em 01/09/2026 no dataset de 54 fotos, com `--caminho live` (que é este
+    detector): **com 2 estágios 44/54, sem 2 estágios 35/54** — nove placas. E medido ao
+    vivo, desligar o 2 estágios do contínuo levou a chamada rápida de 5,2-11,1 s para
+    2,1-2,3 s, porque ele deixa de disputar CPU (nesta máquina, ~10 detecções de veículo do
+    contínuo durante os 2,5 s de uma chamada).
+
+    Com uma chave só, essas duas medições se anulam: ou o rápido é rápido e perde 9 placas,
+    ou é certeiro e espera o contínuo. `rapido_dois_estagios` desempata — permite
+    `veiculo_dois_estagios_live=nao` (contínuo leve) com `rapido_dois_estagios=sim`
+    (rápido certeiro).
+
+    Vazio (o default) = segue `veiculo_dois_estagios_live`, que é o comportamento antigo.
     """
     # A identidade tem de cobrir TODA config que `criar_detector` congela na construção.
     # Ident incompleto já custou caro neste projeto: ajuste salvo, confirmado na tela, e
     # que nunca chegava ao detector cacheado até o processo reiniciar (ver o comentário
     # em `obter_detector_leitura`). A lista abaixo espelha `_criar_detector_placa` +
     # `_criar_detector_veiculo` + o ramo de 2 estágios de `criar_detector`.
-    dois_estagios = _bool_cfg(cfg, "veiculo_dois_estagios_live")
+    #
+    # `cfg` é reescrito e NÃO lido direto adiante: `criar_detector` consulta
+    # `veiculo_dois_estagios_live`, então a única forma de o rápido divergir do contínuo é
+    # entregar a ele um cfg com a chave já resolvida. `_construir` usa `cfg_rapido`.
+    _override = str(cfg.get("rapido_dois_estagios", "")).strip()
+    dois_estagios = (_bool_cfg({"x": _override}, "x") if _override
+                     else _bool_cfg(cfg, "veiculo_dois_estagios_live"))
+    cfg_rapido = {**cfg, "veiculo_dois_estagios_live": "sim" if dois_estagios else "nao"}
     ident = (
         cfg.get("detector_backend", ""),
         cfg.get("oim_modelo", ""),
@@ -1000,7 +1027,7 @@ def obter_detector_rapido(cfg: dict):
     )
 
     def _construir():
-        det = criar_detector(cfg)
+        det = criar_detector(cfg_rapido)
         det.carregar()
         log.info("Detector rápido carregado: %s (2 estágios=%s, sem tiles)",
                  cfg.get("oim_modelo", cfg.get("modelo_path", "?")), dois_estagios)
