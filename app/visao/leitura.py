@@ -41,6 +41,7 @@ from app.visao.consenso import (
 from app.visao.detector import deslocar, origem_de_bbox
 from app.visao.pipeline import _expandir_bbox
 from app.visao.validador import parecidas, validar
+from app.visao import feira as feira_mod
 
 log = logging.getLogger(__name__)
 
@@ -945,6 +946,11 @@ def _ler_placa(
     origem: str = "roteador",
     avisos: list[str] | None = None,
     perfil: str = PERFIL_COMPLETO,
+    # Posto de onde vem a leitura. Existe SÓ para o modo feira saber se pode mockar esta
+    # chamada (`app/visao/feira.casar`) — nada mais no laço olha para ele. Opcional porque
+    # o bico já identifica a leitura para todo o resto; ausente, o mock não dispara, que é
+    # a falha segura.
+    empresa_id: int | None = None,
 ) -> dict:
     """Loop de leitura por confiança ("reject-retry", padrão de mercado ALPR): tira fotos
     incrementalmente e para assim que o consenso entre as leituras ficar forte o bastante
@@ -1437,6 +1443,35 @@ def _ler_placa(
     # inalcancavel e nada era confirmado; "2 leituras" e o que o ensemble de fato produz.
     confirmada = _confirmada(acordo_final, n_votos_leitura, acordo_min, n_min,
                              n_fotos=n_votos_snap)
+
+    # ── Modo feira (MOCK) ─────────────────────────────────────────────────────
+    # Roda AQUI, depois da eleicao/fusao e do veredito, e antes de gravar. E esse ponto
+    # que faz o mock "prevalecer": ele sobrepoe ate uma leitura real confiante que errou
+    # um caractere, sem ter encostado em detector, OCR, consenso ou merge — se o modo
+    # estiver desligado (o padrao), nada aqui executa.
+    #
+    # As tres marcacoes abaixo NAO sao opcionais. Leitura mockada e dado sintetico, e
+    # dado sintetico ja inverteu o sinal de uma medicao neste projeto: sem `origem="feira"`
+    # ela entraria na taxa de acerto, no painel de integracao e na fila do /testes como se
+    # fosse leitura de verdade.
+    placa_demo = feira_mod.casar(melhor["placa"], cfg, empresa_id)
+    if placa_demo is not None:
+        log.warning("MODO FEIRA: leitura '%s' substituida pela placa de demonstracao '%s' "
+                    "(bico=%s). Leitura MOCK, gravada com origem='feira'.",
+                    melhor["placa"], placa_demo, bico_id)
+        _v_demo = validar(placa_demo)
+        melhor["placa"] = placa_demo
+        # `padrao` recalculado junto com a placa: deixar o padrao da leitura ANTIGA faria
+        # o historico mostrar uma Mercosul rotulada como antiga (ou o contrario).
+        if _v_demo:
+            melhor["placa"], melhor["padrao"] = _v_demo
+        melhor["confianca"] = 1.0
+        acordo_final = 1.0
+        confirmada = True
+        origem = "feira"
+        avisos.append(
+            f"modo feira: placa de demonstracao '{melhor['placa']}' reconhecida (MOCK) — "
+            "esta leitura NAO veio do OCR")
 
     # Tipo estimado do candidato ELEITO, e o sinal cru por trás dele (`_eleger_placa`
     # devolve uma cópia do candidato, então as chaves vêm juntas). `.get` e não indexação:

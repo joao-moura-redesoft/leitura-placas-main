@@ -432,6 +432,46 @@ PADROES: dict[str, str] = {
     # continuasse 8 agora que a cadência é a de `deteccao_fps_max` (tipicamente 5/s),
     # o atraso triplicaria para ~1,6s; 3 mantém a mesma dinâmica de antes (~0,6s).
     "ajuste_recalc_frames": "3",
+    # ── Modo feira / demonstração (MOCK) ───────────────────────────────────────
+    # Reconhece os veículos de demonstração levados a feira e devolve a placa CADASTRADA
+    # em vez da lida, com confiança máxima. Existe para a demo ser previsível; NÃO é
+    # recurso de produção.
+    #
+    # DESLIGADO por padrão, e essa é a linha de defesa principal: uma instalação que só
+    # atualizou o código não ganha comportamento novo, nem entra no ramo.
+    #
+    # O que NUNCA é opcional quando ligado (ver app/visao/feira.py):
+    #   - a leitura mockada entra em `avisos` dizendo que é mock;
+    #   - sai uma linha de log em WARNING;
+    #   - é gravada com `origem="feira"`, que fica FORA do filtro 'producao'.
+    # A terceira importa mais do que parece: leitura mockada é dado sintético, e dado
+    # sintético já inverteu o sinal de uma medição neste projeto. Com origem própria ela
+    # não entra na taxa de acerto, no painel de integração nem na fila do /testes.
+    "feira_ativo": "nao",
+    # Id do POSTO de demonstração — o único em que o mock pode agir.
+    #
+    # Vazio DESARMA o mock por completo, mesmo com feira_ativo=sim. É fail-closed de
+    # propósito: sem isto o modo seria global, e ligá-lo num servidor que atende clientes
+    # de verdade passaria a mockar leitura de posto real — cobrança em cima de placa que
+    # não veio do OCR. O escopo é o que permite o posto de demonstração conviver com os
+    # reais na mesma instalação.
+    #
+    # Preenchido/limpo pelos endpoints que criam e removem o posto de demonstração
+    # (POST/DELETE /api/feira/posto), não à mão.
+    "feira_empresa_id": "",
+    # Placas dos veículos de demonstração, separadas por vírgula (ex.: "MOK3H92").
+    # Vazio, mesmo com feira_ativo=sim, deixa o recurso inerte.
+    "feira_placas": "",
+    # Distância de edição máxima entre o que o OCR leu e uma placa cadastrada para o
+    # "snap" acontecer. 2 e não 0 porque o ponto do modo é justamente a mini-placa do
+    # carrinho sair mal lida: com casamento exato ele quase nunca fecharia, e o modo não
+    # cumpriria o que promete. 2 em 7 caracteres continua MUITO longe de qualquer placa
+    # de visitante — é por isso que o celular do cliente passa intacto.
+    "feira_tolerancia": "2",
+    # FASE 2 (declarada, ainda inerte): marcadores ArUco colados nos carrinhos, no formato
+    # "id:PLACA,id:PLACA". Resolve o caso em que a mini-placa é pequena demais para o OCR
+    # devolver QUALQUER string — aí não há o que casar por distância de edição.
+    "feira_marcadores": "",
     # mjpeg = stream independente por viewer (simples, sem deps)
     # hls   = encode único → N viewers sem custo adicional (requer ffmpeg no PATH)
     "streaming_modo": "mjpeg",

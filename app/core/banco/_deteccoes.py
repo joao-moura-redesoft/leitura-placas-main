@@ -12,7 +12,18 @@ from ._base import cursor
 # `origem` (esses são 'roteador'/'teste'/'pipeline'): 'producao' agrupa tudo que NÃO
 # é teste manual, porque do ponto de vista de quem audita um abastecimento o que
 # importa é "isto aconteceu de verdade" e não qual caminho de código gravou a linha.
-ORIGENS_FILTRO = ("producao", "teste", "todas")
+ORIGENS_FILTRO = ("producao", "teste", "feira", "todas")
+
+# Origens que NÃO contam como produção. 'teste' é o botão do painel; 'feira' é o modo de
+# demonstração (app/visao/feira.py), em que a placa NÃO veio do OCR — é mock. As duas
+# precisam ficar fora de 'producao' pelo mesmo motivo: são leitura que não aconteceu de
+# verdade, e contá-las na taxa de acerto mede o instrumento, não o sistema.
+#
+# 'feira' é filtro de PRIMEIRA CLASSE (está em ORIGENS_FILTRO) de propósito. Excluí-la de
+# 'producao' sem dar como listá-la a deixaria visível só em 'todas' — exatamente o buraco
+# que o COALESCE abaixo existe para evitar, e que tornaria impossível auditar depois
+# quantas leituras da feira foram mockadas.
+_ORIGENS_NAO_PRODUCAO = ("teste", "feira")
 
 # Quantos `?` cabem numa cláusula IN por vez. Bem abaixo do teto real do SQLite
 # (`SQLITE_LIMIT_VARIABLE_NUMBER`, 32766 nesta build; 999 em builds antigas) para o código
@@ -88,9 +99,10 @@ def _filtro_origem(origem: str | None, incluir_testes: bool) -> str:
     if origem not in ORIGENS_FILTRO:
         raise ValueError(f"origem inválida: {origem!r} (use {', '.join(ORIGENS_FILTRO)})")
     if origem == "producao":
-        return " AND COALESCE(d.origem, 'roteador') <> 'teste'"
-    if origem == "teste":
-        return " AND COALESCE(d.origem, 'roteador') = 'teste'"
+        lista = ", ".join(f"'{o}'" for o in _ORIGENS_NAO_PRODUCAO)
+        return f" AND COALESCE(d.origem, 'roteador') NOT IN ({lista})"
+    if origem in ("teste", "feira"):
+        return f" AND COALESCE(d.origem, 'roteador') = '{origem}'"
     return ""
 
 

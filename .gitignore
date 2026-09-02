@@ -72,3 +72,10 @@ testes/descartados.json
 # fora do alcance da purga por construção, não por lista de exceção.
 # Continuam gitignored: são placa e veículo de cliente real, mesma política dos snapshots.
 testes/reais/
+
+# Executavel do lancador (PyInstaller). NAO versionado de proposito: sao 7 MB de binario,
+# e binario no historico do git nunca mais sai. Ele e ARTEFATO DE RELEASE — anexado ao
+# release do GitHub, junto do ALPR-feira.zip. O que fica versionado e a FONTE dele
+# (lancador.py) e o INICIAR_ALPR.bat, que e o que permite reconstruir.
+ALPR.exe
+*.spec
