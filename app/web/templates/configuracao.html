@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Configuração — ALPR{% endblock %}
 {% block conteudo %}
-<h1>Configuração</h1>
+<h1 id="titulo-config" style="cursor:default; user-select:none;" onclick="_toqueSecreto()">Configuração</h1>
 <p style="color:#64748b; margin-bottom: 20px;">Alterações são salvas em <code>config.txt</code> e o pipeline é reiniciado automaticamente.</p>
 
 <nav class="cfg-tabs">
@@ -656,6 +656,119 @@
     </div>
   </div>
 
+  <!-- Modo feira: revelado por 7 cliques no titulo da pagina (ver _toqueSecreto).
+       O gesto e OCULTACAO DE UI, nao permissao: quem ja e admin liga isto por
+       POST /api/config de qualquer jeito. Ele serve para o cliente que esta olhando a
+       tela durante a demo nao ver a chave do mock — e para nada alem disso. -->
+  <div class="card" id="secao-feira" hidden style="border:1px dashed #f59e0b; background:#fffbeb;">
+    <h2 style="margin-top:0; color:#b45309;">Modo feira (demonstração)</h2>
+    <p style="color:#92400e; font-size:13px; margin-top:0;">
+      Faz os veículos de demonstração serem lidos sempre com a placa cadastrada, com
+      confiança máxima. <strong>A placa não vem do OCR</strong> — cada leitura mockada é
+      marcada nos avisos, sai em WARNING no log e é gravada com <code>origem=feira</code>,
+      fora da taxa de acerto. Placa de visitante continua passando pelo caminho real.
+    </p>
+
+    <!-- Posto de demonstração: a árvore que a leitura reativa exige, montada de uma vez.
+         Fica ACIMA das chaves do mock de propósito — sem posto, o mock está desarmado
+         (`feira_empresa_id` vazio), então preencher placas antes seria preencher no vácuo. -->
+    <div style="background:#fff; border:1px solid #fde68a; border-radius:8px; padding:14px; margin-bottom:16px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+        <strong style="color:#78350f;">Posto de demonstração</strong>
+        <span id="feira-estado" style="font-size:13px; color:#92400e;">carregando…</span>
+      </div>
+      <div id="feira-detalhe" style="font-size:13px; color:#374151; margin-top:8px;"></div>
+      <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+        <button type="button" id="btn-feira-criar" onclick="abrirDialogoFeira()"
+                style="background:#b45309;">Criar posto de demonstração</button>
+        <button type="button" id="btn-feira-remover" onclick="removerPostoFeira()" hidden
+                style="background:#fff; color:#b91c1c; border:1px solid #fecaca;">Remover</button>
+      </div>
+
+      <!-- Escolha da câmera. Duas abas porque o estande pode ter webcam no notebook ou
+           uma câmera IP na rede local do evento. -->
+      <div id="feira-dialogo" hidden style="margin-top:14px; border-top:1px solid #fde68a; padding-top:14px;">
+        <div style="display:flex; gap:6px; margin-bottom:12px;">
+          <button type="button" class="feira-aba active" data-fonte="usb"
+                  onclick="trocarFonteFeira(this)">Webcam USB</button>
+          <button type="button" class="feira-aba" data-fonte="rtsp"
+                  onclick="trocarFonteFeira(this)">Câmera na rede</button>
+        </div>
+
+        <div id="feira-fonte-usb">
+          <label style="display:block;">Índice do dispositivo
+            <input type="number" id="feira-usb-indice" value="0" min="0" max="9" style="width:90px;">
+            <small style="display:block; margin-top:4px;">
+              0 costuma ser a webcam interna do notebook. Não há como listar os dispositivos —
+              teste até aparecer a imagem certa.
+            </small>
+          </label>
+          <button type="button" onclick="testarCameraFeira()" style="margin-top:8px;">Testar índice</button>
+        </div>
+
+        <div id="feira-fonte-rtsp" hidden>
+          <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+            <label style="flex:1; min-width:160px;">Sub-rede
+              <input type="text" id="feira-rede" placeholder="192.168.1.0/24" style="width:100%;">
+            </label>
+            <button type="button" onclick="escanearRedeFeira()">Procurar câmeras</button>
+          </div>
+          <div id="feira-scan" style="font-size:13px; color:#64748b; margin-top:8px;"></div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px;">
+            <label>Host / IP
+              <input type="text" id="feira-host" placeholder="192.168.1.108" style="width:100%;">
+            </label>
+            <label>Canal
+              <input type="text" id="feira-canal" value="1" style="width:100%;">
+            </label>
+            <label>Usuário
+              <input type="text" id="feira-usuario" value="admin" style="width:100%;">
+            </label>
+            <label>Senha
+              <input type="password" id="feira-senha" style="width:100%;">
+            </label>
+          </div>
+          <button type="button" onclick="testarCameraFeira()" style="margin-top:8px;">Testar conexão</button>
+        </div>
+
+        <div id="feira-teste" style="font-size:13px; margin-top:10px;"></div>
+        <img id="feira-snapshot" alt="" hidden style="margin-top:8px; max-width:100%; border-radius:6px;">
+
+        <div style="display:flex; gap:8px; margin-top:14px;">
+          <button type="button" onclick="criarPostoFeira()" style="background:#16a34a;">Criar</button>
+          <button type="button" onclick="document.getElementById('feira-dialogo').hidden = true;"
+                  style="background:#fff; color:#374151; border:1px solid #e2e8f0;">Cancelar</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <label>Ativar modo feira
+        <select name="feira_ativo">
+          <option value="nao">Não — operação normal</option>
+          <option value="sim">Sim — leituras de demonstração mockadas</option>
+        </select>
+      </label>
+      <label>Tolerância do casamento
+        <input type="number" step="1" min="0" max="3" name="feira_tolerancia">
+        <small>Caracteres de diferença aceitos entre o lido e a placa cadastrada. 0 = exato.
+        Teto 3 por medição: contra as 973 placas reais já lidas no posto, 0/1/2/3 não capturam
+        nenhuma e <strong>4 captura 8</strong>. A margem depende da placa escolhida — se trocar
+        o veículo de demonstração, vale remedir.</small>
+      </label>
+    </div>
+
+    <label style="display:block; margin-top:12px;">Placas de demonstração
+      <input type="text" name="feira_placas" placeholder="MOK3H92, ABC1D23">
+      <small>Separadas por vírgula. Hífen e minúsculas são aceitos (<code>MOK-3H92</code>).</small>
+    </label>
+
+    <label style="display:block; margin-top:12px;">Marcadores ArUco <em>(ainda inativo)</em>
+      <input type="text" name="feira_marcadores" placeholder="0:MOK3H92, 1:ABC1D23">
+      <small>Fase 2 — para quando a mini-placa for pequena demais para o OCR ler qualquer coisa.</small>
+    </label>
+  </div>
+
 </div><!-- /tab-sistema -->
 
 
@@ -685,6 +798,12 @@
 </form>
 
 <style>
+.feira-aba {
+  background:#fff; color:#78350f; border:1px solid #fde68a; border-radius:6px;
+  padding:5px 12px; font-size:13px; cursor:pointer;
+}
+.feira-aba.active { background:#b45309; color:#fff; border-color:#b45309; }
+
 /* ─── Abas ───────────────────────────────────────────────────────── */
 .cfg-tabs {
   display: flex;
@@ -1025,6 +1144,205 @@ async function carregar() {
     statusEl.style.color = '#f87171';
   }
 }
+
+/* ─── Modo feira: posto de demonstração ────────────────────────────────────
+   O mock só age no posto de demonstração (`feira_empresa_id`). Enquanto ele não
+   existir, `feira_ativo=sim` fica DESARMADO — e é por isso que a tela mostra os dois
+   estados separados ("existe" x "armado"): sem isso o operador liga o interruptor,
+   não vê nada mockar e não tem como saber por quê. */
+
+async function carregarEstadoFeira() {
+  const est = document.getElementById('feira-estado');
+  const det = document.getElementById('feira-detalhe');
+  const btnCriar = document.getElementById('btn-feira-criar');
+  const btnRemover = document.getElementById('btn-feira-remover');
+  if (!est) return;
+  try {
+    const r = await fetch('/api/feira/posto');
+    const d = await r.json();
+    if (!d.existe) {
+      est.textContent = 'não criado';
+      est.style.color = '#92400e';
+      det.innerHTML = '<span style="color:#64748b">Sem posto de demonstração, o modo feira '
+                    + 'fica desarmado mesmo com o interruptor ligado.</span>';
+      btnCriar.textContent = 'Criar posto de demonstração';
+      btnRemover.hidden = true;
+      return;
+    }
+    est.textContent = d.armado ? '✓ criado e armado' : '⚠ criado, mas desarmado';
+    est.style.color = d.armado ? '#15803d' : '#b45309';
+    det.innerHTML =
+      `<div><strong>${esc(d.nome)}</strong> · CNPJ ${esc(d.cnpj)} · `
+      + `<a href="/posto/${d.empresa_id}" style="color:#b45309;">abrir posto</a></div>`
+      + `<div style="margin-top:6px;">URL da leitura: `
+      + `<code style="font-size:12px; word-break:break-all;">${esc(d.url_leitura)}</code></div>`
+      + (d.armado ? '' : '<div style="margin-top:6px; color:#b45309;">Ligue "Ativar modo feira" '
+                       + 'e cadastre ao menos uma placa para armar.</div>');
+    btnCriar.textContent = 'Trocar a câmera';
+    btnRemover.hidden = false;
+  } catch (e) {
+    est.textContent = 'erro ao consultar';
+    est.style.color = '#b91c1c';
+  }
+}
+
+function abrirDialogoFeira() {
+  const d = document.getElementById('feira-dialogo');
+  d.hidden = !d.hidden;
+  if (!d.hidden && !document.getElementById('feira-rede').value) sugerirRedeFeira();
+}
+
+function trocarFonteFeira(botao) {
+  document.querySelectorAll('.feira-aba').forEach(b => b.classList.remove('active'));
+  botao.classList.add('active');
+  const usb = botao.dataset.fonte === 'usb';
+  document.getElementById('feira-fonte-usb').hidden = !usb;
+  document.getElementById('feira-fonte-rtsp').hidden = usb;
+}
+
+function _fonteFeira() {
+  const aba = document.querySelector('.feira-aba.active');
+  if (!aba || aba.dataset.fonte === 'usb') {
+    return { camera_tipo: 'usb',
+             camera_indice: document.getElementById('feira-usb-indice').value || '0' };
+  }
+  return {
+    camera_tipo: 'rtsp',
+    intelbras_host: document.getElementById('feira-host').value.trim(),
+    intelbras_canal: document.getElementById('feira-canal').value.trim() || '1',
+    intelbras_usuario: document.getElementById('feira-usuario').value.trim() || 'admin',
+    intelbras_senha: document.getElementById('feira-senha').value,
+  };
+}
+
+async function testarCameraFeira() {
+  const alvo = document.getElementById('feira-teste');
+  const img = document.getElementById('feira-snapshot');
+  alvo.textContent = 'Testando…';
+  alvo.style.color = '#64748b';
+  img.hidden = true;
+  try {
+    const r = await fetch('/api/camera/teste', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ..._fonteFeira(), camera_largura: 1280, camera_altura: 720,
+                             camera_fps: 15 }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      alvo.textContent = '✗ ' + (err.detail || r.status);
+      alvo.style.color = '#b91c1c';
+      return;
+    }
+    img.src = URL.createObjectURL(await r.blob());
+    img.hidden = false;
+    alvo.textContent = '✓ câmera respondendo';
+    alvo.style.color = '#15803d';
+  } catch (e) {
+    alvo.textContent = '✗ ' + e.message;
+    alvo.style.color = '#b91c1c';
+  }
+}
+
+async function sugerirRedeFeira() {
+  try {
+    const d = await fetch('/api/cameras/rede-local').then(r => r.json());
+    if (d.rede_sugerida) document.getElementById('feira-rede').value = d.rede_sugerida;
+  } catch (e) { /* sugestão é conveniência, não requisito */ }
+}
+
+async function escanearRedeFeira() {
+  const alvo = document.getElementById('feira-scan');
+  const rede = document.getElementById('feira-rede').value.trim();
+  if (!rede) { alvo.textContent = 'Informe a sub-rede.'; return; }
+  alvo.textContent = `Varrendo ${rede} na porta 554…`;
+  try {
+    const r = await fetch('/api/cameras/scan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rede, porta: 554, timeout: 0.3 }),
+    });
+    const d = await r.json();
+    if (!r.ok) { alvo.textContent = '✗ ' + (d.detail || r.status); return; }
+    if (!d.total) { alvo.textContent = 'Nenhuma câmera encontrada nessa faixa.'; return; }
+    alvo.innerHTML = d.hosts.map(ip =>
+      `<button type="button" onclick="document.getElementById('feira-host').value='${esc(ip)}'"
+               style="margin:2px 4px 2px 0; font-size:12px; padding:3px 8px;">${esc(ip)}</button>`
+    ).join('');
+  } catch (e) {
+    alvo.textContent = '✗ ' + e.message;
+  }
+}
+
+async function criarPostoFeira() {
+  const alvo = document.getElementById('feira-teste');
+  alvo.textContent = 'Criando…';
+  alvo.style.color = '#64748b';
+  try {
+    const r = await fetch('/api/feira/posto', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(_fonteFeira()),
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      alvo.textContent = '✗ ' + (d.detail || r.status);
+      alvo.style.color = '#b91c1c';
+      return;
+    }
+    document.getElementById('feira-dialogo').hidden = true;
+    // O aviso da câmera NÃO é erro: o cadastro está montado, só a imagem não veio.
+    if (d.aviso) avisar('Posto de demonstração criado — ' + d.aviso, 'err');
+    else avisar('Posto de demonstração pronto.', 'ok');
+    await carregarEstadoFeira();
+  } catch (e) {
+    alvo.textContent = '✗ ' + e.message;
+    alvo.style.color = '#b91c1c';
+  }
+}
+
+async function removerPostoFeira() {
+  if (!confirm('Remover o posto de demonstração? As leituras da demo são apagadas junto.')) return;
+  const r = await fetch('/api/feira/posto', { method: 'DELETE' });
+  if (!r.ok) return avisarResposta(r);
+  avisar('Posto de demonstração removido — modo feira desarmado.', 'ok');
+  await carregarEstadoFeira();
+}
+
+/* ─── Modo feira: revelacao por toque secreto ──────────────────────────────
+   7 cliques no titulo, no maximo 1,2s entre eles (padrao "opcoes do desenvolvedor"
+   do Android). Escolhido em vez de um ?param=1 na URL — que vazaria no historico do
+   navegador e em qualquer print da barra de enderecos — e em vez de atalho de teclado,
+   dificil de executar com o cliente olhando.
+
+   `sessionStorage` e nao `localStorage`: a secao sobrevive a um F5 durante a demo e
+   some quando a aba fecha. Com localStorage a maquina ficaria destravada para sempre e
+   o gesto perderia o proposito na primeira vez que alguem o usasse.
+
+   Isto NAO e controle de acesso — /api/config continua exigindo admin. E ocultacao
+   visual para a demo, e so. */
+const _FEIRA_TOQUES = 7;
+let _toques = 0, _ultimoToque = 0;
+
+function _revelarFeira(persistir) {
+  const el = document.getElementById('secao-feira');
+  if (!el) return;
+  el.hidden = false;
+  carregarEstadoFeira();
+  if (persistir) {
+    try { sessionStorage.setItem('feira_revelada', '1'); } catch (e) { /* modo privado */ }
+    document.querySelector('.cfg-tab[data-tab="sistema"]')?.click();
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+}
+
+function _toqueSecreto() {
+  const agora = Date.now();
+  _toques = (agora - _ultimoToque > 1200) ? 1 : _toques + 1;
+  _ultimoToque = agora;
+  if (_toques >= _FEIRA_TOQUES) { _toques = 0; _revelarFeira(true); }
+}
+
+try {
+  if (sessionStorage.getItem('feira_revelada') === '1') _revelarFeira(false);
+} catch (e) { /* sessionStorage indisponivel — o gesto ainda funciona */ }
 
 /* ─── Banner instalação ────────────────────────────────────────────────── */
 let _pollingTimer = null;

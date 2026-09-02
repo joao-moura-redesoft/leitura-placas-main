@@ -13,6 +13,7 @@ from app.core import banco
 from app.core import broadcaster as bc
 from app.core import estado
 from app.visao import contexto_log
+from app.visao import feira as feira_mod
 from app.visao.camera import Camera
 from app.visao.consenso import confirmada as _confirmada
 from app.visao.detector import (MultiDetector, OrigemTipo, TRACK_SEM_DETECCAO,
@@ -697,6 +698,30 @@ class Pipeline:
         placa vinda das janelas), e tem que ser barata de expressar. O "esqueci de passar"
         é pego pelos testes de propagação dos dois modos, não pela assinatura.
         """
+        # ── Modo feira (MOCK) ─────────────────────────────────────────────────
+        # ANTES do cooldown de propósito: a partir daqui a placa que este método emite é a
+        # mockada, e é por ela que o cooldown tem de indexar. Se casasse depois, o carrinho
+        # parado no estande — cujo OCR devolve MOK3H92, M0K3H9Z, MOK3H9 em leituras
+        # seguidas — passaria pelo cooldown como se fossem veículos diferentes e re-emitiria
+        # em laço na tela ao vivo.
+        #
+        # `self.empresa_id` é o que restringe o mock ao posto de demonstração: com a demo
+        # convivendo com postos reais na mesma instalação, o contínuo de um cliente de
+        # verdade não pode ser tocado. Ver app/visao/feira.py.
+        #
+        # As três marcações obrigatórias são as mesmas da leitura reativa: WARNING no log,
+        # `origem="feira"` (fora do filtro 'producao') e confiança/acordo declarados.
+        origem_deteccao = "pipeline"
+        placa_demo = feira_mod.casar(placa, self.cfg, self.empresa_id)
+        if placa_demo is not None:
+            log.warning("MODO FEIRA: emissao continua '%s' substituida pela placa de "
+                        "demonstracao '%s' (camera=%s). Leitura MOCK, origem='feira'.",
+                        placa, placa_demo, self.camera_db_id)
+            _v_demo = validar(placa_demo)
+            placa, padrao = _v_demo if _v_demo else (placa_demo, padrao)
+            conf, acordo, confirmada = 1.0, 1.0, True
+            origem_deteccao = "feira"
+
         # Cooldown por SIMILARIDADE, não string exata: ruído de OCR de 1-2 caracteres
         # (0/O/D/Q, I/1/J...) fazia o mesmo veículo escapar do cooldown e virar uma
         # nova linha no histórico a cada leitura levemente diferente. Escopado por
@@ -771,7 +796,7 @@ class Pipeline:
             camera_id=self.cfg["camera_tipo"],
             bbox={"x": bbox[0], "y": bbox[1], "w": bbox[2], "h": bbox[3]},
             frame=frame_rel,
-            origem="pipeline",
+            origem=origem_deteccao,
             camera_db_id=self.camera_db_id,
             acordo=round(acordo, 3),
             confirmada=confirmada,

@@ -609,7 +609,8 @@ def bicos_ler_placa_teste(id_: int, request: Request, rapido: bool = False):
             raise HTTPException(404, "Bico não encontrado")
         nivel = motivo.rsplit("_", 1)[0]
         raise HTTPException(409, f"Nível '{nivel}' está desativado no cadastro")
-    deps.checar_acesso_empresa(request, _empresa_do_bico(bico))
+    empresa_do_bico = _empresa_do_bico(bico)
+    deps.checar_acesso_empresa(request, empresa_do_bico)
     fontes_db, avisos, falha = banco.cameras_do_bico(bico)
     if falha is not None:
         raise HTTPException(404, "Câmera do bico não encontrada")
@@ -625,6 +626,9 @@ def bicos_ler_placa_teste(id_: int, request: Request, rapido: bool = False):
             cfg=cfg, avisos=avisos,
             preview_nome=f"preview_bico_{id_}", bico_id=id_, origem="teste",
             perfil=perfil,
+            # O botão do painel exercita o mesmo caminho do roteador, e isso inclui o
+            # modo feira: sem o posto aqui, a demo funcionaria pelo GET e não pelo botão.
+            empresa_id=empresa_do_bico,
         )
     except leitura.LeituraError as e:
         raise HTTPException(e.status, e.mensagem)
@@ -643,3 +647,214 @@ def bicos_ler_placa_teste(id_: int, request: Request, rapido: bool = False):
         except Exception as e:
             log.error("Falha ao ler cache de veículo no teste do bico %s: %s", id_, e)
     return resultado
+
+
+# ─── Posto de demonstração (modo feira) ──────────────────────────────────────
+# Monta de uma vez a árvore que a leitura reativa exige — entidade → posto → câmera →
+# automação → bico → ROI — apontada para uma webcam USB ou uma câmera da rede local.
+# Sem isto, demonstrar num estande custa seis telas de cadastro manual antes de conseguir
+# a primeira leitura.
+#
+# Endpoint no BACKEND, e não encadeando as rotas existentes no JS (como `posto_novo.html`
+# faz): aqui a criação é idempotente e testável, e uma falha no meio não deixa metade da
+# árvore órfã no banco de quem está montando o estande com o cliente esperando.
+
+FEIRA_ENTIDADE = "DEMONSTRAÇÃO"
+# CNPJ fixo, todo nove: passa no dígito verificador de `_cnpj_valido` (obrigatório) e é
+# visualmente inconfundível como dado falso. Distinto do `11222333000181` usado pelos
+# testes, para ninguém confundir cadastro de demonstração com fixture de teste.
+FEIRA_CNPJ = "99999999000191"
+FEIRA_POSTO = "Posto de Demonstração"
+FEIRA_CODIGO = "1"          # automação e bico — a URL da demo fica curta
+
+
+def _feira_entidade_id() -> int:
+    """Entidade da demonstração, criando só se ainda não existe.
+
+    `entidades` não tem UNIQUE no esquema, então sem esta busca cada clique no botão
+    criaria uma entidade nova e a tela de postos encheria de "DEMONSTRAÇÃO" repetidas.
+    """
+    for e in banco.entidades_listar():
+        if e["nome"] == FEIRA_ENTIDADE:
+            return e["id"]
+    return banco.entidades_inserir({"nome": FEIRA_ENTIDADE})
+
+
+@router.post("/feira/posto", dependencies=[Depends(deps.exigir_admin)])
+def feira_criar_posto(payload: dict, request: Request):
+    """Cria (ou reaproveita) o posto de demonstração e ARMA o modo feira nele.
+
+    O corpo descreve só a CÂMERA, com os mesmos campos de `POST /api/cameras`:
+      USB  -> {"camera_tipo": "usb", "camera_indice": "0"}
+      rede -> {"camera_tipo": "rtsp", "intelbras_host": "...", "intelbras_usuario": ...}
+
+    Idempotente: chamado duas vezes, reaproveita o que já existe em vez de devolver 409.
+    `empresas.cnpj` é UNIQUE global, então sem isso o segundo clique quebraria.
+    """
+    from app.visao import camera as camera_mod
+    from app.visao import pipeline as pipeline_mod
+    from app.web import api as api_rotas
+
+    cfg = config.carregar()
+    tipo = (payload.get("camera_tipo") or "usb").strip()
+
+    entidade_id = _feira_entidade_id()
+    empresa = banco.empresas_obter_por_cnpj(FEIRA_CNPJ)
+    if empresa is None:
+        empresa_id = banco.empresas_inserir(
+            {"entidade_id": entidade_id, "cnpj": FEIRA_CNPJ, "nome": FEIRA_POSTO})
+    else:
+        empresa_id = empresa["id"]
+
+    # A câmera precisa nascer com o `empresa_id` do posto: `_validar_camera_do_posto`
+    # recusa o bico depois se ela pertencer a outro (ou a nenhum).
+    cams = banco.cameras_listar(empresa_id=empresa_id)
+    dados_cam = {
+        "nome": "Câmera da demonstração",
+        "empresa_id": empresa_id,
+        "local": "estande",
+        "camera_tipo": tipo,
+        "camera_indice": str(payload.get("camera_indice") or "0"),
+        "intelbras_host": (payload.get("intelbras_host") or "").strip(),
+        "intelbras_porta": str(payload.get("intelbras_porta") or "554"),
+        "intelbras_usuario": (payload.get("intelbras_usuario") or "admin").strip(),
+        "intelbras_canal": str(payload.get("intelbras_canal") or "1"),
+        "intelbras_subtype": str(payload.get("intelbras_subtype") or "1"),
+        "intelbras_formato": (payload.get("intelbras_formato") or "padrao").strip(),
+        "rtsp_url_custom": (payload.get("rtsp_url_custom") or "").strip(),
+        "ativo": True,
+    }
+    if payload.get("intelbras_senha"):
+        dados_cam["intelbras_senha"] = payload["intelbras_senha"]
+    if cams:
+        camera_id = cams[0]["id"]
+        banco.cameras_atualizar(camera_id, dados_cam)
+    else:
+        camera_id = banco.cameras_inserir(dados_cam)
+
+    autos = banco.automacoes_listar(empresa_id=empresa_id)
+    automacao_id = autos[0]["id"] if autos else banco.automacoes_inserir(
+        {"empresa_id": empresa_id, "codigo": FEIRA_CODIGO, "nome": "Demonstração"})
+
+    bicos = banco.bicos_listar(automacao_id=automacao_id)
+    if bicos:
+        bico_id = bicos[0]["id"]
+        banco.bicos_atualizar(bico_id, {"automacao_id": automacao_id, "codigo": FEIRA_CODIGO,
+                                        "nome": "Bico da demonstração", "camera_id": camera_id,
+                                        "ativo": True})
+    else:
+        bico_id = banco.bicos_inserir({"automacao_id": automacao_id, "codigo": FEIRA_CODIGO,
+                                       "nome": "Bico da demonstração", "camera_id": camera_id})
+
+    # ROI = quadro inteiro. Sem ROI o bico até funciona (a leitura analisa o quadro todo),
+    # mas o posto aparece como "não pronto" em /postos — parece quebrado bem na hora da
+    # demonstração. A captura ainda serve de teste: confirma que a câmera responde ANTES
+    # de declararmos sucesso, e dá as dimensões REAIS (a webcam costuma ignorar o
+    # 1280x720 pedido e entregar outra resolução).
+    aviso_camera = ""
+    frame = camera_mod.capturar_frame_unico(
+        tipo=tipo,
+        indice=dados_cam["rtsp_url_custom"] or dados_cam["camera_indice"],
+        largura=int(cfg.get("camera_largura", "1280")),
+        altura=int(cfg.get("camera_altura", "720")),
+        fps=int(cfg.get("camera_fps", "15")),
+        intelbras={"host": dados_cam["intelbras_host"], "porta": dados_cam["intelbras_porta"],
+                   "usuario": dados_cam["intelbras_usuario"],
+                   "senha": payload.get("intelbras_senha") or cfg.get("intelbras_senha", ""),
+                   "canal": dados_cam["intelbras_canal"],
+                   "subtype": dados_cam["intelbras_subtype"],
+                   "formato": dados_cam["intelbras_formato"],
+                   "rtsp_transporte": cfg.get("rtsp_transporte", "tcp")},
+        silencioso=True,
+    )
+    if frame is not None:
+        altura, largura = frame.shape[:2]
+        banco.bico_salvar_roi(bico_id, {"x": 0, "y": 0, "w": int(largura), "h": int(altura)})
+    else:
+        # NÃO é erro: o cadastro está montado e o operador pode ajustar a câmera e
+        # redesenhar a área depois. Falhar aqui obrigaria a refazer tudo por causa de um
+        # cabo solto.
+        aviso_camera = ("a câmera não respondeu — o cadastro foi criado, mas confira o "
+                        "índice/endereço em Câmeras e desenhe a área do bico")
+
+    # O supervisor NÃO descobre câmera nova: ele só itera os pipelines já em execução.
+    # Quem sobe é a rota, em thread de fundo — mesmo caminho de `POST /api/cameras`.
+    cam = banco.cameras_obter(camera_id)
+    if cam and cam["ativo"]:
+        import threading
+        threading.Thread(
+            target=api_rotas._iniciar_camera_bg,
+            args=(camera_id, pipeline_mod._cfg_para_camera(cfg, cam)),
+            daemon=True, name=f"alpr-start-{camera_id}",
+        ).start()
+
+    # ARMA o mock neste posto. Enquanto `feira_empresa_id` está vazio, `feira_ativo=sim`
+    # não mocka nada (falha fechada) — ver app/visao/feira.py.
+    cfg["feira_empresa_id"] = str(empresa_id)
+    config.salvar(cfg)
+
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome,
+                              acao="feira_posto_criado", alvo_tipo="empresa", alvo_id=empresa_id,
+                              detalhe=f"camera={tipo} bico={bico_id}")
+
+    return {
+        "empresa_id": empresa_id, "entidade_id": entidade_id, "camera_id": camera_id,
+        "automacao_id": automacao_id, "bico_id": bico_id,
+        "cnpj": FEIRA_CNPJ, "entidade": FEIRA_ENTIDADE, "nome": FEIRA_POSTO,
+        "url_leitura": (f"/api/leitura?entidade={FEIRA_ENTIDADE}&cnpj={FEIRA_CNPJ}"
+                        f"&automacao={FEIRA_CODIGO}&bico={FEIRA_CODIGO}"),
+        "aviso": aviso_camera,
+    }
+
+
+@router.delete("/feira/posto", dependencies=[Depends(deps.exigir_admin)])
+def feira_remover_posto(request: Request):
+    """Apaga o posto de demonstração e DESARMA o mock.
+
+    `empresas_remover` já derruba bicos → automações → câmeras → empresa na ordem certa
+    (o RESTRICT de `bicos.camera_id` faria um DELETE ingênuo falhar).
+    """
+    cfg = config.carregar()
+    bruto = (cfg.get("feira_empresa_id") or "").strip()
+    empresa_id = int(bruto) if bruto.isdigit() else None
+    if empresa_id is None:
+        raise HTTPException(404, "Nenhum posto de demonstração configurado")
+
+    # Para os pipelines das câmeras do posto ANTES de apagar: liberar a conexão depois de
+    # a linha sumir deixaria a thread apontando para cadastro inexistente.
+    from app.visao import pipeline as pipeline_mod
+    for cam in banco.cameras_listar(empresa_id=empresa_id):
+        try:
+            pipeline_mod.parar_camera(cam["id"])
+        except Exception as e:
+            log.warning("Falha ao parar câmera %s do posto de demonstração: %s", cam["id"], e)
+
+    removido = banco.empresas_remover(empresa_id)
+    cfg["feira_empresa_id"] = ""
+    config.salvar(cfg)
+
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome,
+                              acao="feira_posto_removido", alvo_tipo="empresa",
+                              alvo_id=empresa_id)
+    return {"removido": removido, "desarmado": True}
+
+
+@router.get("/feira/posto", dependencies=[Depends(deps.exigir_admin)])
+def feira_estado_posto():
+    """Estado do posto de demonstração, para a seção secreta da tela de configuração."""
+    cfg = config.carregar()
+    bruto = (cfg.get("feira_empresa_id") or "").strip()
+    empresa = banco.empresas_obter(int(bruto)) if bruto.isdigit() else None
+    if empresa is None:
+        return {"existe": False, "armado": False}
+    return {
+        "existe": True,
+        # ARMADO = o mock pode de fato agir. Separado de "existe" porque o posto pode estar
+        # criado com o interruptor ainda desligado, e a tela precisa dizer qual dos dois.
+        "armado": config.get_bool(cfg, "feira_ativo") and bool(cfg.get("feira_placas")),
+        "empresa_id": empresa["id"], "nome": empresa["nome"], "cnpj": empresa["cnpj"],
+        "url_leitura": (f"/api/leitura?entidade={FEIRA_ENTIDADE}&cnpj={empresa['cnpj']}"
+                        f"&automacao={FEIRA_CODIGO}&bico={FEIRA_CODIGO}"),
+    }

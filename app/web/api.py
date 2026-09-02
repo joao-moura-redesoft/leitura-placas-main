@@ -62,7 +62,7 @@ def listar_deteccoes(
     empresa_id: int | None = None,
     bico_id: int | None = None,
     incluir_testes: bool = False,
-    origem: Literal["producao", "teste", "todas"] | None = None,
+    origem: Literal["producao", "teste", "feira", "todas"] | None = None,
     tipo_veiculo: Literal["moto", "carro", "desconhecido", "todos"] | None = None,
 ):
     """`origem` filtra por conjunto: 'producao' (default — exclui testes manuais),

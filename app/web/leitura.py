@@ -513,6 +513,9 @@ def leitura_reativa(
             avisos=reg.get("avisos"),
             preview_nome=f"preview_bico_{reg['bico_id']}", bico_id=reg["bico_id"],
             origem="roteador", perfil=perfil,
+            # Só para o modo feira decidir se PODE mockar esta chamada — o mock vale
+            # apenas no posto de demonstração (app/visao/feira.py).
+            empresa_id=reg["empresa_id"],
         )
     except leitura.LeituraError as e:
         _registrar("erro_camera", e.mensagem)
