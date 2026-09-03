@@ -475,35 +475,31 @@ async function removerPosto() {
     const i = await r.json();
 
     const perdas = [
-      i.cameras     ? `${i.cameras} câmera(s)` : null,
-      i.automacoes  ? `${i.automacoes} automação(ões)` : null,
-      i.bicos       ? `${i.bicos} bico(s)` : null,
-      i.areas       ? `${i.areas} área(s) de captura desenhada(s)` : null,
+      i.cameras    ? `${i.cameras} câmera(s)` : null,
+      i.automacoes ? `${i.automacoes} automação(ões)` : null,
+      i.bicos      ? `${i.bicos} bico(s)` : null,
+      i.areas      ? `${i.areas} área(s) de captura desenhada(s)` : null,
     ].filter(Boolean);
 
-    let texto = `Remover o posto "${i.nome}" (CNPJ ${i.cnpj})?
-
-`;
-    texto += perdas.length
-      ? `Isto APAGA junto:
-  · ${perdas.join('
-  · ')}
-
-`
-      : 'O posto está vazio — nada mais será apagado.
-
-';
+    // Montado por linhas num array e juntado com '\n' no fim: escrever as quebras
+    // dentro das strings ja custou um SyntaxError que derrubou o SCRIPT INTEIRO desta
+    // pagina — e com o script morto nada renderiza, entao a tela aparece vazia sem
+    // nenhum erro visivel. Array de linhas nao tem como quebrar assim.
+    const linhas = [`Remover o posto "${i.nome}" (CNPJ ${i.cnpj})?`, ''];
+    if (perdas.length) {
+      linhas.push('Isto APAGA junto:');
+      perdas.forEach(x => linhas.push('  · ' + x));
+    } else {
+      linhas.push('O posto está vazio — nada mais será apagado.');
+    }
+    linhas.push('');
     if (i.usuarios_cliente)
-      texto += `${i.usuarios_cliente} usuário(s) cliente deste posto serão DESATIVADOS.
-
-`;
+      linhas.push(`${i.usuarios_cliente} usuário(s) cliente deste posto serão DESATIVADOS.`, '');
     if (i.e_posto_de_demonstracao)
-      texto += 'Este é o posto de demonstração: o modo feira será DESARMADO.
+      linhas.push('Este é o posto de demonstração: o modo feira será DESARMADO.', '');
+    linhas.push('O histórico de leituras permanece. Esta ação não tem desfazer.');
 
-';
-    texto += 'O histórico de leituras permanece. Esta ação não tem desfazer.';
-
-    if (!confirm(texto)) return;
+    if (!confirm(linhas.join('\n'))) return;
 
     const del = await fetch(`/api/empresas/${EMPRESA_ID}`, { method: 'DELETE' });
     if (!del.ok) return avisarResposta(del);
