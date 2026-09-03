@@ -113,7 +113,20 @@ if exist "%TEMP%\vc_redist.x64.exe" (
   "%TEMP%\vc_redist.x64.exe" /install /passive /norestart
   set "VCRC=!errorlevel!"
   REM 0 = instalado   1638/3010 = ja presente / requer reboot   ambos OK
-  if "!VCRC!"=="1638" ( echo       ja estava instalado. ) else if "!VCRC!"=="3010" ( echo       instalado ^(reinicie o Windows depois^). ) else if "!VCRC!"=="0" ( echo       instalado. ) else ( echo       instalador retornou codigo !VCRC!. )
+  REM 3010 = instalado, mas as DLLs so ficam ativas apos REINICIAR. Nao e detalhe: em
+  REM 02/09/2026, numa maquina de feira, o VC++ foi instalado aqui, o teste de import
+  REM passou (cv2/onnxruntime carregam), mas o `libpaddle.pyd` do PaddleOCR nao subiu e o
+  REM botao "Ler Placa" respondia 500. O aviso ficava perdido no meio de 200 linhas de pip.
+  if "!VCRC!"=="1638" (
+    echo       ja estava instalado.
+  ) else if "!VCRC!"=="3010" (
+    set "PRECISA_REBOOT=1"
+    echo       instalado.
+  ) else if "!VCRC!"=="0" (
+    echo       instalado.
+  ) else (
+    echo       instalador retornou codigo !VCRC!.
+  )
 ) else (
   echo       [AVISO] nao consegui baixar. Instale manualmente:
   echo               https://aka.ms/vs/17/release/vc_redist.x64.exe
@@ -143,6 +156,22 @@ if errorlevel 1 (
 
 echo [4/4] Configuracao concluida.
 > "%MARKER%" echo configurado em %DATE% %TIME%
+
+if defined PRECISA_REBOOT (
+  echo(
+  echo ================================================================
+  echo   ATENCAO: o Visual C++ Redistributable foi instalado AGORA e
+  echo   pede REINICIO do Windows.
+  echo(
+  echo   O servidor sobe e a leitura funciona assim mesmo, mas o
+  echo   PaddleOCR ^(reforco para placa antiga borrada^) fica de fora
+  echo   ate voce reiniciar. Isso NAO atrapalha a demonstracao.
+  echo(
+  echo   Se quiser o ensemble completo: reinicie o Windows e rode
+  echo   este INICIAR_ALPR.bat de novo.
+  echo ================================================================
+  echo(
+)
 
 :iniciar
 echo(
