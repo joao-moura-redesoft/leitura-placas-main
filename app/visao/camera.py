@@ -51,6 +51,34 @@ TIMEOUT_JOIN_LEITORA_SEG = 6.0
 RTSP_TIMEOUT_USEC = 5_000_000
 
 
+# ── Lock por DISPOSITIVO FÍSICO ──────────────────────────────────────────────────
+# `leitura.lock_camera` serializa por `camera_id`. Isso não basta: DUAS linhas de câmera
+# no cadastro podem apontar para o MESMO aparelho — dois `camera_id` diferentes, índice
+# USB 0 nos dois. Aí os locks são diferentes e nada impede que um pipeline chame
+# `cap.release()` enquanto o outro chama `cv2.VideoCapture()` no mesmo dispositivo.
+#
+# No Windows isso MATA O PROCESSO: access violation dentro do DSHOW, sem traceback
+# Python, o servidor simplesmente some. Medido em 03/09/2026 na máquina da feira —
+# `[cam1] tentando reconectar...` (que faz release) 700 ms antes de `Câmera aberta:
+# tipo=usb` da cam2, e o processo morreu na sequência. É a mesma família de falha que
+# `fechar()` já documenta para RTSP+FFmpeg, só que por outro backend.
+#
+# A chave é a IDENTIDADE DO APARELHO, não a da linha no banco: `usb:0` é o mesmo
+# dispositivo para qualquer câmera que o referencie. Para RTSP a chave é a URL, o que
+# também cobre duas linhas apontando para o mesmo stream.
+#
+# Protege abertura E liberação, que são as duas pontas da corrida. NÃO cobre `cap.read()`:
+# ele roda no laço da leitora o tempo todo e serializá-lo mataria o paralelismo entre
+# câmeras de verdade — e não é ele que corrompe, é abrir/liberar concorrente.
+_locks_dispositivo: dict[str, threading.Lock] = {}
+_locks_dispositivo_guarda = threading.Lock()
+
+
+def _lock_do_dispositivo(chave: str) -> threading.Lock:
+    with _locks_dispositivo_guarda:
+        return _locks_dispositivo.setdefault(chave, threading.Lock())
+
+
 def url_intelbras(
     host: str,
     porta: int = 554,
@@ -105,6 +133,18 @@ class Camera:
         self._parar_leitura = threading.Event()
         self._reader: threading.Thread | None = None
 
+    def _chave_dispositivo(self) -> str:
+        """Identidade do APARELHO que esta câmera usa — a chave do lock.
+
+        Duas linhas de cadastro com o mesmo índice USB devolvem a MESMA chave, que é
+        justamente o ponto: elas disputam um aparelho só.
+        """
+        if self.tipo in ("rtsp", "intelbras"):
+            return f"rtsp:{self._origem_rtsp()}"
+        if self.tipo == "csi":
+            return "csi"
+        return f"usb:{int(self.indice) if str(self.indice).strip().isdigit() else 0}"
+
     def _origem_rtsp(self) -> str:
         # rtsp e intelbras usam os mesmos parâmetros de host/canal/formato
         if self.tipo in ("intelbras", "rtsp") and self.intelbras.get("host"):
@@ -123,6 +163,13 @@ class Camera:
         log.log(logging.DEBUG if self.log_abertura_debug else logging.INFO, msg, *args)
 
     def abrir(self) -> None:
+        # Serializa contra QUALQUER outra Camera do mesmo aparelho — ver
+        # `_lock_do_dispositivo`. Sem isto, abrir enquanto outra instância libera o
+        # mesmo dispositivo derruba o processo inteiro no Windows.
+        with _lock_do_dispositivo(self._chave_dispositivo()):
+            self._abrir_sem_lock()
+
+    def _abrir_sem_lock(self) -> None:
         if self.tipo in ("rtsp", "intelbras"):
             origem = self._origem_rtsp()
             senha = self.intelbras.get("senha", "") or "___NADA___"
@@ -307,11 +354,15 @@ class Camera:
                 return False
             self._reader = None
         if self.cap is not None:
-            try:
-                self.cap.release()
-            except Exception:
-                pass
-            self.cap = None
+            # Mesmo lock da abertura: `release()` concorrente com o `VideoCapture()` de
+            # outra instância do MESMO aparelho é a corrida que mata o processo. Aqui a
+            # leitora já morreu (o join acima garantiu), então segurar o lock é curto.
+            with _lock_do_dispositivo(self._chave_dispositivo()):
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+                self.cap = None
         with self._frame_lock:
             self._ultimo_frame = None
         return True
