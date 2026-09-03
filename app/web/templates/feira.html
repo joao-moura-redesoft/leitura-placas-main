@@ -86,7 +86,13 @@
         </div>
         <h1>Aproxime o veículo</h1>
         <p>O sistema reconhece a placa e identifica o veículo automaticamente.</p>
-        <span class="aguardando"><span class="bolinha"></span> Aguardando veículo</span>
+        <div class="idle-acoes">
+          <button type="button" class="btn-forcar" id="btn-forcar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+            Forçar leitura
+          </button>
+          <span class="aguardando" id="idle-status"><span class="bolinha"></span> Aguardando veículo</span>
+        </div>
       </div>
 
       <!-- Estado de revelação (sem kicker acima do título) -->
@@ -104,6 +110,10 @@
           Placa reconhecida
         </div>
         <div class="ficha-specs" id="rev-ficha"></div>
+        <button type="button" class="btn-avancar" id="btn-avancar">
+          Próximo veículo
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
       </div>
     </section>
   </div>
@@ -114,7 +124,7 @@
   const BICO_ID   = {{ bico_id|tojson }};
   const FICHAS    = {{ fichas_json|safe }};
 
-  const DURACAO_REVEAL = 8500, COOLDOWN = 3000, PAUSA = 1600, BACKOFF = 4500;
+  const COOLDOWN = 3000, PAUSA = 1600, BACKOFF = 4500;
 
   const kiosk  = document.querySelector('.feira-kiosk');
   const img    = document.getElementById('feira-video');
@@ -166,7 +176,8 @@
     let ok = false;
     img.onload = () => { ok = true; escondeCam(); };
     img.onerror = () => { if (!modoSnapshot) usarSnapshot('A transmissão ao vivo não está disponível.'); };
-    img.src = `/stream/${CAMERA_ID}.mjpg?t=` + Date.now();
+    // `limpo=1`: feed cru, sem bboxes e sem ajuste, na cadência da câmera (limpo e fluido).
+    img.src = `/stream/${CAMERA_ID}.mjpg?limpo=1&t=` + Date.now();
     setTimeout(() => { if (!ok && !modoSnapshot) usarSnapshot('A câmera não enviou quadro a tempo.'); }, 12000);
   }
 
@@ -190,13 +201,25 @@
   }
 
   // ── Revelação (o único momento autoral de movimento) ────────────────────────
-  let revelando = false, ultimoReveal = 0, revealTimer = null;
+  // `revelando`: um veículo está na tela e o card FICA até alguém apertar "Próximo".
+  // `lendo`: há um scan em curso — serializa auto e forçado, nunca dois juntos.
+  let revelando = false, lendo = false, ultimoReveal = 0;
+  const idleStatus = document.getElementById('idle-status');
+  const btnForcar  = document.getElementById('btn-forcar');
+  const btnAvancar = document.getElementById('btn-avancar');
+  const AGUARDANDO = '<span class="bolinha"></span> Aguardando veículo';
+  const setStatus = html => { idleStatus.innerHTML = html; };
 
   function spec(icone, rot, val, destaque, cls) {
     if (!val) return '';
     return `<div class="spec${destaque ? ' destaque' : ''}"><span class="ic">${icone}</span>`
          + `<span class="rot">${esc(rot)}</span>`
          + `<span class="val${cls ? ' ' + cls : ''}">${esc(val)}</span></div>`;
+  }
+
+  function eDemo(d) {
+    // Só revela veículo de demonstração: mock do modo feira ou placa com ficha cadastrada.
+    return d && d.placa && (d.origem === 'feira' || d.ficha || FICHAS[normalizar(d.placa)]);
   }
 
   function revelar(d) {
@@ -216,36 +239,56 @@
     kiosk.classList.remove('reconhecido');
     void kiosk.offsetWidth;                 // reinicia a coreografia de entrada
     kiosk.classList.add('reconhecido');
-
-    clearTimeout(revealTimer);
-    revealTimer = setTimeout(esconderReveal, DURACAO_REVEAL);
+    // SEM timeout: o card permanece até o operador apertar "Próximo veículo".
   }
 
-  function esconderReveal() {
+  function avancar() {
     reveal.hidden = true;
     idle.hidden = false;
     kiosk.classList.remove('reconhecido');
     revelando = false;
     ultimoReveal = Date.now();
+    setStatus(AGUARDANDO);
+    agenda(400);                            // retoma o loop (respeitando o cooldown)
+  }
+  btnAvancar.onclick = avancar;
+
+  // Uma leitura. `forcar=1` usa o perfil COMPLETO (mais robusto) — é o botão manual.
+  // Serializa via `lendo`: o loop e o botão nunca disparam dois scans ao mesmo tempo.
+  async function fazerScan(forcar) {
+    if (lendo) return null;
+    lendo = true;
+    try {
+      const r = await fetch('/api/feira/scan' + (forcar ? '?forcar=1' : ''), { method: 'POST' });
+      if (r.status === 429) return { _429: true };
+      return await r.json().catch(() => null);
+    } catch (e) { return null; }
+    finally { lendo = false; }
   }
 
-  // ── Loop hands-free ─────────────────────────────────────────────────────────
+  async function forcarLeitura() {
+    if (revelando || lendo) return;
+    btnForcar.disabled = true;
+    setStatus('<span class="spin-sm"></span> Lendo placa…');
+    const d = await fazerScan(true);
+    btnForcar.disabled = false;
+    if (eDemo(d)) { revelar(d); return; }
+    setStatus('Nenhuma placa reconhecida — reposicione o veículo e tente de novo.');
+    setTimeout(() => { if (!revelando) setStatus(AGUARDANDO); }, 3500);
+  }
+  btnForcar.onclick = forcarLeitura;
+
+  // ── Loop hands-free (rápido) ────────────────────────────────────────────────
   let cicloTimer = null;
   const agenda = ms => { clearTimeout(cicloTimer); cicloTimer = setTimeout(ciclo, ms); };
 
   async function ciclo() {
-    if (revelando) return agenda(600);
+    if (revelando || lendo) return agenda(600);
     const desde = Date.now() - ultimoReveal;
     if (desde < COOLDOWN) return agenda(COOLDOWN - desde);
-    try {
-      const r = await fetch('/api/feira/scan', { method: 'POST' });
-      if (r.status === 429) return agenda(BACKOFF);
-      const d = await r.json().catch(() => null);
-      if (d && d.placa && (d.origem === 'feira' || d.ficha || FICHAS[normalizar(d.placa)])) {
-        revelar(d);
-        return;
-      }
-    } catch (e) { /* rede/câmera oscilou — segue tentando */ }
+    const d = await fazerScan(false);
+    if (d && d._429) return agenda(BACKOFF);
+    if (eDemo(d)) { revelar(d); return; }
     agenda(PAUSA);
   }
 

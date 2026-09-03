@@ -989,13 +989,17 @@ _LIMITE_FEIRA_SCAN_MIN = 45
 
 
 @router.post("/feira/scan")
-def feira_scan(request: Request):
+def feira_scan(request: Request, forcar: bool = False):
     """Uma leitura do bico de demonstração para o kiosk `/feira` (loop hands-free).
 
     Resolve o bico da demonstração a partir de `feira_empresa_id` — sem id vindo do
-    cliente, então não serve para ler bico de outro posto. Sempre perfil rápido e
-    `origem="feira"`: é demonstração, fica fora da métrica de produção. Devolve só o que a
-    vitrine precisa, incluindo a ficha local da placa reconhecida.
+    cliente, então não serve para ler bico de outro posto. `origem="feira"`: é
+    demonstração, fica fora da métrica de produção. Devolve só o que a vitrine precisa,
+    incluindo a ficha local da placa reconhecida.
+
+    `forcar=1` é o botão "Forçar leitura" do kiosk: usa o perfil COMPLETO (mais fotos, mais
+    robusto) em vez do rápido do loop automático, para o caso do carrinho estar num ângulo
+    que o rápido não fecha. O loop hands-free continua usando o rápido (forcar=0).
     """
     cfg = config.carregar()
     if not feira.ativo(cfg):
@@ -1004,6 +1008,8 @@ def feira_scan(request: Request):
     ip = request.client.host if request.client else "?"
     if not limitador.permitido("feira_scan", ip, _LIMITE_FEIRA_SCAN_MIN, 60):
         raise HTTPException(429, "Muitas leituras seguidas — aguarde um instante.")
+
+    perfil = leitura.PERFIL_COMPLETO if forcar else leitura.PERFIL_RAPIDO
 
     empresa_id = feira.empresa_demo(cfg)
     bico = None
@@ -1024,9 +1030,9 @@ def feira_scan(request: Request):
 
     try:
         resultado = leitura.ler_placa(
-            fontes=leitura_rotas.montar_fontes(fontes_db, cfg, leitura.PERFIL_RAPIDO),
+            fontes=leitura_rotas.montar_fontes(fontes_db, cfg, perfil),
             cfg=cfg, avisos=avisos, preview_nome=f"preview_bico_{bico['id']}",
-            bico_id=bico["id"], origem="feira", perfil=leitura.PERFIL_RAPIDO,
+            bico_id=bico["id"], origem="feira", perfil=perfil,
             empresa_id=empresa_id,
         )
     except leitura.LeituraError as e:

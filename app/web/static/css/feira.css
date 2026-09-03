@@ -216,11 +216,15 @@
   background: linear-gradient(155deg, var(--k-papel) 0%, var(--k-papel-2) 100%);
   box-shadow: 0 40px 90px -40px #000, inset 0 1px 0 #ffffff80;
   color: var(--k-tinta);
-  display: flex; align-items: center;
-  padding: clamp(26px, 3vw, 56px);
-  min-height: 0; overflow: hidden;
+  /* Coluna com rolagem de segurança: `margin-block:auto` no filho centraliza quando há
+     espaço e colapsa para 0 quando o conteúdo é mais alto que o painel (TV 720p, laptop),
+     deixando rolar a partir do topo em vez de CORTAR o topo — o que `align-items:center`
+     + overflow faria. Na TV 1080p do estande sobra espaço e fica centralizado. */
+  display: flex; flex-direction: column;
+  padding: clamp(24px, 3vw, 56px);
+  min-height: 0; overflow-y: auto;
 }
-.feira-estado { width: 100%; }
+.feira-estado { width: 100%; margin-block: auto; }
 .feira-estado[hidden] { display: none; }
 
 /* Idle — invitação calma, quase sem movimento */
@@ -261,21 +265,22 @@
 .reveal { width: 100%; }
 .reveal[hidden] { display: none; }
 .reveal h1 {
-  margin: 0 0 clamp(20px, 2.4vw, 32px);
-  font-size: clamp(40px, 5vw, 84px);
+  margin: 0 0 clamp(16px, 2.2vh, 30px);
+  /* min(vw, vh): não estoura a altura num painel baixo (720p/laptop) nem fica pequeno na TV. */
+  font-size: clamp(34px, min(4.8vw, 7vh), 80px);
   font-weight: 800; letter-spacing: -.035em; line-height: .98;
 }
 .reveal h1 .apelido {
   display: block;
   margin-top: 8px;
-  font-size: clamp(16px, 1.5vw, 22px);
+  font-size: clamp(15px, 1.5vw, 22px);
   font-weight: 500; letter-spacing: -.01em; color: var(--k-tinta-2);
 }
 
 /* Placa Mercosul — elemento autêntico, herói do painel */
 .placa-mercosul {
   width: min(360px, 78%);
-  margin: 0 0 clamp(24px, 2.6vw, 34px);
+  margin: 0 0 clamp(18px, 2.2vh, 32px);
   border-radius: 12px;
   background: #fbfcfd;
   border: 3px solid #14161c;
@@ -296,7 +301,7 @@
 }
 .placa-mercosul .numero {
   color: #14161c; font-weight: 700;
-  font-size: clamp(36px, 4.6vw, 58px);
+  font-size: clamp(32px, min(4.6vw, 6vh), 58px);
   letter-spacing: clamp(4px, .6vw, 8px);
   text-align: center;
   padding: clamp(10px, 1.1vw, 16px) 8px clamp(12px, 1.3vw, 18px);
@@ -308,7 +313,7 @@
   display: inline-flex; align-items: center; gap: 8px;
   color: var(--k-verde); font-weight: 600;
   font-size: clamp(12px, 1.1vw, 15px);
-  margin: 0 0 clamp(22px, 2.4vw, 32px);
+  margin: 0 0 clamp(16px, 2vh, 28px);
 }
 .reveal .placa-conf svg { width: 17px; height: 17px; }
 
@@ -316,7 +321,7 @@
 .ficha-specs { border-top: 1px solid var(--k-linha); }
 .spec {
   display: flex; align-items: center; gap: 14px;
-  padding: clamp(11px, 1.2vw, 15px) 2px;
+  padding: clamp(9px, 1.5vh, 15px) 2px;
   border-bottom: 1px solid var(--k-linha);
 }
 .spec .ic {
@@ -352,6 +357,41 @@
   from { opacity: 0; transform: translateY(16px); filter: blur(6px); }
   to   { opacity: 1; transform: none; filter: blur(0); }
 }
+
+/* Ações do idle: botão "Forçar leitura" (secundário) + status */
+.idle-acoes { margin-top: clamp(24px, 2.6vw, 34px); display: flex; flex-direction: column; align-items: flex-start; gap: 16px; }
+.btn-forcar {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 11px 18px; border-radius: 11px;
+  border: 1px solid var(--k-linha); background: #ffffff;
+  color: var(--k-tinta); font-family: inherit;
+  font-size: clamp(14px, 1.2vw, 16px); font-weight: 600; cursor: pointer;
+  transition: background .18s ease-out, border-color .18s ease-out, transform .1s ease-out;
+}
+.btn-forcar svg { width: 18px; height: 18px; color: var(--k-tinta-2); }
+.btn-forcar:hover { background: var(--k-papel-2); border-color: #d8d2c4; }
+.btn-forcar:active { transform: translateY(1px); }
+.btn-forcar:disabled { opacity: .5; cursor: default; }
+.idle .aguardando .spin-sm {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid #0000; border-top-color: var(--k-verde); border-right-color: var(--k-verde);
+  display: inline-block; animation: feira-spin .8s linear infinite;
+}
+
+/* Ação primária "Próximo veículo": o verde da marca marca a AÇÃO (colorize) */
+.btn-avancar {
+  display: inline-flex; align-items: center; gap: 10px;
+  margin-top: clamp(22px, 2.4vw, 30px);
+  padding: 13px 22px; border-radius: 12px; border: 0;
+  background: var(--k-verde); color: #fff; font-family: inherit;
+  font-size: clamp(15px, 1.3vw, 18px); font-weight: 700; cursor: pointer;
+  box-shadow: 0 12px 26px -12px #0f6b3c;
+  transition: background .18s ease-out, transform .1s ease-out;
+}
+.btn-avancar svg { width: 19px; height: 19px; }
+.btn-avancar:hover { background: var(--k-verde-viva); }
+.btn-avancar:active { transform: translateY(1px); }
+.feira-kiosk.reconhecido .reveal > *:nth-child(5) { animation: feira-entra .55s cubic-bezier(.16,1,.3,1) both; animation-delay: .46s; }
 
 /* ── Responsivo: retrato / telas estreitas empilham ────────────────────────── */
 @media (max-width: 940px), (max-aspect-ratio: 1/1) {

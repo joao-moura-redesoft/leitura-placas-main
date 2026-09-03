@@ -426,6 +426,15 @@ class Pipeline:
                     frames_count = 0
                     ultimo_fps = agora
 
+                # Frame de EXIBIÇÃO (vitrine da feira): o quadro CRU, publicado TODA
+                # iteração — ou seja, na taxa real da câmera (~camera_fps), não na de
+                # detecção. É o que dá vídeo limpo e fluido em /feira, sem os bboxes nem o
+                # ajuste CLAHE. Barato: `registrar_frame_camera_display` só guarda a
+                # referência (sem cópia/encode); `Camera.ler()` devolve o MESMO objeto até
+                # a câmera trazer um frame novo, então o encode do stream só reprocessa
+                # quando a imagem de fato muda (cache por identidade em streaming/stream.py).
+                estado.registrar_frame_camera_display(self.camera_db_id, frame)
+
                 # ── Ajuste + publicação + detecção, juntos, na cadência de DETECÇÃO ──
                 # Não dá pra publicar o frame ajustado numa cadência e detectar noutra:
                 # app/visao/leitura.py (ler_placa) NÃO reaplica o ajuste quando usa o
