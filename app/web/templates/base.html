@@ -42,6 +42,11 @@
   <a href="/postos"    {% if pagina.startswith('/posto') %}aria-current="page"{% endif %}>Postos</a>
   <a href="/historico" {% if pagina.startswith('/historico') %}aria-current="page"{% endif %}>Histórico</a>
   <a href="/listas"    {% if pagina.startswith('/listas') %}aria-current="page"{% endif %}>Listas</a>
+  {# Vitrine da feira: só aparece com o modo feira armado (feira_on em _ctx). É a porta
+     para a tela de demonstração em tela cheia. #}
+  {% if feira_on %}
+  <a href="/feira" {% if pagina.startswith('/feira') %}aria-current="page"{% endif %}>Feira</a>
+  {% endif %}
 
   {% if not usuario or usuario.papel == 'admin' %}
   <div class="nav-menu">

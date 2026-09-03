@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0a0d12">
+<title>Demonstração — Leitura de Placas</title>
+
+<link rel="preload" href="/static/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/feira.css">
+</head>
+<body>
+<div class="feira-kiosk">
+
+  <!-- Topo -->
+  <header class="feira-top">
+    <div class="feira-marca">
+      <div class="feira-marca-icone">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+             stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="6" width="20" height="12" rx="2"/><path d="M12 12h.01"/>
+          <path d="M6 10h.01M18 10h.01M6 14h.01M18 14h.01"/>
+        </svg>
+      </div>
+      <div class="feira-marca-txt">
+        <b>ALPR</b>
+        <span>Leitura automática de placas</span>
+      </div>
+    </div>
+    <div class="feira-top-dir">
+      <span class="feira-relogio" id="feira-relogio">--:--</span>
+      <button type="button" class="feira-btn-icone" id="feira-full" title="Tela cheia" aria-label="Tela cheia">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/>
+        </svg>
+      </button>
+      <a href="/postos" class="feira-btn-icone" title="Sair da demonstração" aria-label="Sair">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6 6 18M6 6l12 12"/>
+        </svg>
+      </a>
+    </div>
+  </header>
+
+  <!-- Palco -->
+  <div class="feira-palco">
+
+    <!-- Câmera ao vivo -->
+    <section class="feira-cam">
+      <div class="ao-vivo"><span class="ponto"></span> AO VIVO</div>
+      <img id="feira-video" alt="Câmera da demonstração">
+      <div class="scanner">
+        <span class="canto tl"></span><span class="canto tr"></span>
+        <span class="canto bl"></span><span class="canto br"></span>
+        <span class="linha"></span>
+      </div>
+      <div class="cam-estado" id="cam-estado">
+        <div class="spin"></div>
+        <div>
+          <div id="cam-estado-txt" style="font-weight:600;color:#eef1f5">Conectando à câmera…</div>
+          <div id="cam-estado-sub" style="font-size:13px;margin-top:4px"></div>
+        </div>
+      </div>
+      <div class="cam-legenda">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M3 12h18"/>
+        </svg>
+        <span><b>Detecção automática</b> · a leitura acontece sozinha quando o veículo entra em cena</span>
+      </div>
+    </section>
+
+    <!-- Painel de informação -->
+    <section class="feira-info">
+
+      <!-- Estado ocioso -->
+      <div class="feira-estado idle" id="feira-idle">
+        <div class="idle-icone">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 13l1.6-4.8A2 2 0 0 1 8.5 7h7a2 2 0 0 1 1.9 1.3L19 13"/>
+            <path d="M3 17h18"/><rect x="3" y="13" width="18" height="4" rx="1.5"/>
+            <circle cx="7.5" cy="17.5" r="1.4"/><circle cx="16.5" cy="17.5" r="1.4"/>
+          </svg>
+        </div>
+        <h1>Aproxime o veículo</h1>
+        <p>O sistema reconhece a placa e identifica o veículo automaticamente.</p>
+        <span class="aguardando"><span class="bolinha"></span> Aguardando veículo</span>
+      </div>
+
+      <!-- Estado de revelação (sem kicker acima do título) -->
+      <div class="feira-estado reveal" id="feira-reveal" hidden aria-live="polite">
+        <h1>Bem-vindo!<span class="apelido" id="rev-apelido"></span></h1>
+        <div class="placa-mercosul">
+          <div class="faixa">
+            <span>BRASIL</span>
+            <span class="br"><span class="bandeira"></span> BR</span>
+          </div>
+          <div class="numero" id="rev-placa">—</div>
+        </div>
+        <div class="placa-conf">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          Placa reconhecida
+        </div>
+        <div class="ficha-specs" id="rev-ficha"></div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+  const CAMERA_ID = {{ camera_id|tojson }};
+  const BICO_ID   = {{ bico_id|tojson }};
+  const FICHAS    = {{ fichas_json|safe }};
+
+  const DURACAO_REVEAL = 8500, COOLDOWN = 3000, PAUSA = 1600, BACKOFF = 4500;
+
+  const kiosk  = document.querySelector('.feira-kiosk');
+  const img    = document.getElementById('feira-video');
+  const idle   = document.getElementById('feira-idle');
+  const reveal = document.getElementById('feira-reveal');
+  const camBox = document.getElementById('cam-estado');
+  const camTxt = document.getElementById('cam-estado-txt');
+  const camSub = document.getElementById('cam-estado-sub');
+
+  const normalizar = p => (p || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  // Ícones (SVG de traço, nunca emoji). currentColor herda a cor do contexto.
+  const S = p => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+  const ICON = {
+    fuel: S('<rect x="3" y="3" width="11" height="19" rx="1.5"/><line x1="3" y1="10" x2="14" y2="10"/><path d="M14 8l4 3.5V18a2 2 0 0 0 4 0V9.5L19 6.5"/>'),
+    car:  S('<path d="M5 13l1.6-4.8A2 2 0 0 1 8.5 7h7a2 2 0 0 1 1.9 1.3L19 13"/><rect x="3" y="13" width="18" height="4" rx="1.5"/><circle cx="7.5" cy="17.5" r="1.4"/><circle cx="16.5" cy="17.5" r="1.4"/>'),
+    cor:  S('<path d="M12 3s6 6.4 6 10.5a6 6 0 0 1-12 0C6 9.4 12 3 12 3Z"/>'),
+    ano:  S('<rect x="3" y="4.5" width="18" height="16.5" rx="2"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/>'),
+  };
+
+  // ── Relógio (Inter tabular-nums, sem "fantasia" mono) ───────────────────────
+  const relogio = document.getElementById('feira-relogio');
+  const tick = () => relogio.textContent =
+    new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  tick(); setInterval(tick, 15000);
+
+  // ── Tela cheia + cursor ─────────────────────────────────────────────────────
+  document.getElementById('feira-full').onclick = () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
+  };
+  let curTimer;
+  const mexeu = () => {
+    kiosk.classList.remove('cursor-oculto');
+    clearTimeout(curTimer);
+    curTimer = setTimeout(() => kiosk.classList.add('cursor-oculto'), 3500);
+  };
+  document.addEventListener('mousemove', mexeu); mexeu();
+
+  // ── Câmera: MJPEG com watchdog e queda para snapshot ────────────────────────
+  const mostrarCam = (t, sub) => { camBox.classList.add('mostra'); camTxt.textContent = t; camSub.textContent = sub || ''; };
+  const escondeCam = () => camBox.classList.remove('mostra');
+  let modoSnapshot = false, snapTimer = null;
+
+  function carregarMjpeg() {
+    mostrarCam('Abrindo transmissão ao vivo…', '');
+    let ok = false;
+    img.onload = () => { ok = true; escondeCam(); };
+    img.onerror = () => { if (!modoSnapshot) usarSnapshot('A transmissão ao vivo não está disponível.'); };
+    img.src = `/stream/${CAMERA_ID}.mjpg?t=` + Date.now();
+    setTimeout(() => { if (!ok && !modoSnapshot) usarSnapshot('A câmera não enviou quadro a tempo.'); }, 12000);
+  }
+
+  function usarSnapshot(motivo) {
+    modoSnapshot = true;
+    mostrarCam('Reconectando à câmera…', motivo);
+    const puxa = () => {
+      img.onload = escondeCam;
+      img.onerror = () => mostrarCam('Sem sinal da câmera', 'Confira a conexão em Configuração › Câmeras.');
+      img.src = `/api/cameras/${CAMERA_ID}/snapshot?t=` + Date.now();
+    };
+    puxa();
+    clearInterval(snapTimer);
+    snapTimer = setInterval(puxa, 1800);
+    setTimeout(() => { modoSnapshot = false; clearInterval(snapTimer); carregarMjpeg(); }, 30000);
+  }
+
+  function iniciarCamera() {
+    if (!CAMERA_ID) { mostrarCam('Câmera da demonstração não configurada', 'Cadastre a câmera na tela de configuração.'); return; }
+    carregarMjpeg();
+  }
+
+  // ── Revelação (o único momento autoral de movimento) ────────────────────────
+  let revelando = false, ultimoReveal = 0, revealTimer = null;
+
+  function spec(icone, rot, val, destaque, cls) {
+    if (!val) return '';
+    return `<div class="spec${destaque ? ' destaque' : ''}"><span class="ic">${icone}</span>`
+         + `<span class="rot">${esc(rot)}</span>`
+         + `<span class="val${cls ? ' ' + cls : ''}">${esc(val)}</span></div>`;
+  }
+
+  function revelar(d) {
+    const ficha = d.ficha || FICHAS[normalizar(d.placa)] || {};
+    document.getElementById('rev-placa').textContent = normalizar(d.placa) || '—';
+    document.getElementById('rev-apelido').textContent = ficha.apelido || 'Veículo de demonstração';
+    document.getElementById('rev-ficha').innerHTML = [
+      spec(ICON.fuel, 'Combustível', ficha.combustivel, true),
+      spec(ICON.car,  'Modelo',      ficha.modelo),
+      spec(ICON.cor,  'Cor',         ficha.cor),
+      spec(ICON.ano,  'Ano',         ficha.ano, false, 'ano'),
+    ].join('');
+
+    revelando = true;
+    idle.hidden = true;
+    reveal.hidden = false;
+    kiosk.classList.remove('reconhecido');
+    void kiosk.offsetWidth;                 // reinicia a coreografia de entrada
+    kiosk.classList.add('reconhecido');
+
+    clearTimeout(revealTimer);
+    revealTimer = setTimeout(esconderReveal, DURACAO_REVEAL);
+  }
+
+  function esconderReveal() {
+    reveal.hidden = true;
+    idle.hidden = false;
+    kiosk.classList.remove('reconhecido');
+    revelando = false;
+    ultimoReveal = Date.now();
+  }
+
+  // ── Loop hands-free ─────────────────────────────────────────────────────────
+  let cicloTimer = null;
+  const agenda = ms => { clearTimeout(cicloTimer); cicloTimer = setTimeout(ciclo, ms); };
+
+  async function ciclo() {
+    if (revelando) return agenda(600);
+    const desde = Date.now() - ultimoReveal;
+    if (desde < COOLDOWN) return agenda(COOLDOWN - desde);
+    try {
+      const r = await fetch('/api/feira/scan', { method: 'POST' });
+      if (r.status === 429) return agenda(BACKOFF);
+      const d = await r.json().catch(() => null);
+      if (d && d.placa && (d.origem === 'feira' || d.ficha || FICHAS[normalizar(d.placa)])) {
+        revelar(d);
+        return;
+      }
+    } catch (e) { /* rede/câmera oscilou — segue tentando */ }
+    agenda(PAUSA);
+  }
+
+  iniciarCamera();
+  if (BICO_ID) ciclo();
+  else mostrarCam('Bico da demonstração não configurado', 'Crie o posto de demonstração na configuração.');
+</script>
+</body>
+</html>

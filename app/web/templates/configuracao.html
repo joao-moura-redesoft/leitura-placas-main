@@ -685,6 +685,26 @@
                 style="background:#fff; color:#b91c1c; border:1px solid #fecaca;">Remover</button>
       </div>
 
+      <!-- Apontar para um posto que JA EXISTE. Sem isto, quem ja tinha cadastrado posto,
+           camera, automacao e bico — e desenhado as areas — era obrigado a montar um
+           SEGUNDO posto so para demonstrar, e o mock ficava inalcancavel no cadastro real.
+           Foi o que aconteceu em campo: interruptor em "Sim", placa cadastrada, e a
+           leitura saiu sem mockar porque o armamento apontava para lugar nenhum. -->
+      <div style="margin-top:14px; border-top:1px dashed #fde68a; padding-top:12px;">
+        <label style="display:block; font-size:13px; color:#78350f;">
+          …ou use um posto que já existe
+          <div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap;">
+            <select id="feira-posto-existente" style="flex:1; min-width:200px;"></select>
+            <button type="button" onclick="apontarPostoFeira()"
+                    style="background:#b45309;">Usar este posto</button>
+          </div>
+          <small style="display:block; margin-top:6px; color:#92400e;">
+            O mock passa a valer nas leituras DESTE posto. Os demais continuam com leitura
+            real. Escolher "— nenhum —" desarma sem apagar nada.
+          </small>
+        </label>
+      </div>
+
       <!-- Escolha da câmera. Duas abas porque o estande pode ter webcam no notebook ou
            uma câmera IP na rede local do evento. -->
       <div id="feira-dialogo" hidden style="margin-top:14px; border-top:1px solid #fde68a; padding-top:14px;">
@@ -762,6 +782,26 @@
       <input type="text" name="feira_placas" placeholder="MOK3H92, ABC1D23">
       <small>Separadas por vírgula. Hífen e minúsculas são aceitos (<code>MOK-3H92</code>).</small>
     </label>
+
+    <!-- Fichas da vitrine: o que a tela /feira mostra no card "Bem-vindo!" de cada
+         carrinho. Dado SÓ de exibição (não há internet na feira; combustível real vem
+         da apiplacas) — guardado à parte, em feira_fichas.json. -->
+    <div style="margin-top:16px; background:#fff; border:1px solid #fde68a; border-radius:8px; padding:14px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+        <strong style="color:#78350f;">Fichas da vitrine (tela da feira)</strong>
+        <button type="button" onclick="addFichaFeira()"
+                style="background:#fff; color:#374151; border:1px solid #e2e8f0;">+ placa</button>
+      </div>
+      <p style="color:#92400e; font-size:12px; margin:8px 0 12px;">
+        O que a tela <a href="/feira" style="color:#b45309;">Feira</a> exibe no card
+        de cada carrinho. Só exibição — não vem do OCR nem da apiplacas.
+      </p>
+      <div id="feira-fichas"></div>
+      <div style="margin-top:10px;">
+        <button type="button" onclick="salvarFichasFeira()" style="background:#16a34a;">Salvar fichas</button>
+        <span id="feira-fichas-msg" style="font-size:13px; margin-left:10px;"></span>
+      </div>
+    </div>
 
     <label style="display:block; margin-top:12px;">Marcadores ArUco <em>(ainda inativo)</em>
       <input type="text" name="feira_marcadores" placeholder="0:MOK3H92, 1:ABC1D23">
@@ -1160,11 +1200,19 @@ async function carregarEstadoFeira() {
   try {
     const r = await fetch('/api/feira/posto');
     const d = await r.json();
+    await preencherPostosFeira(d.empresa_id);
     if (!d.existe) {
-      est.textContent = 'não criado';
-      est.style.color = '#92400e';
-      det.innerHTML = '<span style="color:#64748b">Sem posto de demonstração, o modo feira '
-                    + 'fica desarmado mesmo com o interruptor ligado.</span>';
+      est.textContent = 'DESARMADO';
+      est.style.color = '#b91c1c';
+      // Aviso FORTE, e nao nota de rodape: com o interruptor em "Sim" e as placas
+      // cadastradas, a expectativa razoavel e que o mock funcione. Ele nao funciona, e
+      // a mensagem antiga (cinza, ao lado de um "Sim" verde) passava despercebida —
+      // custou uma demonstracao em campo.
+      det.innerHTML =
+        '<div style="background:#fef2f2; border:1px solid #fecaca; border-radius:6px;'
+      + ' padding:10px; color:#991b1b;"><strong>O modo feira NÃO está agindo.</strong><br>'
+      + 'Ligar o interruptor não basta: falta dizer <em>em qual posto</em> o mock vale. '
+      + 'Crie o posto de demonstração acima, ou escolha um posto existente abaixo.</div>';
       btnCriar.textContent = 'Criar posto de demonstração';
       btnRemover.hidden = true;
       return;
@@ -1184,6 +1232,33 @@ async function carregarEstadoFeira() {
     est.textContent = 'erro ao consultar';
     est.style.color = '#b91c1c';
   }
+}
+
+async function preencherPostosFeira(selecionado) {
+  const sel = document.getElementById('feira-posto-existente');
+  if (!sel) return;
+  try {
+    const postos = await fetch('/api/postos').then(r => r.json());
+    sel.innerHTML = '<option value="">— nenhum (desarmar) —</option>'
+      + postos.map(p => `<option value="${p.id}"${p.id === selecionado ? ' selected' : ''}>`
+          + `${esc(p.nome)} — ${esc(p.cnpj)}${p.pronto ? '' : ' (sem área desenhada)'}`
+          + `</option>`).join('');
+  } catch (e) { /* o seletor e conveniencia; o botao de criar continua valendo */ }
+}
+
+async function apontarPostoFeira() {
+  const sel = document.getElementById('feira-posto-existente');
+  const id = sel.value ? parseInt(sel.value) : null;
+  if (id === null && !confirm('Desarmar o modo feira? O cadastro nao e apagado — as '
+      + 'leituras simplesmente voltam a ser reais.')) return;
+  const r = await fetch('/api/feira/posto', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ empresa_id: id }),
+  });
+  if (!r.ok) return avisarResposta(r);
+  const d = await r.json();
+  avisar(d.armado ? `Modo feira apontado para "${d.nome}".` : 'Modo feira desarmado.', 'ok');
+  await carregarEstadoFeira();
 }
 
 function abrirDialogoFeira() {
@@ -1321,11 +1396,104 @@ async function removerPostoFeira() {
 const _FEIRA_TOQUES = 7;
 let _toques = 0, _ultimoToque = 0;
 
+/* ─── Modo feira: fichas da vitrine (card da tela /feira) ───────────────────
+   Dado só de exibição, guardado à parte do cache real de veículos. O editor manda o
+   conjunto INTEIRO no PUT (sem merge): remover uma linha e salvar apaga a ficha. */
+let _fichasFeira = {};
+
+async function carregarFichasFeira() {
+  try {
+    const r = await fetch('/api/feira/fichas');
+    const d = await r.json();
+    _fichasFeira = d.fichas || {};
+  } catch (e) { _fichasFeira = {}; }
+  renderFichasFeira();
+}
+
+function _campoFicha(k, ph, val) {
+  return `<input data-k="${k}" placeholder="${ph}" value="${esc(val || '')}"
+            style="width:100%; padding:6px 8px; border:1px solid #e2e8f0; border-radius:6px; font-size:13px;">`;
+}
+
+function _linhaFicha(placa, f) {
+  f = f || {};
+  return `<div class="ficha-linha" data-placa="${esc(placa)}"
+            style="border:1px solid #f1f5f9; border-radius:8px; padding:10px; margin-bottom:8px;">
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+      <strong style="font-family:'JetBrains Mono',monospace; letter-spacing:1px; color:#0f172a;">${esc(placa)}</strong>
+      <button type="button" onclick="removerFichaFeira(this)"
+              style="margin-left:auto; background:#fff; color:#b91c1c; border:1px solid #fecaca; font-size:12px; padding:3px 10px;">remover</button>
+    </div>
+    <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:8px;">
+      ${_campoFicha('apelido', 'Apelido (ex.: Carro de demonstração)', f.apelido)}
+      ${_campoFicha('modelo', 'Modelo (ex.: VW Nivus)', f.modelo)}
+      ${_campoFicha('combustivel', 'Combustível (Flex, Elétrico…)', f.combustivel)}
+      ${_campoFicha('cor', 'Cor', f.cor)}
+      ${_campoFicha('ano', 'Ano', f.ano)}
+      ${_campoFicha('mensagem', 'Mensagem de boas-vindas', f.mensagem)}
+    </div>
+  </div>`;
+}
+
+function renderFichasFeira() {
+  const box = document.getElementById('feira-fichas');
+  if (!box) return;
+  const placas = Object.keys(_fichasFeira);
+  box.innerHTML = placas.length
+    ? placas.map(p => _linhaFicha(p, _fichasFeira[p])).join('')
+    : '<span style="color:#64748b; font-size:13px;">Nenhuma ficha cadastrada. Use "+ placa".</span>';
+}
+
+function addFichaFeira() {
+  const bruto = prompt('Placa do veículo de demonstração (ex.: MOK-3H92):');
+  if (!bruto) return;
+  const norm = bruto.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!norm) return;
+  if (!_fichasFeira[norm]) _fichasFeira[norm] = {};
+  renderFichasFeira();
+}
+
+function removerFichaFeira(btn) {
+  const linha = btn.closest('.ficha-linha');
+  if (!linha) return;
+  delete _fichasFeira[linha.dataset.placa];
+  linha.remove();
+  if (!Object.keys(_fichasFeira).length) renderFichasFeira();
+}
+
+function _coletarFichasFeira() {
+  const out = {};
+  document.querySelectorAll('#feira-fichas .ficha-linha').forEach(l => {
+    const f = {};
+    l.querySelectorAll('input[data-k]').forEach(i => { f[i.dataset.k] = i.value.trim(); });
+    out[l.dataset.placa] = f;
+  });
+  return out;
+}
+
+async function salvarFichasFeira() {
+  const msg = document.getElementById('feira-fichas-msg');
+  try {
+    const r = await fetch('/api/feira/fichas', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fichas: _coletarFichasFeira() }),
+    });
+    if (!r.ok) { msg.textContent = 'erro ao salvar'; msg.style.color = '#b91c1c'; return; }
+    const d = await r.json();
+    _fichasFeira = d.fichas || {};
+    renderFichasFeira();
+    msg.textContent = '✓ salvo';
+    msg.style.color = '#15803d';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+  } catch (e) { msg.textContent = 'erro ao salvar'; msg.style.color = '#b91c1c'; }
+}
+
 function _revelarFeira(persistir) {
   const el = document.getElementById('secao-feira');
   if (!el) return;
   el.hidden = false;
   carregarEstadoFeira();
+  carregarFichasFeira();
   if (persistir) {
     try { sessionStorage.setItem('feira_revelada', '1'); } catch (e) { /* modo privado */ }
     document.querySelector('.cfg-tab[data-tab="sistema"]')?.click();

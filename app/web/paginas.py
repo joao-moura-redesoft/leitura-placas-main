@@ -1,7 +1,10 @@
 """Páginas HTML — Jinja2."""
 from __future__ import annotations
+import json
 from app.core import banco
 from app.core import config
+from app.visao import feira
+from app.visao import feira_fichas
 from app.web import deps
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
@@ -13,8 +16,12 @@ templates = Jinja2Templates(directory="app/web/templates")
 
 def _ctx(request: Request, **extra) -> dict:
     """Contexto comum a toda página logada: `usuario` (None fora de sessão — acesso só
-    por api_key global, ou rota pública) alimenta o `{% if %}` do menu em base.html."""
-    return {"usuario": deps.usuario_atual(request), **extra}
+    por api_key global, ou rota pública) alimenta o `{% if %}` do menu em base.html.
+
+    `feira_on` decide se o link da vitrine aparece na navbar — só quando o modo feira
+    está de fato armado (`feira.ativo`), senão a aba levaria a um redirect."""
+    return {"usuario": deps.usuario_atual(request),
+            "feira_on": feira.ativo(config.carregar()), **extra}
 
 
 def _pagina_admin(request: Request):
@@ -90,6 +97,38 @@ def posto(request: Request, empresa_id: int):
     if escopo is not None and empresa_id != escopo:
         return RedirectResponse("/postos", status_code=303)
     return templates.TemplateResponse(request, "posto.html", _ctx(request, empresa_id=empresa_id))
+
+
+@router.get("/feira")
+def feira_vitrine(request: Request):
+    """Kiosk de demonstração para a feira — câmera ao vivo + card "Bem-vindo!".
+
+    Só existe com o modo feira ARMADO (`feira.ativo`): sem posto de demonstração e sem
+    placa cadastrada não há o que exibir, então cai em /postos (e o link nem aparece na
+    navbar — ver `_ctx`). Roda em tela cheia, fora do layout com navbar, para o estande
+    ter uma vitrine e não a tela de operação.
+    """
+    cfg = config.carregar()
+    if not feira.ativo(cfg):
+        return RedirectResponse("/postos", status_code=303)
+
+    # Resolve o bico/câmera do posto de demonstração — é ele que o loop hands-free lê e de
+    # onde vem o MJPEG. A árvore é criada junta por POST /api/feira/posto, então o primeiro
+    # bico com câmera é o da demonstração.
+    empresa_id = feira.empresa_demo(cfg)
+    bico = None
+    for auto in banco.automacoes_listar(empresa_id=empresa_id):
+        bicos = banco.bicos_listar(automacao_id=auto["id"])
+        if bicos:
+            bico = bicos[0]
+            break
+
+    return templates.TemplateResponse(request, "feira.html", _ctx(
+        request,
+        camera_id=(bico or {}).get("camera_id"),
+        bico_id=(bico or {}).get("id"),
+        fichas_json=json.dumps(feira_fichas.carregar_fichas(), ensure_ascii=False),
+    ))
 
 
 @router.get("/entidades")

@@ -1,0 +1,360 @@
+/* Vitrine da feira (/feira) — kiosk de demonstração em tela cheia.
+
+   Composição de DOIS materiais, de propósito: um PALCO escuro (a câmera ao vivo) ao lado
+   de um PAINEL marfim (a informação do veículo). Não é o "dashboard escuro com verde neon"
+   — é uma vitrine editorial, legível de longe numa TV de estande. O resto do app é claro
+   (tablet sob sol); aqui o contexto é iluminação controlada e público a distância.
+
+   Princípios seguidos (metodologia Impeccable):
+   - cor CONCENTRADA: o verde da marca marca só o momento de reconhecimento, não decora tudo;
+   - UM momento autoral de movimento (a revelação), não efeitos espalhados;
+   - ícones de verdade (SVG), nunca emoji; sem eyebrow/kicker; sem mono como "fantasia";
+   - superfícies do navegador (seleção, foco, numerais) tematizadas.
+
+   Reaproveita do tokens.css só as fontes locais e a cor de marca (--marca). Tudo escopado
+   em `.feira-kiosk` para não vazar para o app claro. */
+
+.feira-kiosk {
+  /* Palco (escuro) */
+  --k-palco:    #0a0d12;
+  --k-palco-2:  #070a0e;
+  --k-borda-esc: rgba(255,255,255,.08);
+  --k-clara:    #eef1f5;
+  --k-clara-2:  #9aa7b6;   /* secundário tingido do palco, não cinza puro */
+
+  /* Painel de informação (marfim) */
+  --k-papel:    #f4f1ea;
+  --k-papel-2:  #ece7db;
+  --k-tinta:    #16130d;
+  --k-tinta-2:  #6f6656;   /* secundário tingido de quente, não cinza lavado */
+  --k-linha:    #e2ddd0;
+
+  /* Acento — a marca, usada com parcimônia */
+  --k-verde:    #12864a;
+  --k-verde-viva: #2fbd6b;
+
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background:
+    radial-gradient(140% 120% at 12% -10%, #10161f 0%, transparent 46%),
+    linear-gradient(150deg, var(--k-palco) 0%, var(--k-palco-2) 100%);
+  color: var(--k-clara);
+  font-family: var(--fonte, 'Inter', system-ui, sans-serif);
+  overflow: hidden;
+}
+.feira-kiosk.cursor-oculto { cursor: none; }
+
+/* Superfícies do navegador, tematizadas (exigência de craft-floor) */
+.feira-kiosk ::selection { background: var(--k-verde-viva); color: #04120a; }
+.feira-kiosk :focus-visible { outline: 2px solid var(--k-verde-viva); outline-offset: 3px; border-radius: 6px; }
+.feira-kiosk ::-webkit-scrollbar { width: 10px; height: 10px; }
+.feira-kiosk ::-webkit-scrollbar-thumb { background: #ffffff1f; border-radius: 999px; }
+
+/* ── Topo ──────────────────────────────────────────────────────────────────── */
+.feira-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: clamp(14px, 1.8vw, 24px) clamp(18px, 2.6vw, 44px);
+}
+.feira-marca { display: flex; align-items: center; gap: 13px; }
+.feira-marca-icone {
+  width: clamp(34px, 3vw, 44px);
+  height: clamp(34px, 3vw, 44px);
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  background: var(--k-verde);
+  color: #fff;
+  flex: none;
+  box-shadow: 0 6px 18px -6px #0f6b3c;
+}
+.feira-marca-icone svg { width: 56%; height: 56%; }
+.feira-marca-txt { line-height: 1.15; }
+.feira-marca-txt b {
+  display: block;
+  font-size: clamp(16px, 1.4vw, 20px);
+  font-weight: 700; letter-spacing: -.01em;
+}
+.feira-marca-txt span {
+  font-size: clamp(11px, .95vw, 13px);
+  color: var(--k-clara-2);
+}
+.feira-top-dir { margin-left: auto; display: flex; align-items: center; gap: clamp(10px, 1.3vw, 16px); }
+.feira-relogio {
+  font-size: clamp(14px, 1.2vw, 18px);
+  color: var(--k-clara-2);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .01em;
+}
+.feira-btn-icone {
+  appearance: none;
+  border: 1px solid var(--k-borda-esc);
+  background: transparent;
+  color: var(--k-clara-2);
+  width: 40px; height: 40px;
+  border-radius: 10px;
+  cursor: pointer;
+  display: grid; place-items: center;
+  transition: background .18s ease-out, color .18s ease-out, border-color .18s ease-out;
+  text-decoration: none;
+}
+.feira-btn-icone svg { width: 19px; height: 19px; }
+.feira-btn-icone:hover { background: #ffffff0d; color: var(--k-clara); border-color: #ffffff26; }
+
+/* ── Palco (câmera | info) ─────────────────────────────────────────────────── */
+.feira-palco {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: clamp(16px, 2vw, 30px);
+  padding: 0 clamp(18px, 2.6vw, 44px) clamp(18px, 2.4vw, 36px);
+}
+
+/* ── Lado da câmera (palco escuro) ─────────────────────────────────────────── */
+.feira-cam {
+  position: relative;
+  border-radius: 22px;
+  overflow: hidden;
+  background: #04070b;
+  border: 1px solid var(--k-borda-esc);
+  /* Profundidade real: offset + blur (não um halo sem offset). */
+  box-shadow: 0 40px 90px -40px #000;
+  min-height: 0;
+}
+.feira-cam img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.feira-cam::after {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(0deg, #04070bcc 0%, transparent 24%, transparent 82%, #04070b66 100%);
+}
+
+/* Moldura de enquadramento (UI funcional, não decoração) + uma varredura sutil */
+.scanner { position: absolute; inset: clamp(16px, 1.8vw, 28px); pointer-events: none; z-index: 2; }
+.scanner .canto {
+  position: absolute; width: 40px; height: 40px;
+  border: 2px solid #ffffffcc;
+  opacity: .5;
+  transition: border-color .4s ease-out, opacity .4s ease-out;
+}
+.scanner .canto.tl { top: 0; left: 0; border-right: 0; border-bottom: 0; border-top-left-radius: 6px; }
+.scanner .canto.tr { top: 0; right: 0; border-left: 0; border-bottom: 0; border-top-right-radius: 6px; }
+.scanner .canto.bl { bottom: 0; left: 0; border-right: 0; border-top: 0; border-bottom-left-radius: 6px; }
+.scanner .canto.br { bottom: 0; right: 0; border-left: 0; border-top: 0; border-bottom-right-radius: 6px; }
+.scanner .linha {
+  position: absolute; left: 6%; right: 6%; height: 1px;
+  background: linear-gradient(90deg, transparent, #ffffff5c 50%, transparent);
+  animation: feira-sweep 4.6s cubic-bezier(.5,0,.5,1) infinite;
+}
+@keyframes feira-sweep {
+  0%   { top: 4%;  opacity: 0; }
+  16%  { opacity: .9; }
+  84%  { opacity: .9; }
+  100% { top: 96%; opacity: 0; }
+}
+/* Ao reconhecer, a moldura confirma em verde e a varredura para — o único uso do acento aqui. */
+.feira-kiosk.reconhecido .scanner .canto { border-color: var(--k-verde-viva); opacity: 1; }
+.feira-kiosk.reconhecido .scanner .linha { opacity: 0; animation: none; }
+
+/* Selo AO VIVO */
+.ao-vivo {
+  position: absolute; top: clamp(20px, 2.2vw, 32px); left: clamp(20px, 2.2vw, 32px);
+  z-index: 3;
+  display: flex; align-items: center; gap: 9px;
+  padding: 6px 13px;
+  background: #04070b99;
+  backdrop-filter: blur(8px);
+  border: 1px solid #ffffff1f;
+  border-radius: 999px;
+  font-size: clamp(10px, .95vw, 12px);
+  font-weight: 600; letter-spacing: .14em;
+  color: var(--k-clara);
+}
+.ao-vivo .ponto {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #ff4d4d;
+  box-shadow: 0 0 0 0 #ff4d4d66;
+  animation: feira-vivo 2.4s ease-out infinite;
+}
+@keyframes feira-vivo {
+  0% { box-shadow: 0 0 0 0 #ff4d4d55; }
+  60%, 100% { box-shadow: 0 0 0 7px transparent; }
+}
+
+/* Estado da câmera (reconectando / sem sinal) */
+.cam-estado {
+  position: absolute; inset: 0; z-index: 4;
+  display: none;
+  flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+  background: #04070bec; color: var(--k-clara-2);
+  text-align: center; padding: 24px;
+}
+.cam-estado.mostra { display: flex; }
+.cam-estado .spin {
+  width: 32px; height: 32px; border-radius: 50%;
+  border: 2px solid #ffffff1f; border-top-color: var(--k-verde-viva);
+  animation: feira-spin 1s linear infinite;
+}
+@keyframes feira-spin { to { transform: rotate(360deg); } }
+
+.cam-legenda {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+  padding: clamp(18px, 2.1vw, 30px);
+  display: flex; align-items: center; gap: 9px;
+  font-size: clamp(12px, 1.05vw, 15px); color: var(--k-clara-2);
+}
+.cam-legenda svg { width: 17px; height: 17px; flex: none; color: var(--k-verde-viva); }
+.cam-legenda b { color: var(--k-clara); font-weight: 600; }
+
+/* ── Painel de informação (marfim) ─────────────────────────────────────────── */
+.feira-info {
+  position: relative;
+  border-radius: 22px;
+  background: linear-gradient(155deg, var(--k-papel) 0%, var(--k-papel-2) 100%);
+  box-shadow: 0 40px 90px -40px #000, inset 0 1px 0 #ffffff80;
+  color: var(--k-tinta);
+  display: flex; align-items: center;
+  padding: clamp(26px, 3vw, 56px);
+  min-height: 0; overflow: hidden;
+}
+.feira-estado { width: 100%; }
+.feira-estado[hidden] { display: none; }
+
+/* Idle — invitação calma, quase sem movimento */
+.idle { max-width: 30ch; }
+.idle-icone {
+  width: clamp(56px, 5vw, 72px); height: clamp(56px, 5vw, 72px);
+  margin-bottom: clamp(22px, 2.4vw, 32px);
+  display: grid; place-items: center;
+  color: var(--k-tinta);
+  border: 1px solid var(--k-linha);
+  border-radius: 16px;
+  background: #ffffff66;
+}
+.idle-icone svg { width: 54%; height: 54%; }
+.idle h1 {
+  margin: 0 0 14px;
+  font-size: clamp(30px, 3.6vw, 52px);
+  font-weight: 800; letter-spacing: -.03em; line-height: 1.02;
+}
+.idle p {
+  margin: 0;
+  font-size: clamp(15px, 1.35vw, 19px);
+  color: var(--k-tinta-2); line-height: 1.5;
+}
+.idle .aguardando {
+  margin-top: clamp(22px, 2.4vw, 32px);
+  display: inline-flex; align-items: center; gap: 9px;
+  font-size: clamp(12px, 1vw, 14px); color: var(--k-tinta-2);
+  font-weight: 500;
+}
+.idle .aguardando .bolinha {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--k-verde);
+  animation: feira-espera 1.8s ease-in-out infinite;
+}
+@keyframes feira-espera { 0%,100% { opacity: .3; } 50% { opacity: 1; } }
+
+/* Reveal — o ÚNICO momento autoral de movimento */
+.reveal { width: 100%; }
+.reveal[hidden] { display: none; }
+.reveal h1 {
+  margin: 0 0 clamp(20px, 2.4vw, 32px);
+  font-size: clamp(40px, 5vw, 84px);
+  font-weight: 800; letter-spacing: -.035em; line-height: .98;
+}
+.reveal h1 .apelido {
+  display: block;
+  margin-top: 8px;
+  font-size: clamp(16px, 1.5vw, 22px);
+  font-weight: 500; letter-spacing: -.01em; color: var(--k-tinta-2);
+}
+
+/* Placa Mercosul — elemento autêntico, herói do painel */
+.placa-mercosul {
+  width: min(360px, 78%);
+  margin: 0 0 clamp(24px, 2.6vw, 34px);
+  border-radius: 12px;
+  background: #fbfcfd;
+  border: 3px solid #14161c;
+  box-shadow: 0 16px 34px -16px #0006;
+  overflow: hidden;
+  font-family: var(--fonte-mono, monospace);
+}
+.placa-mercosul .faixa {
+  background: #0a3bce; color: #fff;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 5px 11px;
+  font-size: clamp(9px, .85vw, 12px); font-weight: 700; letter-spacing: .12em;
+}
+.placa-mercosul .faixa .br { display: inline-flex; align-items: center; gap: 6px; }
+.placa-mercosul .faixa .bandeira {
+  width: 15px; height: 11px; border-radius: 2px;
+  background: linear-gradient(#2a9d3f 55%, #f2d024 55% 70%, #2a2f8f 70%);
+}
+.placa-mercosul .numero {
+  color: #14161c; font-weight: 700;
+  font-size: clamp(36px, 4.6vw, 58px);
+  letter-spacing: clamp(4px, .6vw, 8px);
+  text-align: center;
+  padding: clamp(10px, 1.1vw, 16px) 8px clamp(12px, 1.3vw, 18px);
+  text-indent: clamp(4px, .6vw, 8px);
+}
+
+/* Confirmação da placa — legenda SOB a placa (não um kicker acima do título) */
+.reveal .placa-conf {
+  display: inline-flex; align-items: center; gap: 8px;
+  color: var(--k-verde); font-weight: 600;
+  font-size: clamp(12px, 1.1vw, 15px);
+  margin: 0 0 clamp(22px, 2.4vw, 32px);
+}
+.reveal .placa-conf svg { width: 17px; height: 17px; }
+
+/* Ficha — lista de specs (não grade de tiles) */
+.ficha-specs { border-top: 1px solid var(--k-linha); }
+.spec {
+  display: flex; align-items: center; gap: 14px;
+  padding: clamp(11px, 1.2vw, 15px) 2px;
+  border-bottom: 1px solid var(--k-linha);
+}
+.spec .ic {
+  width: clamp(22px, 2vw, 26px); height: clamp(22px, 2vw, 26px);
+  flex: none; color: var(--k-tinta-2);
+}
+.spec .ic svg { width: 100%; height: 100%; }
+.spec.destaque .ic { color: var(--k-verde); }
+.spec .rot {
+  font-size: clamp(11px, 1vw, 13px); color: var(--k-tinta-2);
+  letter-spacing: .09em; text-transform: uppercase; font-weight: 600;
+}
+.spec .val {
+  margin-left: auto; text-align: right;
+  font-size: clamp(17px, 1.7vw, 23px); font-weight: 700; color: var(--k-tinta);
+  letter-spacing: -.01em;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.spec .val.ano { font-variant-numeric: tabular-nums; }
+
+/* Entrada da revelação — exponential ease-out, escalonada, a partir do estado visível */
+.feira-kiosk.reconhecido .reveal > * { animation: feira-entra .62s cubic-bezier(.16,1,.3,1) both; }
+.feira-kiosk.reconhecido .reveal > *:nth-child(1) { animation-delay: 0s; }
+.feira-kiosk.reconhecido .reveal > *:nth-child(2) { animation-delay: .06s; }
+.feira-kiosk.reconhecido .reveal > *:nth-child(3) { animation-delay: .12s; }
+.feira-kiosk.reconhecido .reveal > *:nth-child(4) { animation-delay: .18s; }
+.feira-kiosk.reconhecido .ficha-specs .spec { animation: feira-entra .55s cubic-bezier(.16,1,.3,1) both; }
+.feira-kiosk.reconhecido .ficha-specs .spec:nth-child(1) { animation-delay: .20s; }
+.feira-kiosk.reconhecido .ficha-specs .spec:nth-child(2) { animation-delay: .26s; }
+.feira-kiosk.reconhecido .ficha-specs .spec:nth-child(3) { animation-delay: .32s; }
+.feira-kiosk.reconhecido .ficha-specs .spec:nth-child(4) { animation-delay: .38s; }
+@keyframes feira-entra {
+  from { opacity: 0; transform: translateY(16px); filter: blur(6px); }
+  to   { opacity: 1; transform: none; filter: blur(0); }
+}
+
+/* ── Responsivo: retrato / telas estreitas empilham ────────────────────────── */
+@media (max-width: 940px), (max-aspect-ratio: 1/1) {
+  .feira-palco { grid-template-columns: 1fr; grid-template-rows: 1.1fr 1fr; }
+  .feira-info { align-items: flex-start; }
+}
