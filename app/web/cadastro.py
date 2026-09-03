@@ -329,11 +329,56 @@ def empresas_atualizar(id_: int, payload: dict, request: Request):
     return {"atualizado": True}
 
 
+@router.get("/empresas/{id_}/impacto-remocao")
+def empresas_impacto_remocao(id_: int, request: Request):
+    """O que se perde ao apagar este posto — para a tela poder AVISAR antes de perguntar.
+
+    Um "tem certeza?" genérico não informa nada: a remoção desce em cascata por
+    automações, bicos (com as áreas desenhadas) e câmeras, e ainda desativa os usuários
+    'cliente' presos a este posto. Quem confirma precisa ver os números.
+    """
+    deps.exigir_admin(request)
+    emp = banco.empresas_obter(id_)
+    if not emp:
+        raise HTTPException(404, "Posto não encontrado")
+    autos = banco.automacoes_listar(empresa_id=id_)
+    ids = {a["id"] for a in autos}
+    bicos = [b for b in banco.bicos_listar() if b["automacao_id"] in ids]
+    cfg = config.carregar()
+    return {
+        "nome": emp["nome"], "cnpj": emp["cnpj"],
+        "cameras": len(banco.cameras_listar(empresa_id=id_)),
+        "automacoes": len(autos),
+        "bicos": len(bicos),
+        "areas": sum(1 for b in bicos if b.get("roi") or b.get("roi2")),
+        # `usuarios_listar` nao filtra por posto — o filtro e aqui. Sao os usuarios
+        # 'cliente' presos a ESTE posto: `_apagar_empresas` os DESATIVA (nao apaga), e
+        # quem confirma a remocao precisa saber que vai deixar gente sem acesso.
+        "usuarios_cliente": sum(1 for u in banco.usuarios_listar()
+                                if u.get("papel") == "cliente" and u.get("empresa_id") == id_),
+        # Apagar o posto de demonstração tem de DESARMAR o modo feira junto.
+        "e_posto_de_demonstracao": (cfg.get("feira_empresa_id") or "").strip() == str(id_),
+    }
+
+
 @router.delete("/empresas/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def empresas_remover(id_: int, request: Request):
     empresa = banco.empresas_obter(id_)
     if not banco.empresas_remover(id_):
         raise HTTPException(404, "Empresa não encontrada")
+
+    # Se era o posto de demonstração, DESARMA o modo feira. Sem isto `feira_empresa_id`
+    # fica apontando para um id que não existe mais: a tela do modo feira diria "não
+    # criado" com a chave preenchida, e recriar o posto deixaria duas verdades em
+    # disputa. (`empresas.id` é AUTOINCREMENT, então o id não é reaproveitado e o mock
+    # não passaria a mirar outro posto — mas config morta é armadilha para a próxima
+    # pessoa que ler o arquivo.)
+    cfg = config.carregar()
+    if (cfg.get("feira_empresa_id") or "").strip() == str(id_):
+        cfg["feira_empresa_id"] = ""
+        config.salvar(cfg)
+        log.warning("Posto de demonstracao %s removido — modo feira DESARMADO.", id_)
+
     quem_id, quem_nome = deps.quem_pede(request)
     banco.auditoria_registrar(
         usuario_id=quem_id, usuario_nome=quem_nome, acao="posto_removido",

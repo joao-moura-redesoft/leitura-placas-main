@@ -71,9 +71,18 @@
         Nenhum bico usa esta câmera.
       </p>
       <div id="painel-teste" style="display:none;border-top:1px solid #f1f5f9;margin-top:14px;padding-top:14px">
-        <button onclick="testarBico()" id="btn-testar" style="width:100%;background:#0f172a">
-          Ler placa deste bico
-        </button>
+        <!-- Botao dividido: uma peca so. O perfil rapido fica colado ao completo porque
+             quem ajusta o enquadramento precisa ver o que o roteador vai receber nos DOIS
+             modos, com a mesma area recem-desenhada — e nao procurar dois botoes soltos. -->
+        <span class="btn-split" style="width:100%">
+          <button onclick="testarBico()" id="btn-testar" style="flex:1;background:#0f172a">
+            Ler placa deste bico
+          </button>
+          <button class="btn-split-alt" onclick="testarBico(true)" id="btn-testar-rapido"
+                  style="background:#334155"
+                  aria-label="Ler placa deste bico em modo rapido"
+                  title="Leitura rapida — 1 a 2 fotos, modelos leves, resposta em poucos segundos. Troca acuracia por tempo.">⚡</button>
+        </span>
         <div id="resultado" style="display:none;margin-top:10px;padding:12px;border-radius:8px;
              background:#f8fafc;border:1px solid #e2e8f0;text-align:center;font-size:13px"></div>
       </div>
@@ -384,21 +393,28 @@ video.addEventListener('load', () => {
 });
 window.addEventListener('resize', desenhar);
 
-async function testarBico() {
+async function testarBico(rapido = false) {
   const b = _bicos.find(x => x.id === _ativo);
   if (!b) return;
   if (b.sujo) { msg(false, 'Salve a área antes de testar — o teste usa o que está gravado.'); return; }
-  const btn = document.getElementById('btn-testar');
   const res = document.getElementById('resultado');
+  // Os dois travam: disputam o mesmo lock de camera no servidor.
+  const principal = document.getElementById('btn-testar');
+  const botoes = [principal, document.getElementById('btn-testar-rapido')].filter(Boolean);
+  const rotulo = principal.textContent;
   const t0 = Date.now();
-  btn.disabled = true;
+  botoes.forEach(x => x.disabled = true);
   res.style.display = 'block';
+  // O contador vai SEMPRE na metade principal, mesmo quando foi o ⚡ que disparou:
+  // escrever "Lendo… 3s" dentro do botao estreito apagaria o icone e esticaria a peca
+  // dividida no meio da leitura.
   const tick = setInterval(() => {
-    btn.textContent = `Lendo… ${Math.round((Date.now() - t0) / 1000)}s`;
+    principal.textContent = `Lendo${rapido ? ' (rapido)' : ''}… ${Math.round((Date.now() - t0) / 1000)}s`;
   }, 250);
   res.innerHTML = '<span style="color:#94a3b8">Analisando a área deste bico…</span>';
   try {
-    const r = await fetch(`/api/bicos/${b.id}/ler-placa-teste`, { method: 'POST' });
+    const r = await fetch(`/api/bicos/${b.id}/ler-placa-teste`
+      + (rapido ? '?rapido=1' : ''), { method: 'POST' });
     const d = await r.json();
     if (!r.ok) res.innerHTML = `<span style="color:#b91c1c">${esc(d.detail || 'falha')}</span>`;
     else if (!d.placa) res.innerHTML = `<span style="color:#a16207">${esc(d.mensagem || 'Nenhuma placa')}</span>`;
@@ -408,7 +424,13 @@ async function testarBico() {
     else res.innerHTML = `
       <div style="font-size:22px;font-weight:700;letter-spacing:3px;font-family:'Consolas',monospace">${esc(d.placa)}</div>
       <div style="margin-top:4px;color:#94a3b8;font-size:12px">
-        ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%</div>
+        ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%
+        · ${(d.modo || 'completo') === 'rapido' ? '⚡ rapido' : 'completo'}${
+          d.total_snapshots != null ? ` · ${d.total_snapshots} foto(s)` : ''}${
+          d.confirmada === false ? ' · a conferir' : ''}</div>${
+        rapido && (d.modo || 'completo') !== 'rapido'
+          ? '<div style="color:#a16207;font-size:12px;margin-top:4px">⚠ modo rapido pedido, mas '
+            + 'esta desligado no servidor (rapido_ativo) — rodou completo</div>' : ''}
       <a href="/historico?bico_id=${b.id}&origem=teste" target="_blank"
          style="display:inline-block;margin-top:6px;font-size:12px;color:#16a34a;text-decoration:none">
         ver testes deste bico no histórico →</a>`;
@@ -416,7 +438,8 @@ async function testarBico() {
     res.innerHTML = `<span style="color:#b91c1c">Erro: ${esc(ex.message)}</span>`;
   } finally {
     clearInterval(tick);
-    btn.disabled = false; btn.textContent = 'Ler placa deste bico';
+    botoes.forEach(x => x.disabled = false);
+    principal.textContent = rotulo;
   }
 }
 

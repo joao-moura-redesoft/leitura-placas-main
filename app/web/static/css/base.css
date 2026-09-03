@@ -914,3 +914,34 @@ code, .cod {
   #aviso-global { top: auto; bottom: 16px; }
   .modal { padding: var(--e-5); border-radius: var(--r-3); }
 }
+
+/* ─── Botao dividido: acao principal + variante colada ─────────────────────────
+   Uma peca visual so. Existe porque dois botoes soltos lado a lado ficam ambiguos
+   quando a tela repete o par (varios bicos na mesma camera): nao da para saber de
+   relance qual "⚡" pertence a qual bico. Colados, com raio compartilhado e uma
+   divisoria fina no meio, os dois lem como UM controle daquele bico. */
+.btn-split { display: inline-flex; vertical-align: middle; }
+
+.btn-split > button { border-radius: 0; margin: 0; }
+.btn-split > button:first-child {
+  border-top-left-radius: var(--r-2); border-bottom-left-radius: var(--r-2);
+}
+.btn-split > button:last-child {
+  border-top-right-radius: var(--r-2); border-bottom-right-radius: var(--r-2);
+}
+
+/* A variante herda a cor da acao principal e se distingue por um veu claro, nao por
+   outra cor: cor diferente sugeriria acao de outra natureza, e as duas fazem a MESMA
+   coisa — mudam so o orcamento de tempo. */
+.btn-split > .btn-split-alt {
+  padding-left: 10px; padding-right: 10px;
+  background: color-mix(in srgb, var(--marca) 82%, #fff);
+  /* Divisoria: separa as duas metades sem abrir espaco entre elas. */
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, .28);
+}
+.btn-split > .btn-split-alt:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--marca-forte) 82%, #fff);
+}
+/* Enquanto uma metade trabalha, a outra fica visivelmente fora — as duas disputam o
+   mesmo lock de camera no servidor, entao clicar na outra so renderia um 429. */
+.btn-split > button:disabled { opacity: .55; }
