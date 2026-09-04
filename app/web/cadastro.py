@@ -19,6 +19,8 @@ from app.core import banco
 from app.core import config
 from app.integracoes import apiplacas
 from app.visao import leitura
+from app.visao import feira
+from app.visao import feira_fichas
 from app.web import deps
 from app.seguranca import limitador
 from app.web import redacao
@@ -329,11 +331,56 @@ def empresas_atualizar(id_: int, payload: dict, request: Request):
     return {"atualizado": True}
 
 
+@router.get("/empresas/{id_}/impacto-remocao")
+def empresas_impacto_remocao(id_: int, request: Request):
+    """O que se perde ao apagar este posto — para a tela poder AVISAR antes de perguntar.
+
+    Um "tem certeza?" genérico não informa nada: a remoção desce em cascata por
+    automações, bicos (com as áreas desenhadas) e câmeras, e ainda desativa os usuários
+    'cliente' presos a este posto. Quem confirma precisa ver os números.
+    """
+    deps.exigir_admin(request)
+    emp = banco.empresas_obter(id_)
+    if not emp:
+        raise HTTPException(404, "Posto não encontrado")
+    autos = banco.automacoes_listar(empresa_id=id_)
+    ids = {a["id"] for a in autos}
+    bicos = [b for b in banco.bicos_listar() if b["automacao_id"] in ids]
+    cfg = config.carregar()
+    return {
+        "nome": emp["nome"], "cnpj": emp["cnpj"],
+        "cameras": len(banco.cameras_listar(empresa_id=id_)),
+        "automacoes": len(autos),
+        "bicos": len(bicos),
+        "areas": sum(1 for b in bicos if b.get("roi") or b.get("roi2")),
+        # `usuarios_listar` nao filtra por posto — o filtro e aqui. Sao os usuarios
+        # 'cliente' presos a ESTE posto: `_apagar_empresas` os DESATIVA (nao apaga), e
+        # quem confirma a remocao precisa saber que vai deixar gente sem acesso.
+        "usuarios_cliente": sum(1 for u in banco.usuarios_listar()
+                                if u.get("papel") == "cliente" and u.get("empresa_id") == id_),
+        # Apagar o posto de demonstração tem de DESARMAR o modo feira junto.
+        "e_posto_de_demonstracao": (cfg.get("feira_empresa_id") or "").strip() == str(id_),
+    }
+
+
 @router.delete("/empresas/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def empresas_remover(id_: int, request: Request):
     empresa = banco.empresas_obter(id_)
     if not banco.empresas_remover(id_):
         raise HTTPException(404, "Empresa não encontrada")
+
+    # Se era o posto de demonstração, DESARMA o modo feira. Sem isto `feira_empresa_id`
+    # fica apontando para um id que não existe mais: a tela do modo feira diria "não
+    # criado" com a chave preenchida, e recriar o posto deixaria duas verdades em
+    # disputa. (`empresas.id` é AUTOINCREMENT, então o id não é reaproveitado e o mock
+    # não passaria a mirar outro posto — mas config morta é armadilha para a próxima
+    # pessoa que ler o arquivo.)
+    cfg = config.carregar()
+    if (cfg.get("feira_empresa_id") or "").strip() == str(id_):
+        cfg["feira_empresa_id"] = ""
+        config.salvar(cfg)
+        log.warning("Posto de demonstracao %s removido — modo feira DESARMADO.", id_)
+
     quem_id, quem_nome = deps.quem_pede(request)
     banco.auditoria_registrar(
         usuario_id=quem_id, usuario_nome=quem_nome, acao="posto_removido",
@@ -635,6 +682,16 @@ def bicos_ler_placa_teste(id_: int, request: Request, rapido: bool = False):
     if aviso_perfil:
         resultado.setdefault("avisos", []).append(aviso_perfil)
 
+    # Modo feira: mesmo bloco que o GET do roteador vai devolver, montado da ficha local.
+    # Este botão é o ÚNICO jeito de conferir a demo antes do evento sem um roteador na mão
+    # — se ele mostrasse um `veiculo` diferente do que o posto recebe, a conferência
+    # deixaria de valer justamente para o payload novo. Mesmo princípio já aplicado ao
+    # `rapido` e ao `empresa_id` acima: aqui não pode existir caminho próprio.
+    demo = feira_fichas.bloco_de_leitura(resultado)
+    if demo is not None:
+        resultado["veiculo"] = demo
+        return resultado
+
     # Dados do veículo em modo CACHE-ONLY: este fluxo é o botão "Testar como o roteador" e
     # o editor de ROI, clicados em rajada enquanto se ajusta o enquadramento. Cada consulta
     # à apiplacas custa crédito pré-pago, então ajustar câmera não pode gastar dinheiro.
@@ -808,6 +865,52 @@ def feira_criar_posto(payload: dict, request: Request):
     }
 
 
+@router.put("/feira/posto", dependencies=[Depends(deps.exigir_admin)])
+def feira_apontar_posto(payload: dict, request: Request):
+    """Aponta o modo feira para um posto que JÁ EXISTE, em vez de criar um novo.
+
+    `POST /feira/posto` monta a árvore do zero, e é o caminho de quem chega com a máquina
+    limpa. Mas quem já cadastrou posto, câmera, automação e bico — e já desenhou as áreas
+    — não deveria ser obrigado a montar um segundo posto só para demonstrar: o mock ficava
+    inalcançável no cadastro real, e o interruptor em "Sim" não fazia nada.
+
+    Foi exatamente o que aconteceu em campo (03/09/2026): `feira_ativo=sim`,
+    `feira_placas=MOK3H92,DDR1989`, e a leitura devolveu DDR1887 sem mockar. O casamento
+    estava certo (distância 2, dentro da tolerância) — faltava o ARMAMENTO, porque
+    `feira_empresa_id` estava vazio e o escopo é fail-closed.
+
+    `empresa_id: null` DESARMA sem apagar nada — o contrário de `DELETE`, que apaga o
+    posto. São ações diferentes de propósito: apontar para outro posto, ou parar de
+    mockar, não podem exigir destruir cadastro.
+    """
+    cfg = config.carregar()
+    bruto = payload.get("empresa_id")
+
+    if bruto in (None, "", 0):
+        cfg["feira_empresa_id"] = ""
+        config.salvar(cfg)
+        quem_id, quem_nome = deps.quem_pede(request)
+        banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome,
+                                  acao="feira_desarmada", alvo_tipo="config")
+        return {"armado": False, "empresa_id": None}
+
+    empresa_id = deps.inteiro_ou_400(bruto, "empresa_id")
+    emp = banco.empresas_obter(empresa_id)
+    if not emp:
+        raise HTTPException(404, "Posto não encontrado")
+
+    cfg["feira_empresa_id"] = str(empresa_id)
+    config.salvar(cfg)
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome,
+                              acao="feira_posto_apontado", alvo_tipo="empresa",
+                              alvo_id=empresa_id, detalhe=f"nome={emp['nome']}")
+    log.warning("MODO FEIRA apontado para o posto %s (%s) — leituras dele passam a ser "
+                "mockadas quando a placa casar.", empresa_id, emp["nome"])
+    return {"armado": True, "empresa_id": empresa_id, "nome": emp["nome"],
+            "cnpj": emp["cnpj"]}
+
+
 @router.delete("/feira/posto", dependencies=[Depends(deps.exigir_admin)])
 def feira_remover_posto(request: Request):
     """Apaga o posto de demonstração e DESARMA o mock.
@@ -857,4 +960,108 @@ def feira_estado_posto():
         "empresa_id": empresa["id"], "nome": empresa["nome"], "cnpj": empresa["cnpj"],
         "url_leitura": (f"/api/leitura?entidade={FEIRA_ENTIDADE}&cnpj={empresa['cnpj']}"
                         f"&automacao={FEIRA_CODIGO}&bico={FEIRA_CODIGO}"),
+    }
+
+
+@router.get("/feira/fichas", dependencies=[Depends(deps.exigir_admin)])
+def feira_fichas_obter():
+    """As fichas de demonstração por placa — o que o card "Bem-vindo!" da vitrine exibe.
+
+    Só exibição (combustível/modelo/cor/ano/mensagem), guardado à parte do cache real de
+    veículos. Ver `app/visao/feira_fichas.py`.
+    """
+    return {"fichas": feira_fichas.carregar_fichas()}
+
+
+@router.put("/feira/fichas", dependencies=[Depends(deps.exigir_admin)])
+def feira_fichas_salvar(payload: dict, request: Request):
+    """Grava o conjunto completo de fichas (o editor manda tudo — sem merge).
+
+    `payload["fichas"]` = { "MOK3H92": {apelido, modelo, combustivel, cor, ano, mensagem} }.
+    """
+    fichas = payload.get("fichas")
+    if not isinstance(fichas, dict):
+        raise HTTPException(422, "Esperado objeto 'fichas' { placa: {campos...} }")
+    gravado = feira_fichas.salvar_fichas(fichas)
+    quem_id, quem_nome = deps.quem_pede(request)
+    banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome,
+                              acao="feira_fichas_salvas", alvo_tipo="config",
+                              detalhe=f"{len(gravado)} ficha(s)")
+    return {"fichas": gravado}
+
+
+# Cadência do kiosk. Bem mais folgado que o botão de teste (`_LIMITE_LER_PLACA_MIN=6`)
+# porque a vitrine escaneia sozinha em loop: ~1,5 s entre leituras cabe aqui. O teto
+# continua sendo só freio contra abuso — o modo feira já está fora da taxa de produção,
+# e o bico é resolvido no servidor (o cliente não escolhe posto), então não dá para
+# varrer cadastro alheio por aqui.
+_LIMITE_FEIRA_SCAN_MIN = 45
+
+
+@router.post("/feira/scan")
+def feira_scan(request: Request, forcar: bool = False):
+    """Uma leitura do bico de demonstração para o kiosk `/feira` (loop hands-free).
+
+    Resolve o bico da demonstração a partir de `feira_empresa_id` — sem id vindo do
+    cliente, então não serve para ler bico de outro posto. `origem="feira"`: é
+    demonstração, fica fora da métrica de produção. Devolve só o que a vitrine precisa,
+    incluindo a ficha local da placa reconhecida.
+
+    `forcar=1` é o botão "Forçar leitura" do kiosk: usa o perfil COMPLETO (mais fotos, mais
+    robusto) em vez do rápido do loop automático, para o caso do carrinho estar num ângulo
+    que o rápido não fecha. O loop hands-free continua usando o rápido (forcar=0).
+    """
+    cfg = config.carregar()
+    if not feira.ativo(cfg):
+        raise HTTPException(409, "Modo feira não está armado")
+
+    ip = request.client.host if request.client else "?"
+    if not limitador.permitido("feira_scan", ip, _LIMITE_FEIRA_SCAN_MIN, 60):
+        raise HTTPException(429, "Muitas leituras seguidas — aguarde um instante.")
+
+    perfil = leitura.PERFIL_COMPLETO if forcar else leitura.PERFIL_RAPIDO
+
+    empresa_id = feira.empresa_demo(cfg)
+    bico = None
+    for auto in banco.automacoes_listar(empresa_id=empresa_id):
+        candidatos = banco.bicos_listar(automacao_id=auto["id"])
+        if candidatos:
+            bico = candidatos[0]
+            break
+    if bico is None:
+        raise HTTPException(404, "Posto de demonstração sem bico configurado")
+
+    bico_full, motivo = banco.bico_verificar_ativo(bico["id"])
+    if bico_full is None:
+        raise HTTPException(409, "O bico da demonstração está desativado no cadastro")
+    fontes_db, avisos, falha = banco.cameras_do_bico(bico_full)
+    if falha is not None:
+        raise HTTPException(404, "Câmera da demonstração não encontrada")
+
+    try:
+        resultado = leitura.ler_placa(
+            fontes=leitura_rotas.montar_fontes(fontes_db, cfg, perfil),
+            cfg=cfg, avisos=avisos, preview_nome=f"preview_bico_{bico['id']}",
+            bico_id=bico["id"], origem="feira", perfil=perfil,
+            empresa_id=empresa_id,
+        )
+    except leitura.LeituraError as e:
+        raise HTTPException(e.status, e.mensagem)
+
+    placa = resultado.get("placa")
+    return {
+        "placa": placa,
+        "confianca": resultado.get("confianca"),
+        # O mock casou a placa? É o que o kiosk usa para decidir se revela o card de
+        # veículo de demonstração. Antes ele olhava `origem === 'feira'`, que aqui vale
+        # SEMPRE (este endpoint pede `origem="feira"` para a leitura ficar fora de
+        # 'producao') — a placa do celular de um visitante seria saudada como carrinho.
+        "mockada": bool(resultado.get("mockada")),
+        "confirmada": resultado.get("confirmada"),
+        "tipo_veiculo": resultado.get("tipo_veiculo"),
+        "ficha": feira_fichas.ficha_de(placa) if placa else None,
+        # O MESMO bloco que o GET do roteador devolve. O kiosk mostra a `ficha` (rótulos
+        # humanos, `apelido`/`mensagem`); isto aqui existe para a demo poder exibir, na
+        # própria tela, o JSON que o posto vai receber — que é o que se está vendendo.
+        "veiculo": feira_fichas.bloco_de_leitura(resultado),
     }

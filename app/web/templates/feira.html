@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0a0d12">
+<title>Demonstração — Leitura de Placas</title>
+
+<link rel="preload" href="/static/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/feira.css">
+</head>
+<body>
+<div class="feira-kiosk">
+
+  <!-- Topo -->
+  <header class="feira-top">
+    <div class="feira-marca">
+      <div class="feira-marca-icone">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+             stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="6" width="20" height="12" rx="2"/><path d="M12 12h.01"/>
+          <path d="M6 10h.01M18 10h.01M6 14h.01M18 14h.01"/>
+        </svg>
+      </div>
+      <div class="feira-marca-txt">
+        <b>ALPR</b>
+        <span>Leitura automática de placas</span>
+      </div>
+    </div>
+    <div class="feira-top-dir">
+      <span class="feira-relogio" id="feira-relogio">--:--</span>
+      <button type="button" class="feira-btn-icone" id="btn-forcar"
+              title="Forçar leitura agora" aria-label="Forçar leitura agora">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>
+        </svg>
+      </button>
+      <button type="button" class="feira-btn-icone" id="feira-cam-toggle"
+              aria-pressed="false" title="Mostrar câmera" aria-label="Mostrar câmera">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M15 8.5V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-1.5"/>
+          <path d="m15 12 6-4v8l-6-4Z"/>
+        </svg>
+      </button>
+      <button type="button" class="feira-btn-icone" id="feira-full" title="Tela cheia" aria-label="Tela cheia">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/>
+        </svg>
+      </button>
+      <a href="/postos" class="feira-btn-icone" id="feira-sair" title="Sair da demonstração" aria-label="Sair da demonstração">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6 6 18M6 6l12 12"/>
+        </svg>
+      </a>
+    </div>
+  </header>
+
+  <!-- Palco -->
+  <div class="feira-palco">
+
+    <!-- Câmera ao vivo — OPCIONAL, escondida por padrão (ver `camToggle` no script) -->
+    <section class="feira-cam" id="feira-cam" hidden>
+      <div class="ao-vivo"><span class="ponto"></span> <span id="ao-vivo-txt">AO VIVO</span></div>
+      <img id="feira-video" alt="Câmera da demonstração">
+      <div class="scanner">
+        <span class="canto tl"></span><span class="canto tr"></span>
+        <span class="canto bl"></span><span class="canto br"></span>
+        <span class="linha"></span>
+      </div>
+      <div class="cam-estado" id="cam-estado">
+        <div class="spin"></div>
+        <div>
+          <div id="cam-estado-txt" style="font-weight:600;color:#eef1f5">Conectando à câmera…</div>
+          <div id="cam-estado-sub" style="font-size:13px;margin-top:4px"></div>
+        </div>
+      </div>
+      <div class="cam-legenda">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M3 12h18"/>
+        </svg>
+        <span><b>Detecção automática</b> · a leitura acontece sozinha quando o veículo entra em cena</span>
+      </div>
+    </section>
+
+    <!-- Painel de informação -->
+    <section class="feira-info">
+
+      <!-- Estado ocioso -->
+      <div class="feira-estado idle" id="feira-idle">
+        <div class="idle-icone">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 13l1.6-4.8A2 2 0 0 1 8.5 7h7a2 2 0 0 1 1.9 1.3L19 13"/>
+            <path d="M3 17h18"/><rect x="3" y="13" width="18" height="4" rx="1.5"/>
+            <circle cx="7.5" cy="17.5" r="1.4"/><circle cx="16.5" cy="17.5" r="1.4"/>
+          </svg>
+        </div>
+        <h1>Aproxime o veículo</h1>
+        <p>O sistema reconhece a placa e identifica o veículo automaticamente.</p>
+        <!-- UMA linha de estado, e só. Antes havia duas dizendo a mesma coisa: o rótulo do
+             botão ("Lendo placa…") e este status ("Processando a imagem…"), lado a lado.
+             Com o botão fora do palco, sobra uma frase — que é a que o visitante lê. -->
+        <div class="idle-acoes">
+          <span class="aguardando" id="idle-status" aria-live="polite"><span class="bolinha"></span> Aguardando veículo</span>
+        </div>
+      </div>
+
+      <!-- Estado de revelação (sem kicker acima do título) -->
+      <div class="feira-estado reveal" id="feira-reveal" hidden aria-live="polite">
+        <h1>Bem-vindo!<span class="apelido" id="rev-apelido"></span></h1>
+        <div class="placa-mercosul">
+          <div class="faixa">
+            <span>BRASIL</span>
+            <span class="br"><span class="bandeira"></span> BR</span>
+          </div>
+          <div class="numero" id="rev-placa">—</div>
+        </div>
+        <div class="placa-conf">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          Placa reconhecida
+        </div>
+        <!-- A CAPTURA da leitura. É o que o dono pediu ver na tela: com a câmera ao vivo
+             desligada, a prova de que o sistema leu de verdade é o quadro de onde a placa
+             saiu (com a caixa desenhada em volta dela). Sai do mesmo preview que a tela do
+             posto usa; nasce `hidden` e só aparece quando a imagem carrega, para não
+             deixar moldura vazia se não houver preview ainda. -->
+        <figure class="rev-captura" id="rev-captura" hidden>
+          <img id="rev-captura-img" alt="Quadro capturado pela câmera na leitura">
+          <figcaption>Captura da leitura</figcaption>
+        </figure>
+        <div class="ficha-specs" id="rev-ficha"></div>
+        <p class="ficha-msg" id="rev-msg" hidden></p>
+        <button type="button" class="btn-avancar" id="btn-avancar">
+          Próximo veículo
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+  const CAMERA_ID = {{ camera_id|tojson }};
+  const BICO_ID   = {{ bico_id|tojson }};
+  const FICHAS    = {{ fichas_json|safe }};
+
+  const COOLDOWN = 3000, PAUSA = 1600, BACKOFF = 4500, ERRO_BACKOFF = 8000;
+
+  const kiosk  = document.querySelector('.feira-kiosk');
+  const img    = document.getElementById('feira-video');
+  const idle   = document.getElementById('feira-idle');
+  const reveal = document.getElementById('feira-reveal');
+  const camBox = document.getElementById('cam-estado');
+  const camTxt = document.getElementById('cam-estado-txt');
+  const camSub = document.getElementById('cam-estado-sub');
+
+  const normalizar = p => (p || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  // Ícones (SVG de traço, nunca emoji). currentColor herda a cor do contexto.
+  const S = p => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+  const ICON = {
+    fuel: S('<rect x="3" y="3" width="11" height="19" rx="1.5"/><line x1="3" y1="10" x2="14" y2="10"/><path d="M14 8l4 3.5V18a2 2 0 0 0 4 0V9.5L19 6.5"/>'),
+    car:  S('<path d="M5 13l1.6-4.8A2 2 0 0 1 8.5 7h7a2 2 0 0 1 1.9 1.3L19 13"/><rect x="3" y="13" width="18" height="4" rx="1.5"/><circle cx="7.5" cy="17.5" r="1.4"/><circle cx="16.5" cy="17.5" r="1.4"/>'),
+    cor:  S('<path d="M12 3s6 6.4 6 10.5a6 6 0 0 1-12 0C6 9.4 12 3 12 3Z"/>'),
+    ano:  S('<rect x="3" y="4.5" width="18" height="16.5" rx="2"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/>'),
+  };
+
+  // ── Relógio (Inter tabular-nums, sem "fantasia" mono) ───────────────────────
+  // Alinhado na virada do MINUTO. Com um `setInterval(15000)` solto, o minuto exibido
+  // ficava até 15s atrasado — num relógio que só mostra HH:MM isso é o mostrador errado.
+  const relogio = document.getElementById('feira-relogio');
+  const tick = () => relogio.textContent =
+    new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  tick();
+  setTimeout(() => { tick(); setInterval(tick, 60000); },
+             (60 - new Date().getSeconds()) * 1000);
+
+  // ── Tela cheia + cursor ─────────────────────────────────────────────────────
+  // O botão REFLETE o estado: antes o ícone e o title continuavam "Tela cheia" depois de
+  // entrar, então não havia como saber que aquele mesmo botão era a saída.
+  const btnFull = document.getElementById('feira-full');
+  const ICO_ENTRA = btnFull.innerHTML;
+  const ICO_SAI = S('<path d="M8 3v3a2 2 0 0 1-2 2H3M16 3v3a2 2 0 0 0 2 2h3'
+                  + 'M8 21v-3a2 2 0 0 0-2-2H3M16 21v-3a2 2 0 0 1 2-2h3"/>');
+  btnFull.onclick = () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
+  };
+  document.addEventListener('fullscreenchange', () => {
+    const cheia = !!document.fullscreenElement;
+    btnFull.innerHTML = cheia ? ICO_SAI : ICO_ENTRA;
+    btnFull.title = btnFull.ariaLabel = cheia ? 'Sair da tela cheia' : 'Tela cheia';
+  });
+
+  // ── Saída em dois toques ────────────────────────────────────────────────────
+  // O "×" ia direto para /postos (o app de operação) com o mesmo peso visual do
+  // tela-cheia: num kiosk público um toque errado encerrava a demonstração. O primeiro
+  // clique arma e se identifica ("Sair?"), o segundo sai. Continua sendo um <a href>,
+  // então sem JS o comportamento antigo permanece.
+  const btnSair = document.getElementById('feira-sair');
+  let armadoSaida = null;
+  btnSair.addEventListener('click', ev => {
+    if (armadoSaida) return;                       // 2º clique: deixa navegar
+    ev.preventDefault();
+    btnSair.classList.add('confirmar');
+    btnSair.title = btnSair.ariaLabel = 'Clique de novo para sair da demonstração';
+    armadoSaida = setTimeout(() => {
+      armadoSaida = null;
+      btnSair.classList.remove('confirmar');
+      btnSair.title = btnSair.ariaLabel = 'Sair da demonstração';
+    }, 3000);
+  });
+  let curTimer;
+  const mexeu = () => {
+    kiosk.classList.remove('cursor-oculto');
+    clearTimeout(curTimer);
+    curTimer = setTimeout(() => kiosk.classList.add('cursor-oculto'), 3500);
+  };
+  document.addEventListener('mousemove', mexeu); mexeu();
+
+  // ── Câmera: MJPEG com watchdog e queda para snapshot ────────────────────────
+  const mostrarCam = (t, sub) => { camBox.classList.add('mostra'); camTxt.textContent = t; camSub.textContent = sub || ''; };
+  const escondeCam = () => camBox.classList.remove('mostra');
+  let modoSnapshot = false, snapTimer = null;
+  // Os DOIS timers de fallback ficam rastreados porque `pararCamera` tem de cancelá-los:
+  // eram um `setTimeout` solto cada, e desligar a câmera não os alcançava — 12s (ou 30s)
+  // depois eles reabriam o stream numa seção `hidden`, justo o que o botão evita.
+  let mjpegTimer = null, voltaTimer = null;
+
+  // A caixa da câmera assume o aspecto do QUADRO (ver --cam-aspecto no feira.css). Sem
+  // isto o `object-fit` cortava 37,9% da largura de um quadro 16:9 numa caixa 1,10.
+  const cam = document.querySelector('.feira-cam');
+  const casarAspecto = () => {
+    if (img.naturalWidth && img.naturalHeight)
+      cam.style.setProperty('--cam-aspecto', img.naturalWidth + ' / ' + img.naturalHeight);
+  };
+
+  // O selo não pode dizer "AO VIVO" enquanto o fallback puxa uma foto a cada 1,8s.
+  const aoVivoTxt = document.getElementById('ao-vivo-txt');
+  const selo = t => { aoVivoTxt.textContent = t; };
+
+  function carregarMjpeg() {
+    mostrarCam('Abrindo transmissão ao vivo…', '');
+    let ok = false;
+    img.onload = () => { ok = true; casarAspecto(); selo('AO VIVO'); escondeCam(); };
+    img.onerror = () => { if (!modoSnapshot) usarSnapshot('A transmissão ao vivo não está disponível.'); };
+    // `limpo=1`: feed cru, sem bboxes e sem ajuste, na cadência da câmera (limpo e fluido).
+    img.src = `/stream/${CAMERA_ID}.mjpg?limpo=1&t=` + Date.now();
+    clearTimeout(mjpegTimer);
+    mjpegTimer = setTimeout(() => {
+      if (!ok && !modoSnapshot && camLigada) usarSnapshot('A câmera não enviou quadro a tempo.');
+    }, 12000);
+  }
+
+  function usarSnapshot(motivo) {
+    modoSnapshot = true;
+    selo('RECONECTANDO');
+    mostrarCam('Reconectando à câmera…', motivo);
+    const puxa = () => {
+      img.onload = () => { casarAspecto(); escondeCam(); };
+      img.onerror = () => mostrarCam('Sem sinal da câmera', 'Confira a conexão em Configuração › Câmeras.');
+      img.src = `/api/cameras/${CAMERA_ID}/snapshot?t=` + Date.now();
+    };
+    puxa();
+    clearInterval(snapTimer);
+    snapTimer = setInterval(puxa, 1800);
+    // Só volta a tentar o vivo se a câmera AINDA estiver ligada — o operador pode ter
+    // desligado durante os 30s, e sem esta guarda o `carregarMjpeg` reabria o stream
+    // (com `src`) para uma seção `hidden`.
+    clearTimeout(voltaTimer);
+    voltaTimer = setTimeout(() => {
+      modoSnapshot = false; clearInterval(snapTimer);
+      if (camLigada) carregarMjpeg();
+    }, 30000);
+  }
+
+  // A câmera ao vivo é OPCIONAL e nasce DESLIGADA. O dono pediu uma tela só com
+  // "Aproxime o veículo" e a captura da leitura — o feed ao vivo virou recurso de bastidor,
+  // atrás de um botão. E o botão não é só CSS: enquanto está desligado o `<img>` não tem
+  // `src`, então o MJPEG não é aberto. Deixar o stream rodando escondido queimaria banda e
+  // um decode contínuo de quadro para uma imagem que ninguém vê, na mesma máquina onde o
+  // pipeline contínuo já disputa CPU com o OCR do próprio kiosk.
+  const camSec    = document.getElementById('feira-cam');
+  const camToggle = document.getElementById('feira-cam-toggle');
+  const CAM_CHAVE = 'feira:camera-visivel';
+  let camLigada = false;
+
+  function pararCamera() {
+    clearInterval(snapTimer);
+    clearTimeout(mjpegTimer);              // senão o fallback reabre a câmera em 12s
+    clearTimeout(voltaTimer);              // e a volta ao vivo, em 30s
+    modoSnapshot = false;
+    img.onload = img.onerror = null;
+    img.removeAttribute('src');            // encerra a conexão MJPEG de fato
+    escondeCam();
+  }
+
+  function aplicarCamera(ligar, gravar) {
+    camLigada = !!ligar;
+    camSec.hidden = !camLigada;
+    kiosk.classList.toggle('com-camera', camLigada);
+    camToggle.setAttribute('aria-pressed', camLigada ? 'true' : 'false');
+    camToggle.classList.toggle('ativo', camLigada);
+    camToggle.title = camToggle.ariaLabel = camLigada ? 'Ocultar câmera' : 'Mostrar câmera';
+    if (gravar) { try { localStorage.setItem(CAM_CHAVE, camLigada ? '1' : '0'); } catch (e) {} }
+    if (!camLigada) { pararCamera(); return; }
+    if (!CAMERA_ID) {
+      mostrarCam('Câmera da demonstração não configurada', 'Cadastre a câmera na tela de configuração.');
+      return;
+    }
+    carregarMjpeg();
+  }
+
+  camToggle.onclick = () => aplicarCamera(!camLigada, true);
+
+  function iniciarCamera() {
+    // Lembra a escolha do operador entre recargas do kiosk (o padrão continua DESLIGADA).
+    let salvo = null;
+    try { salvo = localStorage.getItem(CAM_CHAVE); } catch (e) {}
+    aplicarCamera(salvo === '1', false);
+  }
+
+  // ── Revelação (o único momento autoral de movimento) ────────────────────────
+  // `revelando`: um veículo está na tela e o card FICA até alguém apertar "Próximo".
+  // `lendo`: há um scan em curso — serializa auto e forçado, nunca dois juntos.
+  let revelando = false, lendo = false, ultimoReveal = 0;
+  const idleStatus = document.getElementById('idle-status');
+  const btnForcar  = document.getElementById('btn-forcar');
+  const btnAvancar = document.getElementById('btn-avancar');
+  const AGUARDANDO = 'Aguardando veículo';
+  // `setStatus(texto, processando)`: o texto e a APARÊNCIA andam juntos. Quando eram duas
+  // chamadas separadas dava para o texto dizer "Processando…" com a pílula ainda em modo
+  // espera (e vice-versa) — estado visual mentindo sobre o estado real.
+  const setStatus = (texto, processando) => {
+    idleStatus.innerHTML = '<span class="bolinha"></span> ' + esc(texto);
+    idleStatus.classList.toggle('processando', !!processando);
+  };
+
+  function spec(icone, rot, val, destaque, cls) {
+    if (!val) return '';
+    // `guia`: o fio pontilhado que liga rótulo e valor. Só apertar a medida não resolvia —
+    // um valor curto alinhado à direita sempre deixa vão (363px de 560px a 1920), e a
+    // associação rótulo→valor é justo o que se perde à distância de TV de estande.
+    // Decorativo: `aria-hidden`, para o leitor de tela ler "Combustível Flex" e mais nada.
+    return `<div class="spec${destaque ? ' destaque' : ''}"><span class="ic">${icone}</span>`
+         + `<span class="rot">${esc(rot)}</span>`
+         + `<span class="guia" aria-hidden="true"></span>`
+         + `<span class="val${cls ? ' ' + cls : ''}">${esc(val)}</span></div>`;
+  }
+
+  function eDemo(d) {
+    // Só revela veículo de demonstração: mock do modo feira ou placa com ficha cadastrada.
+    // `d.mockada` e não `d.origem === 'feira'`: a origem vale "feira" em TODA leitura deste
+    // endpoint (é o que a mantém fora de 'producao'), então a placa do celular de um
+    // visitante entraria aqui. `mockada` é verdadeiro só quando `casar` aprovou a placa.
+    return d && d.placa && (d.mockada || d.ficha || FICHAS[normalizar(d.placa)]);
+  }
+
+  function revelar(d) {
+    // TRANCA: sem placa legível não existe revelação. O card inteiro é a prova da leitura
+    // ("Bem-vindo!", a placa Mercosul, "Placa reconhecida") — exibi-lo com a placa vazia,
+    // como um travessão dentro da moldura, é a tela afirmando na cara do visitante algo
+    // que não aconteceu. Sem isto o `|| '—'` transformava resposta vazia em card montado.
+    const placa = normalizar(d && d.placa);
+    if (!placa) { setStatus(AGUARDANDO); return; }
+
+    const ficha = d.ficha || FICHAS[placa] || {};
+    document.getElementById('rev-placa').textContent = placa;
+    document.getElementById('rev-apelido').textContent = ficha.apelido || 'Veículo de demonstração';
+    document.getElementById('rev-ficha').innerHTML = [
+      spec(ICON.fuel, 'Combustível', ficha.combustivel, true),
+      spec(ICON.car,  'Modelo',      ficha.modelo),
+      spec(ICON.cor,  'Cor',         ficha.cor),
+      spec(ICON.ano,  'Ano',         ficha.ano, false, 'ano'),
+    ].join('');
+
+    // A mensagem de boas-vindas da ficha. O campo é editável na configuração desde que a
+    // ficha existe, e o kiosk nunca a mostrava: quem preenchia não via nada acontecer.
+    // Fica sempre no DOM, só `hidden`, para o botão não trocar de nth-child (e de delay).
+    const msg = document.getElementById('rev-msg');
+    msg.textContent = ficha.mensagem || '';
+    msg.hidden = !ficha.mensagem;
+
+    // A captura: o quadro de onde a placa saiu, com a caixa desenhada. Sem a câmera ao
+    // vivo na tela é ela que prova a leitura. `no-store` no servidor, mas o nome do arquivo
+    // é o mesmo a cada leitura — daí o carimbo de tempo, senão a 2ª leitura reexibia a 1ª.
+    // Só aparece se carregar: preview ausente (404) deixa o card sem moldura vazia.
+    const cap = document.getElementById('rev-captura');
+    const capImg = document.getElementById('rev-captura-img');
+    cap.hidden = true;
+    if (BICO_ID) {
+      capImg.onload  = () => { cap.hidden = false; };
+      capImg.onerror = () => { cap.hidden = true; };
+      capImg.src = `/api/bicos/${BICO_ID}/preview.jpg?t=` + Date.now();
+    }
+
+    revelando = true;
+    idle.hidden = true;
+    reveal.hidden = false;
+    kiosk.classList.remove('reconhecido');
+    void kiosk.offsetWidth;                 // reinicia a coreografia de entrada
+    kiosk.classList.add('reconhecido');
+    // SEM timeout: o card permanece até o operador apertar "Próximo veículo".
+  }
+
+  function avancar() {
+    reveal.hidden = true;
+    idle.hidden = false;
+    kiosk.classList.remove('reconhecido');
+    revelando = false;
+    ultimoReveal = Date.now();
+    setStatus(AGUARDANDO);
+    agenda(400);                            // retoma o loop (respeitando o cooldown)
+  }
+  btnAvancar.onclick = avancar;
+
+  // Uma leitura. `forcar=1` usa o perfil COMPLETO (mais robusto) — é o botão manual.
+  // Serializa via `lendo`: o loop e o botão nunca disparam dois scans ao mesmo tempo.
+  //
+  // Devolve o STATUS junto, e não só o corpo. Antes tudo que não fosse uma placa caía na
+  // mesma frase "Nenhuma placa reconhecida — reposicione o veículo": 429 de limite de taxa,
+  // 409 de bico desativado, 404 de câmera sem cadastro e queda de rede. O operador movia o
+  // carro achando que era enquadramento, num problema que não estava no carro.
+  async function fazerScan(forcar) {
+    if (lendo) return null;
+    lendo = true;
+    try {
+      const r = await fetch('/api/feira/scan' + (forcar ? '?forcar=1' : ''), { method: 'POST' });
+      const corpo = await r.json().catch(() => null);
+      if (!r.ok) return { _erro: r.status, _detalhe: (corpo && corpo.detail) || '' };
+      return corpo;
+    } catch (e) { return { _erro: 0, _detalhe: '' }; }
+    finally { lendo = false; }
+  }
+
+  // Traduz a falha para o visitante, e manda o detalhe técnico para o overlay da câmera
+  // (que já é onde vive a dica de bastidor, tipo "Configuração › Câmeras").
+  function explicarErro(d) {
+    if (d._erro === 429)
+      return 'Muitas leituras seguidas — só um instante.';
+    if (d._erro === 0)
+      return 'Sem conexão com o servidor da demonstração.';
+    if (d._erro === 404 || d._erro === 409) {
+      // Cadastro: fica quebrado até alguém mexer, então o bastidor aparece no overlay da
+      // câmera — que agora normalmente está escondido, então o detalhe vai TAMBÉM para o
+      // status do painel. Sem isto, com a câmera desligada (o padrão) a única pista do
+      // motivo real ficava numa seção `hidden`.
+      mostrarCam('A demonstração precisa de ajuste', d._detalhe || ('Erro ' + d._erro + '.'));
+      return 'A demonstração precisa de ajuste no cadastro'
+           + (d._detalhe ? ' — ' + d._detalhe : '.');
+    }
+    return 'A demonstração está fora do ar por um instante.';
+  }
+
+  function forcarUI(lendoAgora) {
+    // O botão agora é um ÍCONE na barra de operador, então o feedback dele é discreto (gira
+    // o ícone) e quem conta a história é o STATUS no palco — que é onde o visitante olha.
+    // Antes o rótulo virava "Lendo placa…" e brigava com o "Processando a imagem…" do
+    // status: duas frases dizendo o mesmo, uma do lado da outra.
+    btnForcar.disabled = lendoAgora;
+    btnForcar.classList.toggle('girando', lendoAgora);
+  }
+
+  // O clique ESPERA o scan do loop terminar, em vez de ser ignorado.
+  // Antes: `if (revelando || lendo) return` — e como o loop varre a cada 1,6s e cada scan
+  // leva segundos, essa era a janela COMUM: clicar não mudava rótulo, nem `disabled`, nem
+  // status. O botão parecia morto justo na hora em que o operador quer forçar.
+  let pedidoForcado = false;
+  async function forcarLeitura() {
+    if (revelando || pedidoForcado) return;
+    pedidoForcado = true;
+    forcarUI(true);                                  // feedback ANTES de qualquer espera
+    setStatus('Processando a imagem…', true);
+    clearTimeout(cicloTimer);                        // o loop não atropela o pedido manual
+    // Espera o scan em curso liberar. Limite de 20s por segurança: `fazerScan` limpa
+    // `lendo` no `finally`, então isto é só rede de proteção contra ficar preso aqui.
+    for (let i = 0; lendo && i < 165; i++) await new Promise(r => setTimeout(r, 120));
+    const d = await fazerScan(true);
+    pedidoForcado = false;
+    forcarUI(false);
+    if (eDemo(d)) { revelar(d); return; }
+    setStatus(d && d._erro !== undefined
+      ? explicarErro(d)
+      : 'Nenhuma placa reconhecida — reposicione o veículo e tente de novo.', false);
+    setTimeout(() => { if (!revelando) setStatus(AGUARDANDO); }, 3500);
+    agenda(PAUSA);                                   // devolve o loop ao ar
+  }
+  btnForcar.onclick = forcarLeitura;
+
+  // ── Loop hands-free (rápido) ────────────────────────────────────────────────
+  let cicloTimer = null;
+  const agenda = ms => { clearTimeout(cicloTimer); cicloTimer = setTimeout(ciclo, ms); };
+
+  async function ciclo() {
+    if (revelando || lendo || pedidoForcado) return agenda(600);
+    // Aba escondida não pede OCR. Cada scan é trabalho de CPU no servidor, que já é
+    // disputada pelo pipeline contínuo — varrer para uma tela que ninguém está vendo é
+    // queimar exatamente o recurso que falta. `visibilitychange` retoma na hora.
+    if (document.hidden) return agenda(2000);
+    const desde = Date.now() - ultimoReveal;
+    if (desde < COOLDOWN) return agenda(COOLDOWN - desde);
+    const d = await fazerScan(false);
+    if (d && d._erro !== undefined) {
+      // 429 é ritmo (recua e volta); o resto é configuração/rede e não se resolve
+      // tentando de novo a cada 1,6s para sempre — mostra a razão e recua mais.
+      if (d._erro === 429) return agenda(BACKOFF);
+      setStatus(explicarErro(d));
+      return agenda(ERRO_BACKOFF);
+    }
+    if (eDemo(d)) { revelar(d); return; }
+    agenda(PAUSA);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && !revelando && !lendo) agenda(200);
+  });
+
+  // ── Avançar sem depender do botão ───────────────────────────────────────────
+  // Rede de segurança e atalho de operador: Espaço/Enter/Esc e um clique no próprio card
+  // também avançam. Sem isto, o único caminho de volta ao idle era acertar um botão que
+  // em tela baixa/retrato podia estar fora da área visível.
+  document.addEventListener('keydown', ev => {
+    if (!revelando) return;
+    if (ev.key === ' ' || ev.key === 'Enter' || ev.key === 'Escape') { ev.preventDefault(); avancar(); }
+  });
+  reveal.addEventListener('click', ev => {
+    if (!revelando || ev.target.closest('button, a')) return;
+    avancar();
+  });
+
+  iniciarCamera();
+  if (BICO_ID) ciclo();
+  else {
+    // Sem bico não há leitura NENHUMA. Antes isto só aparecia no overlay da câmera; com a
+    // câmera desligada por padrão, a tela ficaria em "Aguardando veículo" para sempre sem
+    // dizer por quê. Agora avisa no painel (que é a tela) e desarma o botão de forçar.
+    mostrarCam('Bico da demonstração não configurado', 'Crie o posto de demonstração na configuração.');
+    setStatus('Demonstração sem posto configurado — crie o posto de demonstração na configuração.');
+    btnForcar.disabled = true;
+  }
+</script>
+</body>
+</html>

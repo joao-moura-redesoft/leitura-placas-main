@@ -342,6 +342,40 @@ def cameras_listar(request: Request, empresa_id: int | None = None):
     return redacao.cameras(banco.cameras_listar(empresa_id=_empresa_efetiva(request, empresa_id)))
 
 
+def _recusar_usb_duplicada(payload: dict, id_atual: int | None = None) -> None:
+    """Impede DUAS câmeras no mesmo índice USB.
+
+    No Windows é um handle por dispositivo. Com duas linhas apontando para a mesma
+    webcam, os dois pipelines disputam o aparelho: um chama `cap.release()` enquanto o
+    outro chama `cv2.VideoCapture()`, e isso é access violation dentro do DSHOW — o
+    processo MORRE, sem traceback Python, no meio da demonstração. Aconteceu em campo
+    (03/09/2026): `[cam1] tentando reconectar` 700 ms antes de `Câmera aberta: tipo=usb`
+    da cam2, e o servidor sumiu.
+
+    `app/visao/camera.py:_lock_do_dispositivo` serializa e torna a corrida sobrevivível.
+    Isto aqui é a outra metade: a configuração não faz sentido nenhum — duas câmeras
+    lendo exatamente a mesma imagem — e barrá-la evita o problema em vez de administrá-lo.
+
+    Só vale para USB/CSI. RTSP não entra: dois bicos podem legitimamente compartilhar um
+    DVR pelo mesmo host com canais diferentes, e o cadastro já trata isso.
+    """
+    tipo = (payload.get("camera_tipo") or "").strip().lower()
+    if tipo not in ("usb", "csi"):
+        return
+    indice = str(payload.get("camera_indice") or "0").strip()
+    for outra in banco.cameras_listar():
+        if id_atual is not None and outra["id"] == id_atual:
+            continue
+        if ((outra.get("camera_tipo") or "").strip().lower() == tipo
+                and str(outra.get("camera_indice") or "0").strip() == indice):
+            raise HTTPException(
+                409,
+                f"A câmera '{outra['nome']}' já usa o dispositivo {tipo} de índice "
+                f"{indice}. No Windows é um aparelho por processo: duas câmeras no mesmo "
+                f"índice disputam o dispositivo e derrubam o servidor. Use outro índice, "
+                f"ou aponte os dois bicos para esta mesma câmera.")
+
+
 def _validar_camera(payload: dict) -> dict:
     """Valida nome/empresa da câmera. A câmera pertence a um posto (empresa) e o campo
     `local` diz onde ela está fisicamente instalada — sem o vínculo, num servidor central
@@ -364,6 +398,7 @@ def _validar_camera(payload: dict) -> dict:
 @router.post("/cameras", dependencies=[Depends(deps.exigir_admin)])
 def cameras_inserir(payload: dict):
     payload = _validar_camera(payload)
+    _recusar_usb_duplicada(payload)
     try:
         id_ = banco.cameras_inserir(payload)
     except Exception as e:
@@ -385,6 +420,7 @@ def cameras_inserir(payload: dict):
 @router.put("/cameras/{id_}", dependencies=[Depends(deps.exigir_admin)])
 def cameras_atualizar(id_: int, payload: dict):
     payload = _validar_camera(payload)
+    _recusar_usb_duplicada(payload, id_atual=id_)
     try:
         ok = banco.cameras_atualizar(id_, payload)
     except Exception as e:

@@ -13,6 +13,7 @@
 <link rel="preload" href="/static/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
 
+<link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="stylesheet" href="/static/css/tokens.css">
 <link rel="stylesheet" href="/static/css/base.css">
 <!-- HLS.js 1.6.17, hospedado localmente (era CDN sem SRI — risco de supply chain
@@ -21,8 +22,13 @@
 <script src="/static/js/app.js"></script>
 </head>
 <body>
+<!-- Primeiro elemento focavel da pagina: a barra tem 8 itens mais um menu de 9,
+     e sem isto quem opera por teclado (o tablet com dock, citado em base.css)
+     percorria 17 tabulacoes antes de alcancar o conteudo em CADA pagina. Fica
+     invisivel ate receber foco. -->
+<a href="#conteudo" class="salto-conteudo">Ir para o conteúdo</a>
 <div id="aviso-global" role="status" aria-live="polite"></div>
-<nav>
+<nav aria-label="Navegação principal">
   <a href="/" class="nav-brand">
     <div class="nav-brand-icon">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white"
@@ -42,30 +48,50 @@
   <a href="/postos"    {% if pagina.startswith('/posto') %}aria-current="page"{% endif %}>Postos</a>
   <a href="/historico" {% if pagina.startswith('/historico') %}aria-current="page"{% endif %}>Histórico</a>
   <a href="/listas"    {% if pagina.startswith('/listas') %}aria-current="page"{% endif %}>Listas</a>
+  {# Vitrine da feira: só aparece com o modo feira armado (feira_on em _ctx). É a porta
+     para a tela de demonstração em tela cheia. #}
+  {% if feira_on %}
+  <a href="/feira" {% if pagina.startswith('/feira') %}aria-current="page"{% endif %}>Feira</a>
+  {% endif %}
 
   {% if not usuario or usuario.papel == 'admin' %}
   <div class="nav-menu">
-    <button type="button" class="nav-menu-trigger" aria-haspopup="true" aria-expanded="false">Sistema ▾</button>
-    <div class="nav-menu-itens" role="menu">
-      <a href="/cameras">Todas as câmeras</a>
-      <a href="/configuracao">Configuração</a>
-      <a href="/usuarios">Usuários</a>
-      <a href="/auditoria">Auditoria</a>
-      <a href="/testes">Testes</a>
-      <a href="/documentacao">Documentação</a>
-      <div class="nav-sep"></div>
-      <div class="nav-menu-secao">Cadastro avulso</div>
-      <a href="/entidades">Entidades</a>
-      <a href="/empresas">Postos (lista simples)</a>
-      <a href="/automacoes">Automações</a>
+    <button type="button" class="nav-menu-trigger" aria-haspopup="menu" aria-expanded="false">
+      Sistema <span aria-hidden="true">▾</span>
+    </button>
+    {# role="menu" obriga os filhos a serem role="menuitem": sem isso o leitor de
+       tela anuncia um "menu" com zero itens. O separador e o rotulo de secao
+       ficam fora da arvore do menu (role="separator" / presentation) para nao
+       serem contados como itens navegaveis. #}
+    <div class="nav-menu-itens" role="menu" aria-label="Sistema">
+      <a href="/cameras"     role="menuitem">Todas as câmeras</a>
+      <a href="/configuracao" role="menuitem">Configuração</a>
+      <a href="/usuarios"    role="menuitem">Usuários</a>
+      <a href="/auditoria"   role="menuitem">Auditoria</a>
+      <a href="/testes"      role="menuitem">Testes</a>
+      <a href="/documentacao" role="menuitem">Documentação</a>
+      <div class="nav-sep" role="separator"></div>
+      <div class="nav-menu-secao" role="presentation">Cadastro avulso</div>
+      <a href="/entidades"   role="menuitem">Entidades</a>
+      <a href="/empresas"    role="menuitem">Postos (lista simples)</a>
+      <a href="/automacoes"  role="menuitem">Automações</a>
     </div>
   </div>
   {% endif %}
 
-  <a href="/minha-conta" class="nav-logout">{{ usuario.nome if usuario else 'Minha conta' }}</a>
-  <a href="/logout" class="nav-logout" style="margin-left:0 !important">Sair</a>
+  {# Bloco de conta: o nome identifica QUEM esta logado, "Sair" e uma acao.
+     Antes os dois eram <a class="nav-logout"> com a mesma cor (#94a3b8, 2,56:1
+     sobre a barra branca) e o mesmo tamanho — liam como um unico borrao cinza.
+     Agora o nome e texto legivel com peso e o "Sair" fica subordinado. #}
+  <div class="nav-conta">
+    <a href="/minha-conta" class="nav-logout nav-usuario"
+       title="{{ usuario.nome if usuario else 'Minha conta' }} — abrir minha conta">
+      {{ usuario.nome if usuario else 'Minha conta' }}
+    </a>
+    <a href="/logout" class="nav-logout">Sair</a>
+  </div>
 </nav>
-<main>
+<main id="conteudo" tabindex="-1">
   {% block conteudo %}{% endblock %}
 </main>
 {% block scripts %}{% endblock %}

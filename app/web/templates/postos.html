@@ -1,14 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Postos — ALPR{% endblock %}
 {% block conteudo %}
-<div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap">
-  <h1 style="margin:0">Postos</h1>
-  <span id="contador" style="color:#94a3b8;font-size:13px"></span>
-  <a href="/posto/novo" style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;
-     padding:8px 16px;border-radius:7px;background:#16a34a;color:#fff;font-size:14px;
-     font-weight:500;text-decoration:none">+ Novo posto</a>
+{# .pagina-topo + .btn, no lugar do flex e do botao escritos a mao. O fundo
+   #16a34a que estava aqui dava 3,30:1 com texto branco (reprova AA); .btn usa
+   --marca-btn, 5,02:1. #}
+<div class="pagina-topo" style="margin-bottom:6px">
+  <h1>Postos</h1>
+  <span id="contador" class="t-suave t-13" role="status" aria-live="polite"></span>
+  <div class="acoes"><a href="/posto/novo" class="btn">+ Novo posto</a></div>
 </div>
-<p style="color:#64748b;margin:0 0 20px;font-size:14px">
+<p class="t-suave" style="margin:0 0 20px;font-size:14px">
   Cada posto é um CNPJ. "Pronto" significa que tem câmera, automação e bicos com área de
   captura definida — ou seja, o roteador já pode chamar a leitura.
 </p>
@@ -21,8 +22,8 @@
 </div>
 
 <div id="lista"></div>
-<p id="vazio" style="display:none;color:#94a3b8">
-  Nenhum posto cadastrado. <a href="/posto/novo" style="color:#16a34a">Cadastre o primeiro</a>.
+<p id="vazio" style="display:none;color:var(--texto-3)">
+  Nenhum posto cadastrado. <a href="/posto/novo" style="color:var(--marca-texto)">Cadastre o primeiro</a>.
 </p>
 {% endblock %}
 
@@ -55,7 +56,7 @@ function render() {
     <div class="card">
       <h2 style="margin:0 0 12px;display:flex;align-items:center;gap:8px">
         ${esc(ent)}
-        <span style="color:#94a3b8;font-size:12px;font-weight:400">${ps.length} posto(s)</span>
+        <span style="color:var(--texto-3);font-size:12px;font-weight:400">${ps.length} posto(s)</span>
       </h2>
       <table>
         <thead><tr><th>Posto</th><th>CNPJ</th><th>Câmeras</th><th>Automações</th><th>Bicos</th><th>Situação</th><th></th></tr></thead>
@@ -78,12 +79,15 @@ function linha(p) {
     sit = `<span class="badge badge-warn">${esc(faltas.join(' · '))}</span>`;
   }
   return `<tr>
-    <td><a href="/posto/${p.id}" style="color:#0f172a;font-weight:600;text-decoration:none">${esc(p.nome)}</a></td>
-    <td style="font-family:monospace;font-size:13px">${esc(p.cnpj)}</td>
+    <td><a href="/posto/${p.id}" class="link-forte">${esc(p.nome)}</a></td>
+    {# .mono: "font-family:monospace" cai em Courier New no Windows. tokens.css
+       explica por que a mono do sistema e JetBrains Mono.
+       SEM CRASE aqui: este comentario mora DENTRO da template string desta funcao, e
+       uma crase encerraria a string e derrubaria o script inteiro da pagina. #}
+    <td class="mono">${esc(p.cnpj)}</td>
     <td>${p.n_cameras}</td><td>${p.n_automacoes}</td><td>${p.n_bicos}</td>
     <td>${sit}</td>
-    <td><a href="/posto/${p.id}" style="display:inline-flex;padding:8px 12px;border-radius:7px;
-        background:#0f172a;color:#fff;font-size:14px;text-decoration:none">Abrir</a></td>
+    <td><a href="/posto/${p.id}" class="btn btn-pequeno">Abrir</a></td>
   </tr>`;
 }
 

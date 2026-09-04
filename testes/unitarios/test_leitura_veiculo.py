@@ -45,6 +45,10 @@ def _resultado(**over) -> dict:
         "total_engines": 2, "detalhes_ocr": [], "snapshot": None, "frame_url": None,
         "tentativas": 6, "acordo": 0.85, "confirmada": True, "parada_motivo": "acordo",
         "tipo_veiculo": "carro", "n_cameras_votando": 1, "fontes": [], "avisos": [],
+        # `mockada` sai do `ler_placa` real desde 04/09/2026. O dublê a declara para não
+        # mentir por OMISSÃO: sem ela, `bloco_veiculo` nunca veria leitura mockada e a
+        # suíte passaria com o gancho do modo feira inteiro morto.
+        "mockada": False,
     }
     base.update(over)
     return base
@@ -325,3 +329,67 @@ class TestSegredo:
     def test_post_vazio_agora_apaga_o_token_de_proposito(self, cenario):
         cenario.admin.post("/api/config", json={"apiplacas_token": ""})
         assert config.carregar()["apiplacas_token"] == ""
+
+
+class TestModoFeiraOffline:
+    """O bloco `veiculo` no payload quando a leitura foi MOCKADA e não há internet.
+
+    O cenário real é o estande: sem rede, sem token e cache vazio. A consulta de verdade
+    só saberia devolver `indisponivel`, e o payload da demo sairia sem combustível — que é
+    o campo que esta integração existe para entregar e o que se está demonstrando.
+
+    A evidência que importa em cada caso: `cenario.chamadas` (a fronteira HTTP) vazia é a
+    prova de que o bloco veio da ficha local e não de rede nem de crédito.
+    """
+
+    DEMO = "MOK3H92"
+
+    def test_bloco_sai_com_a_apiplacas_desligada(self, cenario):
+        """O caso da feira: recurso desligado (não há token nem rede) e o bloco vem igual.
+
+        É o requisito inteiro em um teste — se só este passar, a demo funciona.
+        """
+        config.salvar({**config.carregar(), "apiplacas_ativo": "nao"})
+        r = cenario.ler(placa=self.DEMO, mockada=True)
+        v = r.json()["veiculo"]
+        assert v["consulta"] == "ok"
+        assert v["combustivel"] == "Flex"
+        assert v["modelo"] and v["cor"] == "Cinza"
+        assert cenario.chamadas == []
+
+    def test_forma_identica_a_da_consulta_real(self, cenario):
+        """Mesmas chaves que o sidecar Java já recebe em produção — nem uma a mais."""
+        config.salvar({**config.carregar(), "apiplacas_ativo": "nao"})
+        v = cenario.ler(placa=self.DEMO, mockada=True).json()["veiculo"]
+        assert set(v) == set(apiplacas.CHAVES_VEICULO)
+
+    def test_nao_gasta_credito_nem_com_a_api_ligada(self, cenario):
+        """Consultar a placa do carrinho custaria dinheiro para receber dados de OUTRO
+        veículo (ou nada) e servi-los como se fossem do carro do estande.
+        """
+        v = cenario.ler(placa=self.DEMO, mockada=True).json()["veiculo"]
+        assert cenario.chamadas == []
+        assert v["origem"] == "feira"
+
+    def test_leitura_real_continua_consultando(self, cenario):
+        """O contraponto: sem mock, nada muda. A placa do visitante segue o caminho pago."""
+        r = cenario.ler(placa=PLACA, mockada=False)
+        v = r.json()["veiculo"]
+        assert cenario.chamadas == [PLACA]
+        assert v["origem"] == "api"
+        assert v["combustivel"] == "Alcool / Gasolina"
+
+    def test_payload_declara_que_a_leitura_foi_mockada(self, cenario):
+        """`mockada` no nível de cima: o único sinal antes disto era prosa em `avisos`."""
+        r = cenario.ler(placa=self.DEMO, mockada=True)
+        assert r.json()["mockada"] is True
+
+    def test_placa_mockada_sem_ficha_vira_motivo_da_chamada(self, cenario):
+        """Bloco `indisponivel` é promovido ao motivo pelo caminho que já existia — assim
+        "esqueci de preencher a ficha" aparece no painel em vez de na feira.
+        """
+        config.salvar({**config.carregar(), "apiplacas_ativo": "nao"})
+        r = cenario.ler(placa="ZZZ9Z99", mockada=True)
+        assert r.json()["veiculo"]["consulta"] == "indisponivel"
+        motivo = banco.chamadas_listar(limit=1)[0]["motivo"] or ""
+        assert "ficha" in motivo.lower()

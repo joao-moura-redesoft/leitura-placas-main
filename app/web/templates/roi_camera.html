@@ -1,20 +1,20 @@
 {% extends "base.html" %}
 {% block title %}Câmera — ALPR{% endblock %}
 {% block conteudo %}
-<a id="voltar" href="/cameras" style="color:#64748b;font-size:13px;text-decoration:none">← Voltar</a>
+<a id="voltar" href="/cameras" class="link-voltar">← Voltar</a>
 
 <div style="display:flex;align-items:baseline;gap:12px;margin:6px 0 4px;flex-wrap:wrap">
   <h1 id="titulo" style="margin:0">…</h1>
   <span id="selo-vivo"></span>
 </div>
-<p id="subtitulo" style="color:#64748b;margin:0 0 16px;font-size:14px"></p>
+<p id="subtitulo" style="color:var(--texto-2);margin:0 0 16px;font-size:14px"></p>
 
 <div id="msg" style="margin-bottom:12px"></div>
 
 <div id="layout" style="display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start">
   <div class="card" style="margin:0">
     <!-- Imagem: MJPEG quando em modo contínuo, senão captura sob demanda -->
-    <div id="wrap" style="position:relative;border:1px solid #e2e8f0;border-radius:8px;
+    <div id="wrap" style="position:relative;border:1px solid var(--borda);border-radius:8px;
          overflow:hidden;background:#0f172a;user-select:none;touch-action:none;max-width:760px">
       <img id="video" alt="" style="display:block;width:100%;height:auto;pointer-events:none" draggable="false">
       <canvas id="canvas" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
@@ -23,7 +23,7 @@
            o canvas é absolute e, sendo posicionado, ficaria por cima engolindo o
            clique do botão. -->
       <div id="vazio" style="display:flex;width:100%;aspect-ratio:16/9;align-items:center;
-           justify-content:center;color:#94a3b8;font-size:14px;flex-direction:column;gap:10px;
+           justify-content:center;color:var(--texto-3);font-size:14px;flex-direction:column;gap:10px;
            position:relative;z-index:2;text-align:center;padding:18px">
         <span id="vazio-icone" style="font-size:32px">📷</span>
         <span id="vazio-txt" style="max-width:440px;line-height:1.5">carregando…</span>
@@ -36,8 +36,8 @@
     <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <button onclick="alternarEdicao()" id="btn-editar">✎ Editar áreas</button>
       <button onclick="atualizarImagem(true)" id="btn-atualizar"
-              style="background:#f1f5f9;color:#374151;border:1px solid #e2e8f0">↻ Atualizar</button>
-      <span id="info" style="font-size:12px;color:#64748b;font-family:monospace"></span>
+              style="background:var(--superficie-3);color:var(--texto-2);border:1px solid var(--borda)">↻ Atualizar</button>
+      <span id="info" style="font-size:12px;color:var(--texto-2);font-family:monospace"></span>
     </div>
 
     <!-- Controles que só aparecem no modo de edição -->
@@ -47,8 +47,8 @@
         Modo de edição: escolha um bico ao lado e arraste sobre a imagem para marcar a área dele.
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button onclick="salvarTudo()" id="btn-salvar" disabled style="background:#16a34a">Salvar áreas</button>
-        <button onclick="limparAtual()" style="background:#f1f5f9;color:#374151;border:1px solid #e2e8f0">
+        <button onclick="salvarTudo()" id="btn-salvar" disabled style="background:var(--marca-btn)">Salvar áreas</button>
+        <button onclick="limparAtual()" style="background:var(--superficie-3);color:var(--texto-2);border:1px solid var(--borda)">
           Limpar área do bico
         </button>
       </div>
@@ -65,17 +65,26 @@
     <!-- Bicos -->
     <div class="card" style="margin:0">
       <h2 style="margin:0 0 4px;font-size:15px">Bicos nesta câmera</h2>
-      <p style="color:#94a3b8;font-size:12px;margin:0 0 12px">Clique para destacar a área</p>
+      <p style="color:var(--texto-3);font-size:12px;margin:0 0 12px">Clique para destacar a área</p>
       <div id="lista-bicos"></div>
-      <p id="sem-bicos" style="display:none;color:#94a3b8;font-size:13px;margin:0">
+      <p id="sem-bicos" style="display:none;color:var(--texto-3);font-size:13px;margin:0">
         Nenhum bico usa esta câmera.
       </p>
       <div id="painel-teste" style="display:none;border-top:1px solid #f1f5f9;margin-top:14px;padding-top:14px">
-        <button onclick="testarBico()" id="btn-testar" style="width:100%;background:#0f172a">
-          Ler placa deste bico
-        </button>
+        <!-- Botao dividido: uma peca so. O perfil rapido fica colado ao completo porque
+             quem ajusta o enquadramento precisa ver o que o roteador vai receber nos DOIS
+             modos, com a mesma area recem-desenhada — e nao procurar dois botoes soltos. -->
+        <span class="btn-split" style="width:100%">
+          <button onclick="testarBico()" id="btn-testar" style="flex:1;background:#0f172a">
+            Ler placa deste bico
+          </button>
+          <button class="btn-split-alt" onclick="testarBico(true)" id="btn-testar-rapido"
+                  style="background:#334155"
+                  aria-label="Ler placa deste bico em modo rapido"
+                  title="Leitura rapida — 1 a 2 fotos, modelos leves, resposta em poucos segundos. Troca acuracia por tempo.">⚡</button>
+        </span>
         <div id="resultado" style="display:none;margin-top:10px;padding:12px;border-radius:8px;
-             background:#f8fafc;border:1px solid #e2e8f0;text-align:center;font-size:13px"></div>
+             background:var(--superficie-2);border:1px solid var(--borda);text-align:center;font-size:13px"></div>
       </div>
     </div>
   </div>
@@ -86,12 +95,12 @@
   #wrap.editando { cursor: crosshair; }
   .bico-item { display:flex; align-items:center; gap:9px; padding:9px 10px; border-radius:7px;
     cursor:pointer; border:1px solid transparent; margin-bottom:5px; font-size:13px; }
-  .bico-item:hover { background:#f8fafc; }
-  .bico-item.ativo { background:#f0fdf4; border-color:#16a34a; }
+  .bico-item:hover { background:var(--superficie-2); }
+  .bico-item.ativo { background:#f0fdf4; border-color:var(--marca-texto); }
   .bico-cor { width:12px; height:12px; border-radius:3px; flex-shrink:0; }
-  .bico-nome { flex:1; font-weight:600; color:#0f172a; }
+  .bico-nome { flex:1; font-weight:600; color:var(--texto); }
   #dados-camera td { padding:4px 0; border:none; font-size:13px; }
-  #dados-camera td:first-child { color:#94a3b8; padding-right:12px; white-space:nowrap; }
+  #dados-camera td:first-child { color:var(--texto-3); padding-right:12px; white-space:nowrap; }
 </style>
 {% endblock %}
 
@@ -280,7 +289,7 @@ async function salvarTudo() {
   const pendente = salvos.find(b => b.roi && b.outraId && !b.outraTemRoi);
   const proximo = pendente
     ? ` <a href="/roi-camera/${pendente.outraId}?bico=${pendente.id}"
-           style="color:#166534;font-weight:600">agora a área da
+           style="color:var(--marca-forte);font-weight:600">agora a área da
         ${esc(pendente.outraPapel || 'outra câmera')} do bico ${esc(pendente.codigo)} →</a>`
     : '';
   msg(true, `${n} área(s) salva(s). A próxima leitura já usa a nova configuração.${proximo}`,
@@ -294,18 +303,18 @@ function renderLista() {
   document.getElementById('lista-bicos').innerHTML = _bicos.map(b => `
     <div class="bico-item ${b.id === _ativo ? 'ativo' : ''}" onclick="selecionar(${b.id})">
       <span class="bico-cor" style="background:${b.cor}"></span>
-      <span class="bico-nome">${esc(b.codigo)}${b.nome ? ` <span style="font-weight:400;color:#94a3b8">${esc(b.nome)}</span>` : ''}
-        ${b.papel ? `<span style="font-weight:400;color:#94a3b8;font-size:12px"> · ${esc(b.papel)}</span>` : ''}</span>
+      <span class="bico-nome">${esc(b.codigo)}${b.nome ? ` <span style="font-weight:400;color:var(--texto-3)">${esc(b.nome)}</span>` : ''}
+        ${b.papel ? `<span style="font-weight:400;color:var(--texto-3);font-size:12px"> · ${esc(b.papel)}</span>` : ''}</span>
       ${b.sujo ? '<span class="badge badge-warn">não salvo</span>'
                : b.roi ? '<span class="badge badge-ok">ok</span>'
                        : '<span class="badge badge-err">sem área</span>'}
     </div>
-    ${b.outraId ? `<div style="padding:4px 10px 8px 26px;font-size:12px;color:#94a3b8;line-height:1.5">
+    ${b.outraId ? `<div style="padding:4px 10px 8px 26px;font-size:12px;color:var(--texto-3);line-height:1.5">
         também usa <strong>${esc(b.outraNome || 'outra câmera')}</strong>${b.outraPapel ? ` (${esc(b.outraPapel)})` : ''}
         ${b.outraTemRoi ? '<span class="badge badge-ok" style="font-size:10px">área ok</span>'
                         : '<span class="badge badge-err" style="font-size:10px">sem área</span>'}
         <a href="/roi-camera/${b.outraId}?bico=${b.id}" onclick="event.stopPropagation()"
-           style="color:#16a34a;text-decoration:none">abrir →</a>
+           style="color:var(--marca-texto);text-decoration:none">abrir →</a>
       </div>` : ''}`).join('');
 }
 function selecionar(id) { _ativo = id; _rect = null; renderLista(); desenhar(); }
@@ -384,21 +393,28 @@ video.addEventListener('load', () => {
 });
 window.addEventListener('resize', desenhar);
 
-async function testarBico() {
+async function testarBico(rapido = false) {
   const b = _bicos.find(x => x.id === _ativo);
   if (!b) return;
   if (b.sujo) { msg(false, 'Salve a área antes de testar — o teste usa o que está gravado.'); return; }
-  const btn = document.getElementById('btn-testar');
   const res = document.getElementById('resultado');
+  // Os dois travam: disputam o mesmo lock de camera no servidor.
+  const principal = document.getElementById('btn-testar');
+  const botoes = [principal, document.getElementById('btn-testar-rapido')].filter(Boolean);
+  const rotulo = principal.textContent;
   const t0 = Date.now();
-  btn.disabled = true;
+  botoes.forEach(x => x.disabled = true);
   res.style.display = 'block';
+  // O contador vai SEMPRE na metade principal, mesmo quando foi o ⚡ que disparou:
+  // escrever "Lendo… 3s" dentro do botao estreito apagaria o icone e esticaria a peca
+  // dividida no meio da leitura.
   const tick = setInterval(() => {
-    btn.textContent = `Lendo… ${Math.round((Date.now() - t0) / 1000)}s`;
+    principal.textContent = `Lendo${rapido ? ' (rapido)' : ''}… ${Math.round((Date.now() - t0) / 1000)}s`;
   }, 250);
-  res.innerHTML = '<span style="color:#94a3b8">Analisando a área deste bico…</span>';
+  res.innerHTML = '<span style="color:var(--texto-3)">Analisando a área deste bico…</span>';
   try {
-    const r = await fetch(`/api/bicos/${b.id}/ler-placa-teste`, { method: 'POST' });
+    const r = await fetch(`/api/bicos/${b.id}/ler-placa-teste`
+      + (rapido ? '?rapido=1' : ''), { method: 'POST' });
     const d = await r.json();
     if (!r.ok) res.innerHTML = `<span style="color:#b91c1c">${esc(d.detail || 'falha')}</span>`;
     else if (!d.placa) res.innerHTML = `<span style="color:#a16207">${esc(d.mensagem || 'Nenhuma placa')}</span>`;
@@ -407,16 +423,23 @@ async function testarBico() {
     // sem isto o resultado parecia não ter sido registrado em lugar nenhum.
     else res.innerHTML = `
       <div style="font-size:22px;font-weight:700;letter-spacing:3px;font-family:'Consolas',monospace">${esc(d.placa)}</div>
-      <div style="margin-top:4px;color:#94a3b8;font-size:12px">
-        ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%</div>
+      <div style="margin-top:4px;color:var(--texto-3);font-size:12px">
+        ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%
+        · ${(d.modo || 'completo') === 'rapido' ? '⚡ rapido' : 'completo'}${
+          d.total_snapshots != null ? ` · ${d.total_snapshots} foto(s)` : ''}${
+          d.confirmada === false ? ' · a conferir' : ''}</div>${
+        rapido && (d.modo || 'completo') !== 'rapido'
+          ? '<div style="color:#a16207;font-size:12px;margin-top:4px">⚠ modo rapido pedido, mas '
+            + 'esta desligado no servidor (rapido_ativo) — rodou completo</div>' : ''}
       <a href="/historico?bico_id=${b.id}&origem=teste" target="_blank"
-         style="display:inline-block;margin-top:6px;font-size:12px;color:#16a34a;text-decoration:none">
+         style="display:inline-block;margin-top:6px;font-size:12px;color:var(--marca-texto);text-decoration:none">
         ver testes deste bico no histórico →</a>`;
   } catch (ex) {
     res.innerHTML = `<span style="color:#b91c1c">Erro: ${esc(ex.message)}</span>`;
   } finally {
     clearInterval(tick);
-    btn.disabled = false; btn.textContent = 'Ler placa deste bico';
+    botoes.forEach(x => x.disabled = false);
+    principal.textContent = rotulo;
   }
 }
 
@@ -437,7 +460,7 @@ function renderCabecalho() {
     selos[_d.stream_modo] || (_d.ao_vivo ? selos.ao_vivo : selos.sob_demanda);
   document.getElementById('subtitulo').innerHTML = _d.posto
     ? `${esc(c.local ? c.nome : '')} ${c.local ? '·' : ''} Posto
-       <a href="/posto/${_d.posto.id}" style="color:#16a34a">${esc(_d.posto.nome)}</a>`
+       <a href="/posto/${_d.posto.id}" style="color:var(--marca-texto)">${esc(_d.posto.nome)}</a>`
     : esc(c.nome);
   if (_d.posto) document.getElementById('voltar').href = `/posto/${_d.posto.id}`;
 

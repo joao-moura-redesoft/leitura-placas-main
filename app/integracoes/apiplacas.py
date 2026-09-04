@@ -57,6 +57,15 @@ CONSULTA_OK = "ok"
 CONSULTA_INEXISTENTE = "inexistente"
 CONSULTA_INDISPONIVEL = "indisponivel"
 
+# Valores de `veiculo.origem`. "api" = consulta paga agora; "cache" = nosso banco;
+# `ORIGEM_DEMONSTRACAO` = ficha local do modo feira (dado sintético, ver `bloco_demonstracao`).
+#
+# Literal, e não `from app.visao import feira`: este módulo não tem nada a ver com o modo
+# de demonstração e não deve passar a depender dele para nomear um rótulo próprio. O que
+# garante que os dois não divirjam é `test_declara_que_e_demonstracao`, que prende os dois
+# ao mesmo valor — um assert de uma linha custa menos que a aresta no grafo de imports.
+ORIGEM_DEMONSTRACAO = "feira"
+
 # Chaves do bloco `veiculo` do payload. SEMPRE todas presentes, em todos os desfechos:
 # um bloco que muda de forma é o pior caso para o sidecar Java tipado que consome isso.
 CHAVES_VEICULO = (
@@ -383,6 +392,53 @@ def _do_cache(linha: dict) -> dict:
     motivo = "" if consulta == CONSULTA_OK else "placa não consta na base consultada"
     return _bloco(consulta, motivo, origem="cache",
                   consultado_em=linha["consultado_em"], campos=linha)
+
+
+# ─── Bloco de DEMONSTRAÇÃO (modo feira) ──────────────────────────────────────
+# O evento acontece OFFLINE: não há internet, não há token e o cache está vazio, então
+# `consultar` só sabe devolver `indisponivel` — e o payload da demo sairia sem combustível,
+# que é justamente o campo que a integração existe para entregar. As duas funções abaixo
+# montam o mesmo bloco a partir da ficha local (`app/visao/feira_fichas.py`).
+#
+# Moram AQUI, e não no módulo da feira, porque a FORMA do bloco é deste módulo: `_bloco`
+# garante as `CHAVES_VEICULO` todas presentes em todos os desfechos, e é o que o sidecar
+# Java tipado consome. Um segundo lugar montando o dicionário à mão divergiria no primeiro
+# campo novo — o mesmo motivo do "um lugar só, para não divergir" de `_tratar_resposta`.
+#
+# Nenhuma das duas escreve na tabela `veiculos`: dado sintético não entra no cache real.
+# Ver o cabeçalho de `feira_fichas.py` — é a mesma linha que separa a demo da medição.
+
+def bloco_demonstracao(campos: dict, motivo: str) -> dict:
+    """Bloco `veiculo` de DEMONSTRAÇÃO, com a forma exata da consulta real.
+
+    `consulta="ok"` porque, para o consumidor, o desfecho É um registro encontrado — é o
+    que faz o sidecar do posto exercitar o mesmo caminho de código que exercitaria em
+    produção, que é o ponto de demonstrar.
+
+    O que impede isso de virar mentira é `origem`: `ORIGEM_DEMONSTRACAO` não é `"api"` nem
+    `"cache"`, então quem quiser distinguir dado real de dado de estande tem um campo para
+    olhar — e `motivo` vem preenchido mesmo no sucesso (a consulta real deixa vazio),
+    dizendo em texto que a origem é a ficha local.
+
+    `consultado_em` é o instante da montagem: o dado foi de fato obtido agora, da ficha.
+    """
+    return _bloco(CONSULTA_OK, motivo, origem=ORIGEM_DEMONSTRACAO,
+                  consultado_em=datetime.now(timezone.utc).isoformat(),
+                  campos=campos)
+
+
+def bloco_sem_ficha(motivo: str) -> dict:
+    """Bloco `veiculo` para leitura mockada que NÃO tem ficha cadastrada.
+
+    `indisponivel` e não `ok` com tudo nulo: a segunda forma afirmaria que o registro
+    existe e não informou nada, e a doc manda ler campo nulo exatamente assim. Aqui o
+    registro não existe — falta cadastro, e `motivo` diz isso.
+
+    Sai como bloco em vez de `None` para o desfecho aparecer: `app/web/leitura.py` promove
+    `consulta="indisponivel"` ao motivo da chamada, então "esqueci de preencher a ficha do
+    carrinho" viraria uma linha no painel em vez de um card vazio descoberto na feira.
+    """
+    return _bloco(CONSULTA_INDISPONIVEL, motivo, origem=ORIGEM_DEMONSTRACAO)
 
 
 def _meia_noite_utc() -> str:

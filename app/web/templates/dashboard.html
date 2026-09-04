@@ -95,7 +95,7 @@
         <option value="DEBUG">DEBUG</option>
       </select>
       <button class="btn-secundario" onclick="carregarLogs()">Atualizar</button>
-      <button class="btn-perigo" onclick="limparLogs()">Limpar</button>
+      <button class="btn-perigo" onclick="limparLogs(this)">Limpar</button>
     </div>
   </div>
   <div class="log-pane" id="logs"><span class="log-line log-DEBUG">carregando…</span></div>
@@ -193,8 +193,17 @@ async function carregarChamadas() {
   // já tem conteúdo — trocá-lo por esqueleto faria a tela piscar sozinha.
   if (primeiraCarga) corpo.innerHTML = esqueletoLinhas(6);
 
+  // `null` distingue "a chamada falhou" de "respondeu vazio": com o
+  // `catch(() => [])` anterior, uma queda de rede pintava a tela com
+  // "Nenhuma chamada registrada" e o operador concluia que o roteador do posto
+  // tinha parado de chamar.
   const r = await fetch('/api/chamadas?limit=50' + (soErros ? '&apenas_erros=true' : ''))
-    .then(r => r.json()).catch(() => []);
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (r === null) {
+    if (primeiraCarga) corpo.innerHTML = '';
+    avisar('Não foi possível carregar as chamadas — verifique a conexão.', 'err');
+    return;
+  }
   mostrar('sem-chamadas', !r.length);
   corpo.innerHTML = r.map(ch => `
     <tr>
@@ -211,18 +220,50 @@ async function carregarChamadas() {
 
 async function carregarLogs() {
   // Seção não existe para usuário 'cliente' (condicional lá em cima, no card) — nada a fazer.
-  if (!document.getElementById('logs')) return;
+  const pane = document.getElementById('logs');
+  if (!pane) return;
+
+  // O refresh automático de 15s trocava o innerHTML inteiro, e isso desfazia
+  // três coisas: a ROLAGEM (quem tinha subido para ler uma linha de erro voltava
+  // ao topo a cada ciclo), a SELEÇÃO de texto (uma placa sendo copiada) e o FOCO.
+  // Se o operador está com o cursor/seleção dentro do painel, o ciclo é pulado —
+  // o próximo, 15s depois, atualiza.
+  if (pane.contains(document.activeElement)) return;
+  const sel = document.getSelection();
+  if (sel && !sel.isCollapsed && pane.contains(sel.anchorNode)) return;
+
   const nivel = document.getElementById('filtro-nivel').value;
   const logs = await fetch('/api/logs?limit=100' + (nivel ? '&nivel=' + nivel : ''))
-    .then(r => r.json()).catch(() => []);
-  document.getElementById('logs').innerHTML = logs.map(l =>
+    .then(r => r.json()).catch(() => null);
+  // null = a chamada FALHOU; [] = respondeu e não há log. Antes os dois caíam no
+  // mesmo `catch(() => [])` e a tela dizia "sem logs" quando a rede tinha caído.
+  if (logs === null) {
+    avisar('Não foi possível carregar os logs — verifique a conexão.', 'err');
+    return;
+  }
+
+  // Preserva a posição: só cola no fim se já estava no fim (comportamento de
+  // terminal). Sem isto, o log "pula" para o topo a cada atualização.
+  const noFim = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 8;
+  pane.innerHTML = logs.map(l =>
     `<div class="log-line log-${esc(l.level)}">[${new Date(l.ts * 1000).toLocaleTimeString('pt-BR')}] ${esc(l.msg)}</div>`
   ).join('') || '<span class="log-line log-DEBUG">sem logs</span>';
+  if (noFim) pane.scrollTop = pane.scrollHeight;
 }
 
-async function limparLogs() {
-  await fetch('/api/logs', { method: 'DELETE' });
-  carregarLogs();
+// Ação irreversível: este é o único log do processo (não há log persistente em
+// arquivo), então o que for apagado aqui não volta — inclusive o rastro de uma
+// queda que ainda esteja sendo investigada. Antes era um clique único, sem
+// confirmação, sem checar r.ok e sem confirmar o sucesso.
+async function limparLogs(btn) {
+  if (!confirm('Apagar todos os logs do servidor?\n\n'
+             + 'Este é o único log do processo — não há como recuperar depois.')) return;
+  await comCarregamento(btn, async () => {
+    const r = await fetch('/api/logs', { method: 'DELETE' });
+    if (!r.ok) return avisarResposta(r, 'Falha ao limpar os logs');
+    avisar('Logs apagados.', 'ok');
+    await carregarLogs();
+  });
 }
 
 function atualizarTudo() { carregarResumo(); carregarChamadas(); carregarLogs(); primeiraCarga = false; }

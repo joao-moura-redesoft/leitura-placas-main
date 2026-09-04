@@ -44,9 +44,13 @@ def _jpeg_cacheado(chave, frame, qualidade: int) -> bytes | None:
 def descartar_cache(chave) -> None:
     """Remove a entrada de uma câmera do cache. Chamar sempre que a câmera parar ou
     for removida — senão o cache segura o último frame dela (alguns MB) indefinidamente
-    e pode servir imagem velha a um viewer que reconectar antes do primeiro frame novo."""
+    e pode servir imagem velha a um viewer que reconectar antes do primeiro frame novo.
+
+    Descarta também a entrada do feed de EXIBIÇÃO da mesma câmera (chave derivada), que
+    tem chave própria `(camera_id, "display")`."""
     with _cache_lock:
         _cache_jpeg.pop(chave, None)
+        _cache_jpeg.pop((chave, "display"), None)
 
 
 def limpar_cache() -> None:
@@ -62,18 +66,23 @@ ESPERA_PRIMEIRO_FRAME_SEG = 8.0
 PARADA_SEM_FRAME_SEG = 20.0
 
 
-def aguardar_frame_camera(camera_id: int, timeout: float | None = None) -> bool:
+def aguardar_frame_camera(camera_id: int, timeout: float | None = None,
+                          limpo: bool = False) -> bool:
     """Espera até `timeout` por um frame desta câmera. False = não veio nada.
 
     Serve para decidir ANTES de abrir a resposta se há stream para servir: uma vez
     que o StreamingResponse começa, o status 200 já foi enviado e não há mais como
     sinalizar erro ao <img> — ele fica esperando bytes que talvez nunca cheguem.
+
+    `limpo` espera pelo frame de EXIBIÇÃO (cru, cadência de captura) em vez do anotado —
+    é o que a vitrine da feira consome.
     """
     if timeout is None:                 # lido aqui, não no default, para dar
         timeout = ESPERA_PRIMEIRO_FRAME_SEG   # um ponto único de ajuste
+    obter = estado.obter_frame_camera_display if limpo else estado.obter_frame_camera
     limite = time.time() + timeout
     while True:
-        if estado.obter_frame_camera(camera_id) is not None:
+        if obter(camera_id) is not None:
             return True
         if time.time() >= limite:
             return False
@@ -100,8 +109,13 @@ def gerar_mjpeg(qualidade: int = 75, fps_max: int = 15):
             time.sleep(intervalo - elapsed)
 
 
-def gerar_mjpeg_camera(camera_id: int, qualidade: int = 75, fps_max: int = 15):
+def gerar_mjpeg_camera(camera_id: int, qualidade: int = 75, fps_max: int = 15,
+                       limpo: bool = False):
     """Yield JPEG frames de uma câmera específica (por camera_db_id).
+
+    `limpo=True` serve o frame de EXIBIÇÃO (cru, sem bboxes e sem ajuste, publicado na
+    cadência de captura) — o feed limpo e fluido da vitrine da feira. A chave de cache é
+    distinta da do anotado: são frames diferentes para o mesmo camera_id.
 
     Encerra sozinho depois de `PARADA_SEM_FRAME_SEG` sem frame novo. Antes o laço
     girava para sempre sem emitir nada quando a câmera parava: a conexão ficava
@@ -122,11 +136,13 @@ def gerar_mjpeg_camera(camera_id: int, qualidade: int = 75, fps_max: int = 15):
     """
     intervalo = 1.0 / max(fps_max, 1)
     inicio_stream = time.time()
+    obter = estado.obter_frame_camera_display if limpo else estado.obter_frame_camera
+    chave = (camera_id, "display") if limpo else camera_id
     while True:
         inicio = time.time()
-        frame = estado.obter_frame_camera(camera_id)
+        frame = obter(camera_id)
         if frame is not None:
-            jpg = _jpeg_cacheado(camera_id, frame, qualidade)
+            jpg = _jpeg_cacheado(chave, frame, qualidade)
             if jpg is not None:
                 yield (
                     b"--frame\r\n"

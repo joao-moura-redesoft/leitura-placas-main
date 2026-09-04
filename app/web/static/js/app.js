@@ -543,8 +543,52 @@ function confirmarExclusao(nome, oQueApaga) {
   return true;
 }
 
+// ── Barra fixa: estado "rolado" e altura real ──────────────────────────────
+// A nav e branca (--superficie) e os cards tambem: no repouso a unica separacao
+// e 1px de --borda, que da 1,20:1 contra um card branco. Ao descer o scroll as
+// duas superficies viravam uma so e a barra "mesclava" com o conteudo. A classe
+// .rolado (base.css) devolve o plano de cima só quando a pagina sai do topo,
+// para nao carregar uma sombra permanente com a pagina no inicio.
+//
+// A altura tambem e publicada em --altura-nav porque a barra e `flex-wrap` e
+// CRESCE quando os itens quebram de linha: qualquer coisa ancorada nela (o
+// #aviso-global, cabecalho de tabela fixo) precisa do valor real, nao de 56px
+// chumbados. Medida so em resize, nao a cada scroll.
+function _iniciarBarra() {
+  const nav = document.querySelector('nav');
+  if (!nav) return;
+
+  const medir = () =>
+    document.documentElement.style.setProperty('--altura-nav', nav.offsetHeight + 'px');
+
+  // Um rAF por rajada de scroll e escrita no DOM só na TROCA de estado: a barra
+  // fica por cima de MJPEG ao vivo nas telas de camera, onde mexer em estilo a
+  // cada evento de scroll custa quadro (mesmo motivo do backdrop-filter que
+  // base.css recusa ali).
+  let rolado = false, agendado = false;
+  const aplicar = () => {
+    agendado = false;
+    const agora = window.scrollY > 4;
+    if (agora === rolado) return;
+    rolado = agora;
+    nav.classList.toggle('rolado', agora);
+  };
+  window.addEventListener('scroll', () => {
+    if (!agendado) { agendado = true; requestAnimationFrame(aplicar); }
+  }, { passive: true });
+
+  medir();
+  aplicar();
+  window.addEventListener('resize', medir, { passive: true });
+  if ('ResizeObserver' in window) new ResizeObserver(medir).observe(nav);
+}
+
 // Menus da barra: clique abre/fecha, clique fora ou Esc fecha.
 document.addEventListener('DOMContentLoaded', () => {
+  _iniciarBarra();
+
+  const itensDe = m => [...m.querySelectorAll('.nav-menu-itens a')];
+
   document.querySelectorAll('.nav-menu-trigger').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
@@ -556,13 +600,48 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       if (abrindo) { menu.classList.add('aberto'); btn.setAttribute('aria-expanded', 'true'); }
     });
+
+    // Teclado no gatilho: seta para baixo / Enter abrem JA no primeiro item.
+    // Sem isto o menu abria mas o foco continuava no botao, e a unica forma de
+    // entrar era tabular — que primeiro passa por tudo que vem depois na barra.
+    btn.addEventListener('keydown', e => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      e.preventDefault();
+      const menu = btn.closest('.nav-menu');
+      menu.classList.add('aberto');
+      btn.setAttribute('aria-expanded', 'true');
+      const itens = itensDe(menu);
+      (e.key === 'ArrowDown' ? itens[0] : itens[itens.length - 1])?.focus();
+    });
   });
-  const fechar = () => document.querySelectorAll('.nav-menu').forEach(m => {
+
+  // Setas / Home / End dentro do menu aberto, como manda o padrao de role="menu".
+  document.querySelectorAll('.nav-menu-itens').forEach(painel => {
+    painel.addEventListener('keydown', e => {
+      const menu = painel.closest('.nav-menu');
+      const itens = itensDe(menu);
+      const i = itens.indexOf(document.activeElement);
+      if (i < 0) return;
+      const ir = alvo => { e.preventDefault(); itens[alvo]?.focus(); };
+      if (e.key === 'ArrowDown') ir((i + 1) % itens.length);
+      else if (e.key === 'ArrowUp') ir((i - 1 + itens.length) % itens.length);
+      else if (e.key === 'Home') ir(0);
+      else if (e.key === 'End') ir(itens.length - 1);
+    });
+  });
+
+  // `devolverFoco` existe porque Esc com o foco DENTRO do menu deixava o foco
+  // num link que acabou de virar display:none — o browser joga o foco no <body>
+  // e a proxima tabulacao reinicia a pagina do zero.
+  const fechar = (devolverFoco) => document.querySelectorAll('.nav-menu').forEach(m => {
+    const estavaAberto = m.classList.contains('aberto');
+    const gatilho = m.querySelector('.nav-menu-trigger');
     m.classList.remove('aberto');
-    m.querySelector('.nav-menu-trigger')?.setAttribute('aria-expanded', 'false');
+    gatilho?.setAttribute('aria-expanded', 'false');
+    if (estavaAberto && devolverFoco && m.contains(document.activeElement)) gatilho?.focus();
   });
-  document.addEventListener('click', fechar);
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') fechar(); });
+  document.addEventListener('click', () => fechar(false));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') fechar(true); });
 
   // Esc e clique no fundo fecham modais do componente novo (.modal-overlay).
   // Escopo restrito a essa classe de propósito: as páginas antigas usam

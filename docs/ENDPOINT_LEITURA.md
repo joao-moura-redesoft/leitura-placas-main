@@ -215,8 +215,9 @@ não aparece. Quando aparece, traz **sempre as mesmas 16 chaves** — o que muda
 **Teste `consulta`, nunca os campos.** `"inexistente"` e `"indisponivel"` chegam os dois
 com tudo em `null`, mas pedem reações opostas.
 
-`origem` diz de onde veio o dado: `"cache"` (nosso banco, instantâneo) ou `"api"`
-(consultado na hora). `motivo` é texto livre para diagnóstico humano.
+`origem` diz de onde veio o dado: `"cache"` (nosso banco, instantâneo), `"api"`
+(consultado na hora) ou `"feira"` (ficha local de demonstração — só em servidor em modo
+feira, ver docs/INTEGRACAO_ROTEADOR.md). `motivo` é texto livre para diagnóstico humano.
 
 ### Cuidados
 

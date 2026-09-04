@@ -480,7 +480,30 @@ class AutoOCRPaddle(AutoOCR):
 
     def carregar(self) -> None:
         super().carregar()
-        self._paddle.carregar()
+        # O Paddle e REFORCO, nao requisito: ele acrescenta um voto que ajuda em placa
+        # antiga borrada. Se ele nao sobe, a leitura tem de continuar com os outros
+        # engines, degradada — nunca falhar.
+        #
+        # Sem este try, uma falha nativa do paddle derruba a LEITURA INTEIRA com 500.
+        # Aconteceu em campo (02/09/2026, maquina da feira): o `libpaddle.pyd` nao
+        # carregou porque o Visual C++ Redistributable tinha acabado de ser instalado e
+        # ainda exigia reboot (instalador devolveu 3010). O fast-plate-ocr estava lendo a
+        # placa com conf 0,95 no mesmo instante, e mesmo assim o botao "Ler Placa"
+        # respondia 500 — o sistema jogava fora uma leitura boa por causa de um engine
+        # acessorio.
+        #
+        # `_paddle = None` (e nao so logar) porque `_engines` monta a lista de votantes a
+        # cada leitura: deixar o objeto meio-carregado ali faria a falha se repetir em
+        # todo recorte, com o custo de uma tentativa de carga nativa por vez.
+        try:
+            self._paddle.carregar()
+        except Exception as e:
+            log.warning(
+                "PaddleOCR indisponivel (%s) — seguindo SEM ele. A leitura continua com "
+                "os demais engines; espere queda so em placa antiga borrada. Causa comum "
+                "no Windows: Visual C++ Redistributable recem-instalado exigindo reboot.",
+                e)
+            self._paddle = None
 
     def _engines(self):
         """Os membros do AutoOCR mais o Paddle. Toda a fusao e herdada.
@@ -488,8 +511,12 @@ class AutoOCRPaddle(AutoOCR):
         Este metodo E a integracao inteira do Paddle: nao ha mais `ler_detalhado` proprio,
         nem arbitragem, nem thread. O que antes eram ~120 linhas de "quem ganha de quem"
         virou "o Paddle e mais um voto", porque e isso que ele e.
+
+        `self._paddle` vem None quando a carga dele falhou (ver `carregar`) — nesse caso a
+        lista sai sem ele e a fusao acontece normalmente entre os que sobraram.
         """
-        return super()._engines() + [("paddleocr", self._paddle)]
+        base = super()._engines()
+        return base + [("paddleocr", self._paddle)] if self._paddle is not None else base
 
 
 class MultiOCR:

@@ -31,6 +31,12 @@ from __future__ import annotations
 
 import re
 
+# Valor de `origem` que marca leitura MOCKADA — no banco (`deteccoes.origem`), no payload
+# do roteador e no bloco `veiculo`. Constante, e não a string solta em cada ponto, porque
+# é ela que mantém a leitura de demonstração FORA do filtro 'producao' e fora da taxa de
+# acerto: um typo num dos pontos faria dado sintético entrar na medição em silêncio.
+ORIGEM = "feira"
+
 
 def normalizar(placa: str | None) -> str:
     """Sobe para maiúsculas e joga fora tudo que não é letra/dígito.

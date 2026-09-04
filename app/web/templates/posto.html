@@ -1,19 +1,26 @@
 {% extends "base.html" %}
 {% block title %}Posto — ALPR{% endblock %}
 {% block conteudo %}
-<a href="/postos" style="color:#64748b;font-size:13px;text-decoration:none">← Postos</a>
+<a href="/postos" class="link-voltar">← Postos</a>
 <div style="display:flex;align-items:baseline;gap:12px;margin:6px 0;flex-wrap:wrap">
   <h1 id="titulo" style="margin:0">…</h1>
-  <span id="cnpj" style="font-family:monospace;color:#64748b;font-size:14px"></span>
+  <span id="cnpj" style="font-family:monospace;color:var(--texto-2);font-size:14px"></span>
   <span id="situacao"></span>
+  <!-- Remover ficava so em /empresas ("Postos (lista simples)"), enterrado no submenu
+       Sistema. Quem trabalha em /postos -> /posto/{id} nao tinha como apagar um posto —
+       e e aqui que a pessoa esta quando decide isso. Discreto e a direita de proposito:
+       e destrutivo, nao e acao do dia a dia. -->
+  <button onclick="removerPosto()" id="btn-remover-posto"
+          style="margin-left:auto;background:var(--superficie);color:#b91c1c;border:1px solid #fecaca;
+                 padding:6px 12px;font-size:13px">Remover posto</button>
 </div>
-<p id="entidade" style="color:#64748b;margin:0 0 20px;font-size:14px"></p>
+<p id="entidade" style="color:var(--texto-2);margin:0 0 20px;font-size:14px"></p>
 
 <div id="msg" style="margin-bottom:12px"></div>
 
 <div class="card" id="card-checklist" style="display:none;border-left:3px solid #f59e0b">
   <h2 style="margin:0 0 12px">Falta para operar</h2>
-  <ul id="checklist" style="margin:0;padding-left:18px;color:#374151;font-size:14px;line-height:1.9"></ul>
+  <ul id="checklist" style="margin:0;padding-left:18px;color:var(--texto-2);font-size:14px;line-height:1.9"></ul>
 </div>
 
 <!-- Câmeras -->
@@ -26,7 +33,7 @@
     <table><thead><tr><th>Local</th><th>Nome</th><th>Host</th><th>Bicos</th><th>Ativa</th><th>Ações</th></tr></thead>
       <tbody id="tb-cameras"></tbody></table>
   </div>
-  <p id="sem-cameras" style="display:none;color:#94a3b8;margin:12px 0 0">
+  <p id="sem-cameras" style="display:none;color:var(--texto-3);margin:12px 0 0">
     Nenhuma câmera neste posto — é o primeiro passo.
   </p>
 </div>
@@ -37,11 +44,11 @@
     <h2 style="margin:0">Automações e bicos</h2>
     <button onclick="modalAutomacao()">+ Automação</button>
   </div>
-  <p style="color:#94a3b8;font-size:13px;margin:0 0 14px">
+  <p style="color:var(--texto-3);font-size:13px;margin:0 0 14px">
     Os códigos precisam bater exatamente com o que o roteador envia no GET.
   </p>
   <div id="automacoes"></div>
-  <p id="sem-automacoes" style="display:none;color:#94a3b8;margin:0">
+  <p id="sem-automacoes" style="display:none;color:var(--texto-3);margin:0">
     Nenhuma automação. Um posto pode ter até 2.
   </p>
 </div>
@@ -60,15 +67,14 @@
         <option value="10">a cada 10s</option>
         <option value="30">a cada 30s</option>
       </select>
-      <button onclick="atualizarAoVivo()" id="btn-aovivo"
-              style="background:#fff;color:#374151;border:1px solid #e2e8f0">↻ Atualizar</button>
+      <button onclick="atualizarAoVivo()" id="btn-aovivo" class="btn-secundario">↻ Atualizar</button>
     </div>
   </div>
-  <p style="color:#94a3b8;font-size:13px;margin:0 0 10px">
+  <p style="color:var(--texto-3);font-size:13px;margin:0 0 10px">
     Imagem atual de cada câmera do posto. O botão de cada bico lê usando a
     <strong>área dele</strong> — igual à chamada do roteador.
   </p>
-  <div id="aviso-auto" style="display:none" class="alert alert-err">
+  <div id="aviso-auto" style="display:none" class="alert alert-err" role="status" aria-live="polite">
     <strong>Atualização automática ligada.</strong> Cada captura ocupa a câmera por alguns
     segundos — se o roteador chamar a leitura nesse intervalo, ela vai esperar ou falhar.
     Use para diagnóstico e desligue depois.
@@ -77,13 +83,13 @@
        1280px para a largura toda da página, virando um painel gigante. -->
   <div id="ao-vivo" style="display:grid;gap:14px;
        grid-template-columns:repeat(auto-fill,minmax(300px,440px));justify-content:start"></div>
-  <p id="sem-aovivo" style="display:none;color:#94a3b8;margin:0">Cadastre uma câmera para ver as imagens.</p>
+  <p id="sem-aovivo" style="display:none;color:var(--texto-3);margin:0">Cadastre uma câmera para ver as imagens.</p>
 </div>
 
 <!-- Teste -->
 <div class="card">
   <h2 style="margin:0 0 6px">Testar como o roteador</h2>
-  <p style="color:#94a3b8;font-size:13px;margin:0 0 12px">
+  <p style="color:var(--texto-3);font-size:13px;margin:0 0 12px">
     Dispara a mesma chamada que o sistema do posto faz. Leva até 30s.
   </p>
   <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
@@ -92,9 +98,9 @@
     </label>
     <button onclick="testarLeitura()" id="btn-testar" style="height:36px;background:#0f172a">Chamar leitura</button>
   </div>
-  <div id="teste-url" style="font-family:monospace;font-size:12px;color:#64748b;margin-top:10px;word-break:break-all"></div>
+  <div id="teste-url" style="font-family:monospace;font-size:12px;color:var(--texto-2);margin-top:10px;word-break:break-all"></div>
   <div id="teste-resultado" style="display:none;margin-top:12px;padding:14px;border-radius:8px;
-       background:#f8fafc;border:1px solid #e2e8f0"></div>
+       background:var(--superficie-2);border:1px solid var(--borda)"></div>
 </div>
 
 <!-- ── Modais ─────────────────────────────────────────────────────────────── -->
@@ -104,9 +110,9 @@
     <form id="modal-form" onsubmit="salvarModal(event)">
       <div id="modal-campos"></div>
       <div style="display:flex;gap:10px;margin-top:18px">
-        <button type="submit" style="background:#16a34a">Salvar</button>
+        <button type="submit" style="background:var(--marca-btn)">Salvar</button>
         <button type="button" onclick="fecharModal()"
-                style="background:#fff;color:#374151;border:1px solid #e2e8f0">Cancelar</button>
+                style="background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda)">Cancelar</button>
       </div>
     </form>
   </div>
@@ -116,7 +122,7 @@
   .modal-overlay { display:none; position:fixed; inset:0; background:rgba(15,23,42,.4);
     backdrop-filter:blur(2px); z-index:100; align-items:center; justify-content:center; }
   .modal-overlay.aberto { display:flex; }
-  .modal-caixa { background:#fff; border-radius:12px; padding:28px; width:520px; max-width:96vw;
+  .modal-caixa { background:var(--superficie); border-radius:12px; padding:28px; width:520px; max-width:96vw;
     max-height:90vh; overflow-y:auto; box-shadow:0 20px 60px rgba(0,0,0,.18); }
   .linha-2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px; }
   /* Card de bico com 2 ângulos ocupa duas colunas do grid de "Ao vivo": os dois quadros
@@ -207,16 +213,19 @@ function quadroCamera(c, rotulo) {
   return `
     <div ${rotulo ? `id="quadro-cam-${c.id}"
           style="border:2px solid #e2e8f0;border-radius:7px;overflow:hidden"` : ''}>
-      ${rotulo ? `<div style="padding:6px 10px;background:#f8fafc;font-size:12px">
+      ${rotulo ? `<div style="padding:6px 10px;background:var(--superficie-2);font-size:12px">
            <strong>${esc(rotulo)}</strong>
-           <span style="color:#94a3b8"> · ${esc(c.local || c.nome)}</span></div>` : ''}
+           <span style="color:var(--texto-3)"> · ${esc(c.local || c.nome)}</span></div>` : ''}
       <!-- Camada de estado: cobre a imagem enquanto não há quadro e nunca deixa o
            espaço vazio — mostra o que está acontecendo, ou o erro com botão de nova
            tentativa. Quem a esconde é o evento load da imagem. -->
       <div style="position:relative;background:#0f172a;min-height:150px">
         <img id="img-cam-${c.id}" alt="" style="width:100%;display:block">
+        {# --painel-texto-2, nao --texto-3: esta camada fica SOBRE o retangulo
+           escuro da camera, entao precisa do token de painel (7,07:1). Um token
+           de superficie clara aqui da 3,44:1. #}
         <div id="estado-cam-${c.id}" style="position:absolute;inset:0;display:flex;flex-direction:column;
-             gap:9px;align-items:center;justify-content:center;color:#94a3b8;font-size:13px;
+             gap:9px;align-items:center;justify-content:center;color:var(--painel-texto-2);font-size:13px;
              text-align:center;padding:14px">
           <span id="estado-txt-${c.id}">carregando…</span>
           <button id="estado-btn-${c.id}" onclick="recarregarCamera(${c.id})"
@@ -224,7 +233,7 @@ function quadroCamera(c, rotulo) {
                          font-size:12px;padding:5px 12px">Tentar de novo</button>
         </div>
         <span id="selo-cam-${c.id}" style="display:none;position:absolute;top:8px;left:8px;
-              background:#dc2626;color:#fff;font-size:11px;font-weight:600;padding:2px 8px;
+              background:var(--erro);color:#fff;font-size:11px;font-weight:600;padding:2px 8px;
               border-radius:20px">● AO VIVO</span>
       </div>
     </div>`;
@@ -241,9 +250,24 @@ function botaoBico(b) {
         ? 'na câmera da ' + faltando.map(f => esc(f.papel)).join(' e da ')
         : 'nesta câmera'} — vai analisar o quadro inteiro"`
     : '';
-  return `<button onclick="lerBico(${b.id}, '${esc(b.codigo)}')" id="btn-bico-${b.id}"
-     style="background:#0f172a;padding:6px 12px;font-size:13px" ${aviso}>
-     Ler bico ${esc(b.codigo)}${faltando.length ? ' ⚠' : ''}</button>`;
+  // Botao DIVIDIDO, nao dois botoes soltos. Esta tela repete o par uma vez por bico, e
+  // com dois bicos na mesma camera quatro botoes soltos viram um campo de adivinhacao:
+  // qual "⚡" e de qual bico? Colados numa peca so, com o codigo do bico escrito na
+  // metade principal, o par inteiro pertence visualmente aquele bico.
+  //
+  // Os dois perfis ficam visiveis ao mesmo tempo (em vez de um seletor) porque a
+  // pergunta que se faz aqui e "quanto eu perco indo de rapido?", e ela so se responde
+  // disparando os dois no MESMO bico, com o mesmo enquadramento.
+  return `<span class="btn-split">
+     <button onclick="lerBico(${b.id}, '${esc(b.codigo)}')" id="btn-bico-${b.id}"
+       style="background:#0f172a;padding:6px 12px;font-size:13px" ${aviso}>
+       Ler bico ${esc(b.codigo)}${faltando.length ? ' ⚠' : ''}</button>
+     <button class="btn-split-alt" onclick="lerBico(${b.id}, '${esc(b.codigo)}', true)"
+       id="btn-bico-rapido-${b.id}"
+       style="background:#334155;padding:6px 10px;font-size:13px"
+       aria-label="Ler bico ${esc(b.codigo)} em modo rapido"
+       title="Leitura rapida do bico ${esc(b.codigo)} — 1 a 2 fotos, modelos leves, resposta em poucos segundos. Troca acuracia por tempo.">⚡</button>
+   </span>`;
 }
 
 // Sem pipeline contínuo não existe stream: a imagem é uma captura sob demanda.
@@ -257,24 +281,24 @@ function renderAoVivo() {
     const titulo = par
       ? `<strong>${esc(codigos.length ? 'Bico ' + codigos.join(', ')
                                       : g.cameras.map(c => c.local || c.nome).join(' + '))}</strong>
-         <span style="font-weight:400;color:#94a3b8">· ${g.cameras.length} ângulos do mesmo veículo</span>`
+         <span style="font-weight:400;color:var(--texto-3)">· ${g.cameras.length} ângulos do mesmo veículo</span>`
       : `${esc(c0.local || c0.nome)}
-         <span style="font-weight:400;color:#94a3b8">${esc(c0.local ? c0.nome : '')}</span>`;
+         <span style="font-weight:400;color:var(--texto-3)">${esc(c0.local ? c0.nome : '')}</span>`;
     return `
       <div class="${par ? 'card-par' : ''}"
-           style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
-        <div style="padding:9px 12px;background:#f8fafc;font-size:13px;font-weight:600">${titulo}</div>
+           style="border:1px solid var(--borda);border-radius:8px;overflow:hidden">
+        <div style="padding:9px 12px;background:var(--superficie-2);font-size:13px;font-weight:600">${titulo}</div>
         <div style="display:grid;gap:10px;${par ? 'padding:10px;' : ''}
              grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
           ${g.cameras.map(c => quadroCamera(c, par ? anguloDaCamera(g, c.id) : '')).join('')}
         </div>
         <div style="padding:10px 12px;display:flex;gap:8px;flex-wrap:wrap">
           ${g.bicos.length ? g.bicos.map(botaoBico).join('')
-                           : '<span style="color:#94a3b8;font-size:13px">Nenhum bico nesta câmera</span>'}
+                           : '<span style="color:var(--texto-3);font-size:13px">Nenhum bico nesta câmera</span>'}
           ${g.bicos.length ? g.cameras.map(c => {
               const ang = par ? anguloDaCamera(g, c.id) : '';
               return `<a href="/roi-camera/${c.id}" style="display:inline-flex;align-items:center;
-                 padding:6px 12px;border-radius:7px;border:1px solid #e2e8f0;color:#374151;
+                 padding:6px 12px;border-radius:7px;border:1px solid var(--borda);color:var(--texto-2);
                  font-size:13px;text-decoration:none">áreas${ang ? ' ' + esc(ang) : ''}</a>`;
             }).join('') : ''}
         </div>
@@ -349,21 +373,82 @@ async function atualizarAoVivo() {
   // Sequencial de propósito: as câmeras de um posto costumam estar atrás do mesmo
   // link/DVR, e abrir várias conexões RTSP ao mesmo tempo faz todas ficarem lentas.
   for (const c of _d.cameras) await carregarImagemCamera(c);
-  if (btn) { btn.disabled = false; btn.textContent = '↻ Atualizar imagens'; }
+  // Mesmo rótulo do HTML: antes o botão nascia "↻ Atualizar" e virava
+  // "↻ Atualizar imagens" depois da primeira carga, mudando de largura sozinho.
+  if (btn) { btn.disabled = false; btn.textContent = '↻ Atualizar'; }
 }
 
-async function lerBico(bicoId, codigo) {
+// Atualização automática do card "Ao vivo".
+//
+// Os dois controles (#auto-refresh e #auto-intervalo) chamavam `alternarAuto()`
+// no onchange, mas a função NUNCA FOI DEFINIDA em lugar nenhum do projeto:
+// marcar "Atualizar sozinho" lançava um ReferenceError silencioso no console,
+// nada era atualizado, e o #aviso-auto — que é justamente o alerta de que cada
+// captura ocupa a câmera e pode atropelar a chamada do roteador — nunca
+// aparecia. O card prometia um polling que não existia.
+//
+// `setTimeout` reagendado no fim, e não `setInterval`: uma volta percorre todas
+// as câmeras do posto em série e pode passar do intervalo escolhido; com
+// setInterval as capturas se empilhariam e disputariam o lock da câmera.
+let _autoTimer = null;
+
+function alternarAuto() {
+  clearTimeout(_autoTimer);
+  _autoTimer = null;
+
+  const ligado = document.getElementById('auto-refresh').checked;
+  document.getElementById('aviso-auto').style.display = ligado ? '' : 'none';
+  if (ligado) agendarAuto();
+}
+
+function agendarAuto() {
+  const seg = Number(document.getElementById('auto-intervalo').value) || 10;
+  _autoTimer = setTimeout(async () => {
+    // Reconfere o checkbox: o operador pode ter desmarcado enquanto a captura
+    // anterior ainda estava em curso.
+    if (!document.getElementById('auto-refresh').checked) return;
+    // Aba escondida não gasta a câmera — o tablet costuma ficar com a tela
+    // aberta em segundo plano, e cada captura é uma conexão RTSP.
+    if (!document.hidden) await atualizarAoVivo();
+    if (document.getElementById('auto-refresh').checked) agendarAuto();
+  }, seg * 1000);
+}
+
+// Sair da página com o timer armado deixaria capturas pendentes ocupando a câmera.
+window.addEventListener('beforeunload', () => clearTimeout(_autoTimer));
+
+// Selo do perfil que DE FATO rodou. `d.modo` e a resposta do servidor, nao o que foi
+// pedido: com `rapido_ativo=nao` ele ignora o parametro e roda completo. Sem mostrar
+// isso, o operador compararia dois resultados achando que sao perfis diferentes.
+function selo(d, pediuRapido) {
+  const modo = d.modo || 'completo';
+  const recusou = pediuRapido && modo !== 'rapido';
+  const cor = modo === 'rapido' ? '#b45309' : '#475569';
+  const rotulo = modo === 'rapido' ? '⚡ rapido' : 'completo';
+  const fotos = d.total_snapshots != null ? ` · ${d.total_snapshots} foto(s)` : '';
+  return `<span style="margin-left:6px;font-size:11px;color:${cor};border:1px solid ${cor}33;
+    border-radius:10px;padding:1px 7px">${rotulo}${fotos}${
+    d.confirmada === false ? ' · a conferir' : ''}</span>${
+    recusou ? '<div style="color:#a16207;font-size:12px;margin-top:4px">⚠ modo rapido pedido, '
+            + 'mas esta desligado no servidor (rapido_ativo) — rodou completo</div>' : ''}`;
+}
+
+async function lerBico(bicoId, codigo, rapido = false) {
   const bico = _d.automacoes.flatMap(a => a.bicos).find(b => b.id === bicoId);
   const res = document.getElementById(`res-bico-${bicoId}`);
   const btn = document.getElementById(`btn-bico-${bicoId}`);
+  // Os DOIS botoes travam: eles disputam o mesmo lock de camera no servidor, e deixar o
+  // outro clicavel so produziria um 429 do freio de `ler-placa-teste`.
+  const botoes = [btn, document.getElementById(`btn-bico-rapido-${bicoId}`)].filter(Boolean);
   const t0 = Date.now();
-  btn.disabled = true;
+  botoes.forEach(x => x.disabled = true);
   res.style.display = 'block';
   const tick = setInterval(() => {
-    res.innerHTML = `<span style="color:#94a3b8">Lendo bico ${esc(codigo)}… ${Math.round((Date.now()-t0)/1000)}s</span>`;
+    res.innerHTML = `<span style="color:var(--texto-3)">Lendo bico ${esc(codigo)}… ${Math.round((Date.now()-t0)/1000)}s</span>`;
   }, 250);
   try {
-    const r = await fetch(`/api/bicos/${bicoId}/ler-placa-teste`, { method: 'POST' });
+    const r = await fetch(`/api/bicos/${bicoId}/ler-placa-teste`
+      + (rapido ? '?rapido=1' : ''), { method: 'POST' });
     // Um 500 do servidor volta com corpo em TEXTO ("Internal Server Error"), não JSON.
     // Com `await r.json()` cru, o parse estourava e a tela mostrava "Unexpected token
     // 'I' ... is not valid JSON" — a mensagem apontava para um defeito de frontend
@@ -391,10 +476,10 @@ async function lerBico(bicoId, codigo) {
     else if (!d.placa) res.innerHTML =
       `<span style="color:#a16207">Bico ${esc(codigo)}: nenhuma placa na área.</span>${nota}`;
     else res.innerHTML = `
-      <span style="color:#94a3b8">Bico ${esc(codigo)}:</span>
+      <span style="color:var(--texto-3)">Bico ${esc(codigo)}:</span>
       <strong style="font-family:'Consolas',monospace;letter-spacing:2px;font-size:16px">${esc(d.placa)}</strong>
-      <span style="color:#94a3b8">· ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%${
-        vencedora ? ` · leu pela <strong>${esc(vencedora)}</strong>` : ''}</span>${nota}`;
+      <span style="color:var(--texto-3)">· ${Math.round((d.confianca||0)*100)}% · acordo ${Math.round((d.acordo||0)*100)}%${
+        vencedora ? ` · leu pela <strong>${esc(vencedora)}</strong>` : ''}</span>${selo(d, rapido)}${nota}`;
 
     if (fontes.length > 1) realcarQuadros(fontes, d);
 
@@ -414,6 +499,59 @@ async function lerBico(bicoId, codigo) {
     res.innerHTML = `<span style="color:#b91c1c">Erro: ${esc(ex.message)}</span>`;
   } finally {
     clearInterval(tick);
+    botoes.forEach(x => x.disabled = false);
+  }
+}
+
+// Remocao do posto. Destrutiva e em CASCATA: leva automacoes, bicos (com as areas
+// desenhadas) e cameras, e desativa os usuarios 'cliente' presos a este posto.
+//
+// Por isso ela pergunta ao servidor o que se perde ANTES de confirmar. Um "tem certeza?"
+// generico nao informa nada, e quem clica nao tem como saber que vai apagar 3 areas que
+// alguem passou a tarde desenhando.
+async function removerPosto() {
+  const btn = document.getElementById('btn-remover-posto');
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/empresas/${EMPRESA_ID}/impacto-remocao`);
+    if (!r.ok) return avisarResposta(r);
+    const i = await r.json();
+
+    const perdas = [
+      i.cameras    ? `${i.cameras} câmera(s)` : null,
+      i.automacoes ? `${i.automacoes} automação(ões)` : null,
+      i.bicos      ? `${i.bicos} bico(s)` : null,
+      i.areas      ? `${i.areas} área(s) de captura desenhada(s)` : null,
+    ].filter(Boolean);
+
+    // Montado por linhas num array e juntado com '\n' no fim: escrever as quebras
+    // dentro das strings ja custou um SyntaxError que derrubou o SCRIPT INTEIRO desta
+    // pagina — e com o script morto nada renderiza, entao a tela aparece vazia sem
+    // nenhum erro visivel. Array de linhas nao tem como quebrar assim.
+    const linhas = [`Remover o posto "${i.nome}" (CNPJ ${i.cnpj})?`, ''];
+    if (perdas.length) {
+      linhas.push('Isto APAGA junto:');
+      perdas.forEach(x => linhas.push('  · ' + x));
+    } else {
+      linhas.push('O posto está vazio — nada mais será apagado.');
+    }
+    linhas.push('');
+    if (i.usuarios_cliente)
+      linhas.push(`${i.usuarios_cliente} usuário(s) cliente deste posto serão DESATIVADOS.`, '');
+    if (i.e_posto_de_demonstracao)
+      linhas.push('Este é o posto de demonstração: o modo feira será DESARMADO.', '');
+    linhas.push('O histórico de leituras permanece. Esta ação não tem desfazer.');
+
+    if (!confirm(linhas.join('\n'))) return;
+
+    const del = await fetch(`/api/empresas/${EMPRESA_ID}`, { method: 'DELETE' });
+    if (!del.ok) return avisarResposta(del);
+    // Volta para a lista: ficar numa tela de posto que nao existe mais so produziria
+    // uma sequencia de 404 conforme os widgets fossem recarregando.
+    location.href = '/postos';
+  } catch (e) {
+    avisar('Erro ao remover: ' + e.message, 'err');
+  } finally {
     btn.disabled = false;
   }
 }
@@ -476,9 +614,10 @@ function renderCameras() {
       <td>${bs.length ? `${bs.length}${semArea ? ` <span class="badge badge-warn">${semArea} sem área</span>` : ''}` : '—'}</td>
       <td>${c.ativo ? '<span class="badge badge-ok">Ativa</span>' : '<span class="badge badge-err">Inativa</span>'}</td>
       <td style="white-space:nowrap">
-        ${bs.length ? `<a href="/roi-camera/${c.id}" style="display:inline-flex;padding:8px 12px;border-radius:7px;
-           background:#0f172a;color:#fff;font-size:14px;text-decoration:none;margin-right:4px">Áreas</a>` : ''}
-        <button onclick='modalCamera(${JSON.stringify(c)})' style="background:#16a34a">Editar</button>
+        ${bs.length ? `<a href="/roi-camera/${c.id}"
+           class="btn btn-secundario btn-pequeno" style="margin-right:4px">Áreas</a>` : ''}
+        <button class="btn-secundario btn-pequeno"
+                onclick='modalCamera(${JSON.stringify(c)})'>Editar</button>
       </td>
     </tr>`;
   }).join('');
@@ -487,15 +626,15 @@ function renderCameras() {
 function renderAutomacoes() {
   document.getElementById('sem-automacoes').style.display = _d.automacoes.length ? 'none' : '';
   document.getElementById('automacoes').innerHTML = _d.automacoes.map(a => `
-    <div style="border:1px solid #e2e8f0;border-radius:8px;margin-bottom:12px;overflow:hidden">
-      <div style="background:#f8fafc;padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <div style="border:1px solid var(--borda);border-radius:8px;margin-bottom:12px;overflow:hidden">
+      <div style="background:var(--superficie-2);padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <strong style="font-family:monospace">${esc(a.codigo)}</strong>
-        <span style="color:#64748b;font-size:13px">${esc(a.nome || '')}</span>
+        <span style="color:var(--texto-2);font-size:13px">${esc(a.nome || '')}</span>
         ${a.ativo ? '' : '<span class="badge badge-err">inativa</span>'}
         <span style="margin-left:auto;display:flex;gap:8px">
           <button onclick='modalBico(null, ${a.id})' style="padding:5px 11px;font-size:13px">+ bico</button>
           <button onclick='modalAutomacao(${JSON.stringify(a)})'
-                  style="padding:5px 11px;font-size:13px;background:#fff;color:#374151;border:1px solid #e2e8f0">editar</button>
+                  class="btn-secundario btn-pequeno">editar</button>
         </span>
       </div>
       ${a.bicos.length ? `<div class="tabela-rolavel"><table>
@@ -503,11 +642,11 @@ function renderAutomacoes() {
         <tbody>${a.bicos.map(b => `
           <tr>
             <td><strong style="font-family:monospace">${esc(b.codigo)}</strong>
-                ${b.nome ? `<span style="color:#94a3b8"> ${esc(b.nome)}</span>` : ''}</td>
+                ${b.nome ? `<span style="color:var(--texto-3)"> ${esc(b.nome)}</span>` : ''}</td>
             <td>${b.bomba ?? '—'} / ${b.lado ?? '—'}</td>
             <td>${(b.cameras || []).map(f =>
                   `<div>${esc(f.local ? f.local + ' — ' : '')}${esc(f.nome)}
-                     <span style="color:#94a3b8;font-size:12px">(${esc(f.papel)})</span></div>`).join('')
+                     <span style="color:var(--texto-3);font-size:12px">(${esc(f.papel)})</span></div>`).join('')
                  || esc(b.camera_nome)}</td>
             <td>${(() => {
                   const fs = b.cameras || [];
@@ -519,14 +658,14 @@ function renderAutomacoes() {
             <td style="white-space:nowrap">
               ${(b.cameras || []).map(f =>
                 `<a href="/roi-camera/${f.camera_id}?bico=${b.id}"
-                    style="color:#16a34a;text-decoration:none;margin-right:10px">área ${esc(f.papel)}</a>`).join('')}
-              <button onclick='modalBico(${JSON.stringify(b)}, ${a.id})'
-                      style="padding:5px 11px;font-size:13px;background:#16a34a">editar</button>
-              <button onclick="removerBico(${b.id})"
-                      style="padding:5px 11px;font-size:13px;background:#dc2626;margin-left:6px">remover</button>
+                    style="color:var(--marca-texto);text-decoration:none;margin-right:10px">área ${esc(f.papel)}</a>`).join('')}
+              <button class="btn-secundario btn-pequeno"
+                      onclick='modalBico(${JSON.stringify(b)}, ${a.id})'>editar</button>
+              <button class="btn-perigo btn-pequeno" style="margin-left:6px"
+                      onclick="removerBico(${b.id})">remover</button>
             </td>
           </tr>`).join('')}</tbody></table></div>`
-        : '<p style="color:#94a3b8;padding:12px 14px;margin:0">Nenhum bico nesta automação.</p>'}
+        : '<p style="color:var(--texto-3);padding:12px 14px;margin:0">Nenhum bico nesta automação.</p>'}
     </div>`).join('');
 }
 
@@ -546,7 +685,7 @@ function renderChecklist() {
   }));
   Object.entries(porCam).forEach(([camId, cods]) => {
     const cam = _d.cameras.find(c => c.id === Number(camId));
-    itens.push(`Definir as <a href="/roi-camera/${camId}" style="color:#16a34a">áreas de captura</a>
+    itens.push(`Definir as <a href="/roi-camera/${camId}" style="color:var(--marca-texto)">áreas de captura</a>
       da câmera <strong>${esc(cam ? (cam.local || cam.nome) : camId)}</strong>
       — ${cods.length} bico(s): ${esc(cods.join(', '))}`);
   });
@@ -639,7 +778,7 @@ function modalCamera(cam = null) {
 function modalAutomacao(a = null) {
   abrirModal(a ? 'Editar automação' : 'Nova automação', `
     <label>Código
-      <small style="color:#94a3b8;font-weight:400"> — exatamente o valor que o roteador envia</small>
+      <small style="color:var(--texto-3);font-weight:400"> — exatamente o valor que o roteador envia</small>
       <input id="m-codigo" value="${esc(a?.codigo || '')}" required></label>
     <label>Nome / descrição<input id="m-nome" value="${esc(a?.nome || '')}" placeholder="opcional"></label>
     <label style="display:flex;align-items:center;gap:8px">
@@ -667,7 +806,7 @@ function modalBico(b = null, automacaoId = null) {
       </select></label>`;
   abrirModal(b ? 'Editar bico' : 'Novo bico', `
     <label>Código
-      <small style="color:#94a3b8;font-weight:400"> — exatamente o valor que o roteador envia</small>
+      <small style="color:var(--texto-3);font-weight:400"> — exatamente o valor que o roteador envia</small>
       <input id="m-codigo" value="${esc(b?.codigo || '')}" required></label>
     <label>Nome<input id="m-nome" value="${esc(b?.nome || '')}" placeholder="opcional"></label>
     <div class="linha-2">
@@ -675,11 +814,11 @@ function modalBico(b = null, automacaoId = null) {
       ${angulo('m-papel', b?.papel_camera, 'traseira')}
     </div>
     <div class="linha-2">
-      <label>Segunda câmera <small style="color:#94a3b8;font-weight:400">(opcional)</small>
+      <label>Segunda câmera <small style="color:var(--texto-3);font-weight:400">(opcional)</small>
         <select id="m-camera2" onchange="alternarSegundaCamera()">${opcoes(b?.camera2_id, true)}</select></label>
       ${angulo('m-papel2', b?.papel_camera2, 'frente')}
     </div>
-    <p style="color:#94a3b8;font-size:12px;margin:-4px 0 12px">
+    <p style="color:var(--texto-3);font-size:12px;margin:-4px 0 12px">
       Duas câmeras cobrem o veículo por dois ângulos: quando a placa de um lado está
       encoberta (estepe, carona colada), a do outro resolve. Cada câmera tem a
       <strong>sua própria área</strong> — desenhe as duas. O lado que cada uma enxerga é o
@@ -687,9 +826,9 @@ function modalBico(b = null, automacaoId = null) {
       é sempre a traseira e a outra a frente.
     </p>
     <div class="linha-2">
-      <label>Bomba <small style="color:#94a3b8;font-weight:400">(opcional)</small>
+      <label>Bomba <small style="color:var(--texto-3);font-weight:400">(opcional)</small>
         <input id="m-bomba" type="number" min="1" value="${b?.bomba ?? ''}"></label>
-      <label>Lado <small style="color:#94a3b8;font-weight:400">(opcional)</small>
+      <label>Lado <small style="color:var(--texto-3);font-weight:400">(opcional)</small>
         <input id="m-lado" type="number" min="1" value="${b?.lado ?? ''}"></label>
     </div>
     <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
@@ -716,7 +855,7 @@ function modalBico(b = null, automacaoId = null) {
       // caminho. O link entra já em modo de edição (o editor liga a edição quando recebe
       // `?bico=`) e, se houver segunda câmera, de lá o próprio editor encadeia a outra.
       const id = b ? b.id : r.id;
-      return `Salvo. <a href="/roi-camera/${cam1}?bico=${id}" style="color:#166534;font-weight:600">${
+      return `Salvo. <a href="/roi-camera/${cam1}?bico=${id}" style="color:var(--marca-forte);font-weight:600">${
         cam2 ? 'desenhar as áreas (são duas) →' : 'desenhar a área →'}</a>`;
     });
   alternarSegundaCamera();
@@ -805,7 +944,7 @@ function jsonDoTeste(d, status) {
   const id = 'json-teste-' + Date.now();
   return `
     <details style="margin-top:12px">
-      <summary style="cursor:pointer;font-size:12px;color:#64748b;user-select:none">
+      <summary style="cursor:pointer;font-size:12px;color:var(--texto-2);user-select:none">
         Resposta JSON${status ? ` · HTTP ${status}` : ''} (${txt.length} caracteres)
       </summary>
       <div style="display:flex;justify-content:flex-end;margin:6px 0 4px">
@@ -858,10 +997,10 @@ function quadrosDoTeste(d) {
       const venceu = f.camera_id === d.camera_id && d.placa;
       const cor = venceu ? '#16a34a' : (f.estado === 'usada' && f.bboxes ? '#e2e8f0' : '#f59e0b');
       return `<div style="border:2px solid ${cor};border-radius:8px;overflow:hidden">
-        <div style="padding:6px 10px;background:#f8fafc;font-size:12px">
+        <div style="padding:6px 10px;background:var(--superficie-2);font-size:12px">
           <strong>${esc(f.papel)}</strong>
           ${venceu ? '<span class="badge badge-ok" style="font-size:10px">leu a placa</span>' : ''}
-          <span style="color:#94a3b8"> · ${f.tentativas} foto(s), ${f.bboxes} detecção(ões)</span>
+          <span style="color:var(--texto-3)"> · ${f.tentativas} foto(s), ${f.bboxes} detecção(ões)</span>
           ${f.motivo ? `<div style="color:#a16207">${esc(f.motivo)}</div>` : ''}
         </div>
         ${f.frame_url ? `<img src="${esc(f.frame_url)}${f.frame_url.includes('?') ? '&' : '?'}t=${t}"
@@ -882,7 +1021,7 @@ async function testarLeitura() {
   const tick = setInterval(() => {
     const s = Math.round((Date.now() - t0) / 1000);
     btn.textContent = `Lendo… ${s}s`;
-    res.innerHTML = `<span style="color:#94a3b8">Conectando à câmera e analisando (${s}s de até ~30s)…</span>`;
+    res.innerHTML = `<span style="color:var(--texto-3)">Conectando à câmera e analisando (${s}s de até ~30s)…</span>`;
   }, 250);
   try {
     // SEM X-API-Key: o painel autentica por SESSÃO. `/api/leitura` aceita a sessão de
@@ -898,12 +1037,12 @@ async function testarLeitura() {
     if (!r.ok) res.innerHTML = `<span style="color:#b91c1c">✗ ${esc(d.detail || 'falha')}</span>
         ${jsonDoTeste(d, r.status)}`;
     else if (!d.placa) res.innerHTML = `<span style="color:#a16207">Nenhuma placa detectada.</span>
-        <span style="color:#94a3b8">${esc(d.mensagem || '')} (${d.tentativas} tentativa(s))</span>
+        <span style="color:var(--texto-3)">${esc(d.mensagem || '')} (${d.tentativas} tentativa(s))</span>
         ${quadrosDoTeste(d)}
         ${jsonDoTeste(d, r.status)}`;
     else res.innerHTML = `
-        <div style="font-size:28px;font-weight:700;letter-spacing:5px;color:#0f172a;font-family:'Consolas',monospace">${esc(d.placa)}</div>
-        <div style="margin-top:6px;font-size:12px;color:#94a3b8">
+        <div style="font-size:28px;font-weight:700;letter-spacing:5px;color:var(--texto);font-family:'Consolas',monospace">${esc(d.placa)}</div>
+        <div style="margin-top:6px;font-size:12px;color:var(--texto-3)">
           <span class="badge badge-${esc(d.padrao)}">${esc(d.padrao)}</span>
           &nbsp;${Math.round((d.confianca||0)*100)}% confiança · acordo ${Math.round((d.acordo||0)*100)}% · ${d.tentativas} foto(s)
           ${(d.fontes || []).length > 1 ? ` · ${d.n_cameras_votando} de ${d.fontes.length} câmeras concordaram` : ''}

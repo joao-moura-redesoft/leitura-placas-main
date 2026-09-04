@@ -1396,6 +1396,17 @@ def _ler_placa(
     # preview some do payload em vez de apontar para um caminho que não existe mais.
     frame_url = f"/api/bicos/{bico_id}/preview.jpg" if bico_id is not None else None
 
+    def _fontes_para_log() -> str:
+        """`cam3 (frente) 2f/2bb/2c` por fonte — a MESMA string nos dois desfechos.
+
+        Existia inline só no ramo de sucesso. Repetir a expressão no desfecho sem placa
+        deixaria as duas livres para divergir, e é exatamente comparando as duas linhas —
+        uma leitura que deu e uma que não deu, na mesma câmera — que se separa problema de
+        detecção de problema de OCR.
+        """
+        return ", ".join(f"{f.rotulo} {f.tentativas}f/{f.bboxes}bb/{f.candidatos}c"
+                         f"{'' if f.ativa else ' ABANDONADA'}" for f in fontes)
+
     def _resumo_fontes() -> list[dict]:
         """O que cada câmera contribuiu — é o diagnóstico que a tela do posto e o editor
         de áreas mostram, e o único jeito de medir em campo se a segunda câmera vale."""
@@ -1421,11 +1432,32 @@ def _ler_placa(
         else:
             mensagem = ("Nenhuma placa detectada nos frames — verifique o enquadramento da "
                         "área do bico e se o veículo aparece dentro dela")
+        # O desfecho SEM placa também vai para o log, pela mesma razão do ramo de sucesso.
+        # Sem esta linha ele não deixava rastro NENHUM: o `leitura-parcial` do laço só
+        # dispara quando há candidato, e este return era mudo. Medido em 04/09/2026: as
+        # ~40 chamadas de `/api/feira/scan` de uma demonstração devolveram 200 sem placa e
+        # o log não tinha uma única linha sobre nenhuma delas — a câmera era uma virtual
+        # camera do OBS servindo o quadro "sem fonte de vídeo", e descobrir isso exigiu
+        # abrir na mão os JPEGs que a coleta de dataset tinha salvo por acaso.
+        #
+        # `bboxes` é o campo que separa os dois diagnósticos, e eles pedem investigações
+        # OPOSTAS: 0 = o detector não achou placa (enquadramento, câmera, cena vazia);
+        # >0 = achou e nenhum recorte virou texto válido (placa pequena, borrada, inclinada).
+        # É a mesma distinção que a `mensagem` logo acima faz para o humano na tela.
+        log.info("Ler-placa[%s]: SEM PLACA (bboxes=%d, tentativas=%d/%d, parada=%s, "
+                 "camera_id=%d, bico_id=%s, fontes=[%s])",
+                 perfil, bboxes_total, tentativas, n_max, parada_motivo,
+                 fonte_nitida.camera_id, bico_id, _fontes_para_log())
         # A câmera do quadro que `frame_url` mostra — reportar outra faria o painel
         # atribuir o preview à câmera errada justamente no caso em que alguém está
         # olhando para descobrir qual das duas está mal enquadrada.
+        # `mockada` sai nos DOIS desfechos, pelo mesmo motivo do `modo`: um campo que só
+        # aparece quando se leu placa obriga o consumidor a tratar ausência como um
+        # terceiro estado. Aqui é sempre `False` — e não "não sei": este `return` acontece
+        # ANTES do gancho do modo feira, e sem string do OCR o mock nem roda (não há o que
+        # casar por distância de edição).
         return {"placa": None, "mensagem": mensagem, "frame_url": frame_url,
-                "camera_id": fonte_nitida.camera_id, "bico_id": bico_id,
+                "camera_id": fonte_nitida.camera_id, "bico_id": bico_id, "mockada": False,
                 "bboxes_detectadas": bboxes_total, "fontes": _resumo_fontes(), "avisos": avisos,
                 "snapshots_analisados": tentativas, "tentativas": tentativas,
                 "parada_motivo": parada_motivo, "modo": perfil}
@@ -1468,7 +1500,7 @@ def _ler_placa(
         melhor["confianca"] = 1.0
         acordo_final = 1.0
         confirmada = True
-        origem = "feira"
+        origem = feira_mod.ORIGEM
         avisos.append(
             f"modo feira: placa de demonstracao '{melhor['placa']}' reconhecida (MOCK) — "
             "esta leitura NAO veio do OCR")
@@ -1560,14 +1592,23 @@ def _ler_placa(
              "" if confirmada else " NAO-CONFIRMADA",
              tipo_veiculo or "nao-estimado",
              tentativas, n_max, parada_motivo, melhor["votos_ocr"], melhor["total_engines"],
-             camera_eleita, bico_id,
-             ", ".join(f"{f.rotulo} {f.tentativas}f/{f.bboxes}bb/{f.candidatos}c"
-                       f"{'' if f.ativa else ' ABANDONADA'}" for f in fontes))
+             camera_eleita, bico_id, _fontes_para_log())
 
     return {
         # A câmera de onde saiu a placa eleita — com uma fonte é a de sempre.
         "camera_id":           camera_eleita,
         "bico_id":             bico_id,
+        # Esta placa veio do MOCK do modo feira, não do OCR. Sai no payload, e não só no
+        # banco, porque até aqui o único sinal disso para quem consome era uma frase em
+        # `avisos` — texto livre, que nenhum consumidor tipado lê.
+        #
+        # É `placa_demo is not None`, e NÃO `origem == "feira"`: a origem também vale
+        # "feira" quando é o próprio fluxo da vitrine que está chamando
+        # (`POST /api/feira/scan` pede `origem="feira"` para a leitura ficar fora de
+        # 'producao'), e nesse caminho a placa do celular de um visitante sairia marcada
+        # como mockada sem nunca ter passado por `casar`. Confundir as duas fez o card da
+        # vitrine saudar placa de visitante como veículo de demonstração.
+        "mockada":             placa_demo is not None,
         "placa":               melhor["placa"],
         "padrao":              melhor["padrao"],
         "confianca":           melhor["confianca"],

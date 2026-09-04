@@ -4,33 +4,67 @@
 <h1>Listas de Placas</h1>
 <div class="card">
   <h2 style="margin-top:0;">Cadastrar</h2>
-  <input id="placa" placeholder="ABC1D23" maxlength="7">
-  <select id="tipo">
-    <option value="branca">Branca (autorizada)</option>
-    <option value="negra">Negra (alerta)</option>
-  </select>
-  <input id="descricao" placeholder="Descrição">
-  <button onclick="cadastrar()">Adicionar</button>
+  {# Rotulos de verdade: os tres campos so tinham placeholder, que nao e nome
+     acessivel e desaparece na primeira tecla. maxlength=8 para acompanhar as
+     outras telas (7 barrava placa com hifen). #}
+  <div class="flex-centro g-3 flex-quebra">
+    <label for="placa">Placa
+      <input id="placa" class="mono" placeholder="ABC1D23" maxlength="8"
+             autocapitalize="characters" spellcheck="false">
+    </label>
+    <label for="tipo">Tipo
+      <select id="tipo">
+        <option value="branca">Branca (autorizada)</option>
+        <option value="negra">Negra (alerta)</option>
+      </select>
+    </label>
+    <label for="descricao" class="flex-1">Descrição
+      <input id="descricao" placeholder="ex: frota da prefeitura" style="width:100%">
+    </label>
+    <button onclick="cadastrar()">Adicionar</button>
+  </div>
 </div>
 <div class="card">
   <table>
-    <thead><tr><th>Placa</th><th>Tipo</th><th>Descrição</th><th>Cadastrada</th><th></th></tr></thead>
+    <thead><tr><th scope="col">Placa</th><th scope="col">Tipo</th><th scope="col">Descrição</th><th scope="col">Cadastrada</th><th scope="col"><span class="oculto-visual">Ações</span></th></tr></thead>
     <tbody id="corpo"></tbody>
   </table>
+  <div id="vazio" class="vazio" hidden>
+    <h2>Nenhuma placa nas listas</h2>
+    <p>Cadastre acima uma placa <strong>branca</strong> (autorizada) ou
+       <strong>negra</strong> (dispara alerta a cada leitura).</p>
+  </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 async function carregar() {
-  const r = await fetch('/api/listas').then(r => r.json());
-  document.getElementById('corpo').innerHTML = r.map(l => `
+  const corpo = document.getElementById('corpo');
+  // `null` separa "falhou" de "respondeu vazio": antes um erro de rede deixava
+  // a tabela em branco, indistinguivel de "nenhuma placa cadastrada".
+  const r = await fetch('/api/listas').then(r => r.ok ? r.json() : null).catch(() => null);
+  if (r === null) {
+    avisar('Nao foi possivel carregar as listas — verifique a conexao.', 'err');
+    return;
+  }
+  document.getElementById('vazio').hidden = r.length > 0;
+  corpo.innerHTML = r.map(l => `
     <tr>
-      <td><strong>${l.placa}</strong></td>
-      <td><span class="badge badge-${l.tipo === 'negra' ? 'antigo' : 'mercosul'}">${l.tipo}</span></td>
-      <td>${l.descricao || ''}</td>
-      <td>${new Date(l.criado_em).toLocaleString()}</td>
-      <td><button onclick="remover(${l.id})">Excluir</button></td>
+      {# .placa: fonte com glifos desambiguados. Numa lista NEGRA, confundir
+         ABC1O23 com ABC1023 libera o veiculo errado. #}
+      <td><span class="placa">${esc(l.placa)}</span></td>
+      {# badge semantico: negra = alerta, branca = ok. Antes usava badge-antigo
+         (o cinza de "formato de placa antigo") e badge-mercosul (azul de
+         metadado) — uma placa em alerta ficava indistinguivel de informacao
+         irrelevante. #}
+      <td><span class="badge ${l.tipo === 'negra' ? 'badge-err' : 'badge-ok'} com-ponto">${esc(l.tipo)}</span></td>
+      <td>${esc(l.descricao || '')}</td>
+      <td class="nao-quebra">${new Date(l.criado_em).toLocaleString('pt-BR')}</td>
+      {# .btn-perigo: sem classe o botao herdava o verde primario — numa tabela
+         cuja unica acao e apagar, o botao de destruir era o mais convidativo. #}
+      <td><button class="btn-perigo btn-pequeno"
+                  onclick="remover(${l.id}, '${esc(l.placa)}')">Excluir</button></td>
     </tr>
   `).join('');
 }
@@ -46,9 +80,15 @@ async function cadastrar() {
   if (r.ok) { document.getElementById('placa').value = ''; document.getElementById('descricao').value = ''; carregar(); }
   else { alert('Erro ao cadastrar'); }
 }
-async function remover(id) {
-  if (!confirm('Remover?')) return;
-  await fetch('/api/listas/' + id, {method: 'DELETE'});
+async function remover(id, placa) {
+  // "Remover?" nao dizia o QUE seria removido. Numa lista negra, apagar a placa
+  // errada libera um veiculo que devia ser barrado.
+  if (!confirm(`Remover a placa ${placa} da lista?\n\nEsta acao nao tem desfazer.`)) return;
+  const r = await fetch('/api/listas/' + id, { method: 'DELETE' });
+  // O status era ignorado: um 403 recarregava a lista com o item ainda la e
+  // NENHUMA mensagem — o operador clicava de novo achando que nao pegou.
+  if (!r.ok) return avisarResposta(r, 'Falha ao remover');
+  avisar(`Placa ${placa} removida da lista.`, 'ok');
   carregar();
 }
 carregar();

@@ -9,6 +9,12 @@ lock = threading.Lock()
 frame_atual = None
 frames_cameras: dict = {}        # camera_db_id -> frame (anotado, com bboxes p/ stream)
 frames_cameras_limpos: dict = {} # camera_db_id -> frame limpo (sem overlay, p/ ler-placa)
+# Frame de EXIBIÇÃO: o quadro CRU da câmera (sem bboxes E sem o ajuste CLAHE), publicado
+# na cadência de CAPTURA (~camera_fps), não na de detecção. Existe só para a vitrine da
+# feira (/feira) mostrar vídeo limpo e fluido. Separado de `frames_cameras_limpos` de
+# propósito: aquele é o quadro AJUSTADO que o OCR (`ler_placa`) consome e só muda a ~5/s;
+# misturar os dois degradaria a leitura ou piscaria brilho no vídeo.
+frames_cameras_display: dict = {}
 ultimo_frame_ts: dict = {}       # camera_db_id -> timestamp do último frame válido
 ultimas_deteccoes: deque = deque(maxlen=20)
 logs_recentes: deque = deque(maxlen=200)
@@ -74,6 +80,18 @@ def obter_frame_camera_limpo(camera_id: int):
         return frames_cameras_limpos.get(camera_id)
 
 
+def registrar_frame_camera_display(camera_id: int, frame) -> None:
+    """Publica o frame CRU de exibição (vitrine da feira). Barato: guarda a referência,
+    sem cópia nem encode. O encode só acontece no gerador MJPEG, quando há viewer."""
+    with lock:
+        frames_cameras_display[camera_id] = frame
+
+
+def obter_frame_camera_display(camera_id: int):
+    with lock:
+        return frames_cameras_display.get(camera_id)
+
+
 def esquecer_camera(camera_id: int) -> None:
     """Descarta todo estado em memória de uma câmera removida.
 
@@ -85,6 +103,7 @@ def esquecer_camera(camera_id: int) -> None:
     with lock:
         frames_cameras.pop(camera_id, None)
         frames_cameras_limpos.pop(camera_id, None)
+        frames_cameras_display.pop(camera_id, None)
         ultimo_frame_ts.pop(camera_id, None)
         emissoes_recentes.pop(camera_id, None)
         ambiente.pop(camera_id, None)

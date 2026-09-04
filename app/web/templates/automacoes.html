@@ -5,10 +5,10 @@
   <h1 style="margin:0">Automações</h1>
   <span id="filtro-badge" style="display:none;background:#dcfce7;color:#15803d;padding:4px 12px;
         border-radius:20px;font-size:13px;font-weight:600"></span>
-  <a href="/postos" style="color:#64748b;font-size:13px;margin-left:auto">← Postos</a>
+  <a href="/postos" class="link-voltar">← Postos</a>
 </div>
 
-<p style="color:#64748b;margin:-10px 0 20px;font-size:14px">
+<p style="color:var(--texto-2);margin:-10px 0 20px;font-size:14px">
   Cada posto pode ter até 2 automações rodando em paralelo. O código é o valor que o
   roteador (sidecar do posto) envia no GET reativo — precisa bater exatamente.
 </p>
@@ -24,12 +24,12 @@
     </thead>
     <tbody id="tbody"></tbody>
   </table>
-  <p id="sem-itens" style="display:none;color:#94a3b8">Nenhuma automação cadastrada.</p>
+  <p id="sem-itens" style="display:none;color:var(--texto-3)">Nenhuma automação cadastrada.</p>
 </div>
 
 <!-- Modal -->
 <div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(2px);z-index:100;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:12px;padding:28px;width:460px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+  <div style="background:var(--superficie);border-radius:12px;padding:28px;width:460px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
     <h2 id="modal-titulo" style="margin-top:0">Nova Automação</h2>
     <form id="form" onsubmit="salvar(event)">
       <input type="hidden" id="f-id" value="">
@@ -37,7 +37,7 @@
         <select id="f-empresa" required style="width:100%;margin-top:4px"></select>
       </label>
       <label style="display:block;margin-bottom:12px">Código
-        <small style="color:#94a3b8;font-weight:normal"> — valor enviado pelo roteador no GET</small>
+        <small style="color:var(--texto-3);font-weight:normal"> — valor enviado pelo roteador no GET</small>
         <input id="f-codigo" type="text" required style="width:100%;box-sizing:border-box;margin-top:4px">
       </label>
       <label style="display:block;margin-bottom:12px">Nome / descrição
@@ -48,8 +48,8 @@
         Ativa
       </label>
       <div style="display:flex;gap:10px">
-        <button type="submit" style="background:#16a34a">Salvar</button>
-        <button type="button" onclick="fecharModal()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Cancelar</button>
+        <button type="submit" style="background:var(--marca-btn)">Salvar</button>
+        <button type="button" onclick="fecharModal()" style="background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda)">Cancelar</button>
       </div>
     </form>
   </div>
@@ -111,8 +111,8 @@ function renderTabela() {
         <a href="/posto/${it.empresa_id}" style="display:inline-flex;align-items:center;padding:8px 12px;
            border-radius:7px;background:#0f172a;color:#fff;font-size:14px;font-weight:500;
            text-decoration:none;margin-right:4px">Bicos</a>
-        <button onclick="editar(${it.id})" style="background:#16a34a;margin-right:4px">Editar</button>
-        <button onclick="remover(${it.id})" style="background:#dc2626">Remover</button>
+        <button onclick="editar(${it.id})" style="background:var(--marca-btn);margin-right:4px">Editar</button>
+        <button onclick="remover(${it.id})" style="background:var(--erro)">Remover</button>
       </td>
     </tr>`;
   });

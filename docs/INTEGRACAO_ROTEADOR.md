@@ -75,7 +75,8 @@ descartado antes de comparar.
   "detalhes_ocr": [{"engine": "fast_plate_ocr", "placa": "PGK2D93", "padrao": "mercosul", "confianca": 0.91}],
   "tentativas": 6,
   "parada_motivo": "acordo",
-  "modo": "completo"
+  "modo": "completo",
+  "mockada": false
 }
 ```
 HTTP `200`. Use o campo `"placa"` — **e confira `"confirmada"` antes de vincular a placa
@@ -95,6 +96,13 @@ sendo quantas FOTOS bateram e não mudou de significado: com o ensemble de model
 rende 3-4 leituras independentes, então `votos_snapshot: 1` com `votos_leitura: 4` é uma
 leitura sólida — quatro modelos concordando sobre o mesmo recorte. Nada precisa mudar no
 lado do roteador: continue usando `"confirmada"`.
+
+`"mockada"` (novo em 04/09/2026) sai nos dois desfechos (com e sem placa) e **em produção
+é sempre `false`**. `true` significa que a placa devolvida NÃO veio do OCR: é um veículo de
+demonstração cadastrado, num servidor em modo feira (ver "Dados do veículo" abaixo). O
+campo existe para que uma resposta de demonstração nunca seja indistinguível de uma real —
+antes dele o único sinal era uma frase em `avisos`, texto livre que nenhum consumidor
+tipado lê.
 
 Os demais campos (`votos_ocr`, `detalhes_ocr`, etc.) são detalhe interno de diagnóstico;
 não é necessário processá-los.
@@ -153,9 +161,31 @@ aquele veículo, o segundo é um problema passageiro nosso ou do provedor.
 `motivo` é texto livre para diagnóstico humano (`""` quando `consulta` é `"ok"`) — não faça
 o roteador depender do seu conteúdo, pela mesma razão já dita sobre `mensagem`.
 
-`origem` diz de onde veio o dado: `"cache"` (do nosso banco, resposta instantânea) ou
-`"api"` (consultado na hora). Serve para o posto confirmar que o cache está funcionando
-sem precisar de acesso ao nosso banco. Vem `null` quando `consulta` é `"indisponivel"`.
+`origem` diz de onde veio o dado: `"cache"` (do nosso banco, resposta instantânea),
+`"api"` (consultado na hora) ou `"feira"` (dado de DEMONSTRAÇÃO — ver abaixo). Serve para o
+posto confirmar que o cache está funcionando sem precisar de acesso ao nosso banco. Vem
+`null` quando `consulta` é `"indisponivel"` sem ter sido uma leitura de demonstração.
+
+#### `mockada: true` — dado de demonstração
+
+Servidor em **modo feira** (usado em estande de evento, e desligado por padrão) pode
+devolver a leitura de um veículo de demonstração cadastrado. Nesse caso o payload traz
+`"mockada": true` **no nível de cima** e o bloco `veiculo` vem preenchido a partir de uma
+ficha local — sem nenhuma consulta externa, porque o evento acontece offline. É por isso
+que o bloco aparece mesmo com a consulta de veículo desligada no servidor: sem rede e sem
+token, uma consulta real só saberia devolver `"indisponivel"`.
+
+O bloco tem exatamente a mesma forma e os mesmos tipos de uma consulta real: a integração
+não precisa (e não deve) tratar este caso de modo especial. Os campos que permitem
+distinguir, para quem precisar:
+
+- `mockada` no nível de cima é `true`;
+- `veiculo.origem` é `"feira"` (em vez de `"cache"`/`"api"`), e `veiculo.motivo` vem
+  preenchido mesmo com `consulta: "ok"` — numa consulta real, `motivo` é `""` quando o
+  desfecho é `"ok"`.
+
+**Isto nunca acontece em posto de produção.** O mock é restrito a um posto de
+demonstração específico, configurado à parte; sem ele o modo fica inerte.
 
 #### Campo a campo
 

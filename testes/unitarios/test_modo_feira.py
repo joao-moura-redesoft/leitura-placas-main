@@ -336,3 +336,71 @@ class TestPostoDeDemonstracao:
         # Existe, mas o interruptor ainda está desligado: os dois estados são distintos e
         # a tela precisa dizer qual é qual.
         assert est["existe"] is True and est["armado"] is False
+
+
+class TestApontarPostoExistente:
+    """`PUT /api/feira/posto` — armar o mock num posto que JÁ EXISTE.
+
+    Existe por causa de uma falha em campo (03/09/2026). O operador tinha o posto
+    montado (câmera, automação, bico, área desenhada), ligou `feira_ativo`, cadastrou
+    `MOK3H92,DDR1989` — e a leitura devolveu `DDR1887` sem mockar. O casamento estava
+    certo: `_distancia('DDR1887','DDR1989')` é 2, dentro da tolerância. O que faltava era
+    ARMAMENTO — `feira_empresa_id` vazio, e o escopo é fail-closed.
+
+    Antes disto a única forma de armar era `POST /feira/posto`, que monta um posto NOVO.
+    Quem já tinha cadastro real ficava obrigado a montar um segundo posto só para
+    demonstrar, e o mock ficava inalcançável onde ele de fato queria usar.
+    """
+
+    def _posto(self, nome="Posto Real", cnpj="11222333000181"):
+        ent = banco.entidades_inserir({"nome": "REDE"})
+        return banco.empresas_inserir({"entidade_id": ent, "cnpj": cnpj, "nome": nome})
+
+    def test_aponta_e_arma(self, ambiente):
+        emp = self._posto()
+        r = cad.feira_apontar_posto({"empresa_id": emp}, _RequisicaoFalsa())
+        assert r["armado"] is True and r["empresa_id"] == emp
+        assert config.carregar()["feira_empresa_id"] == str(emp)
+
+    def test_o_mock_passa_a_agir_naquele_posto(self, ambiente):
+        """O caso de campo, ponta a ponta: a leitura que saía crua passa a casar."""
+        emp = self._posto()
+        cad.feira_apontar_posto({"empresa_id": emp}, _RequisicaoFalsa())
+        cfg = {**config.carregar(), "feira_ativo": "sim",
+               "feira_placas": "MOK3H92,DDR1989", "feira_tolerancia": "2"}
+        assert feira.casar("DDR1887", cfg, emp) == "DDR1989"
+
+    def test_outros_postos_continuam_reais(self, ambiente):
+        """Apontar para um posto não pode contaminar os vizinhos."""
+        alvo = self._posto("Alvo", "11222333000181")
+        outro = self._posto("Outro", "11444777000161")
+        cad.feira_apontar_posto({"empresa_id": alvo}, _RequisicaoFalsa())
+        cfg = {**config.carregar(), "feira_ativo": "sim",
+               "feira_placas": "DDR1989", "feira_tolerancia": "2"}
+        assert feira.casar("DDR1887", cfg, alvo) == "DDR1989"
+        assert feira.casar("DDR1887", cfg, outro) is None
+
+    def test_nulo_desarma_sem_apagar_nada(self, ambiente):
+        """Desarmar e APAGAR são ações diferentes: parar de mockar não pode exigir
+        destruir o cadastro."""
+        emp = self._posto()
+        cad.feira_apontar_posto({"empresa_id": emp}, _RequisicaoFalsa())
+        r = cad.feira_apontar_posto({"empresa_id": None}, _RequisicaoFalsa())
+        assert r["armado"] is False
+        assert config.carregar()["feira_empresa_id"] == ""
+        assert banco.empresas_obter(emp) is not None      # o posto continua lá
+
+    def test_posto_inexistente_e_404(self, ambiente):
+        with pytest.raises(HTTPException) as e:
+            cad.feira_apontar_posto({"empresa_id": 9999}, _RequisicaoFalsa())
+        assert e.value.status_code == 404
+
+    def test_trocar_de_posto_move_o_escopo(self, ambiente):
+        """Apontar para B tem de DESARMAR A — senão dois postos ficariam mockados."""
+        a = self._posto("A", "11222333000181")
+        b = self._posto("B", "11444777000161")
+        cad.feira_apontar_posto({"empresa_id": a}, _RequisicaoFalsa())
+        cad.feira_apontar_posto({"empresa_id": b}, _RequisicaoFalsa())
+        cfg = {**config.carregar(), "feira_ativo": "sim", "feira_placas": "DDR1989"}
+        assert feira.casar("DDR1989", cfg, b) == "DDR1989"
+        assert feira.casar("DDR1989", cfg, a) is None

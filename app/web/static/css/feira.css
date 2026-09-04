@@ -1,0 +1,843 @@
+/* Vitrine da feira (/feira) — kiosk de demonstração em tela cheia.
+
+   Composição de DOIS materiais, de propósito: um PALCO escuro (a câmera ao vivo) ao lado
+   de um PAINEL marfim (a informação do veículo). Não é o "dashboard escuro com verde neon"
+   — é uma vitrine editorial, legível de longe numa TV de estande. O resto do app é claro
+   (tablet sob sol); aqui o contexto é iluminação controlada e público a distância.
+
+   Princípios seguidos (metodologia Impeccable):
+   - cor CONCENTRADA: o verde da marca marca só o momento de reconhecimento, não decora tudo;
+   - UM momento autoral de movimento (a revelação), não efeitos espalhados;
+   - ícones de verdade (SVG), nunca emoji; sem eyebrow/kicker; sem mono como "fantasia";
+   - superfícies do navegador (seleção, foco, numerais) tematizadas.
+
+   Reaproveita do tokens.css só as fontes locais e a cor de marca (--marca). Tudo escopado
+   em `.feira-kiosk` para não vazar para o app claro. */
+
+.feira-kiosk {
+  /* Palco (escuro) */
+  --k-palco:    #0a0d12;
+  --k-palco-2:  #070a0e;
+  --k-borda-esc: rgba(255,255,255,.08);
+  --k-clara:    #eef1f5;
+  --k-clara-2:  #9aa7b6;   /* secundário tingido do palco, não cinza puro */
+
+  /* Painel de informação (marfim) */
+  --k-papel:    #f4f1ea;
+  --k-papel-2:  #ece7db;
+  --k-tinta:    #16130d;
+  --k-tinta-2:  #6f6656;   /* secundário tingido de quente, não cinza lavado */
+  --k-linha:    #e2ddd0;
+
+  /* Acento — a marca, usada com parcimônia.
+
+     São TRÊS verdes porque são DOIS materiais, e o mesmo verde não serve nos dois:
+     - `--k-verde`      fundo da ação primária (branco em cima dá 4,63:1);
+     - `--k-verde-esc`  hover da ação primária. Escurece, não clareia: com o `--k-verde-viva`
+                        aqui o texto branco caía para 2,44:1 e a ação primária ficava
+                        ILEGÍVEL justo ao passar o mouse. Assim dá 7,46:1;
+     - `--k-verde-txt`  verde de TEXTO/anel de foco sobre o marfim (5,25:1). O `--k-verde`
+                        dava 4,11:1 e reprovava AA em "Placa reconhecida";
+     - `--k-verde-viva` só no PALCO escuro (cantos, spinner, seleção, foco): sobre o marfim
+                        ele vale 2,16:1 e o anel de foco desaparecia. */
+  --k-verde:    #12864a;
+  --k-verde-esc:  #0c6236;
+  --k-verde-txt:  #0f7340;
+  --k-verde-viva: #2fbd6b;
+
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background:
+    radial-gradient(140% 120% at 12% -10%, #10161f 0%, transparent 46%),
+    linear-gradient(150deg, var(--k-palco) 0%, var(--k-palco-2) 100%);
+  color: var(--k-clara);
+  font-family: var(--fonte, 'Inter', system-ui, sans-serif);
+  overflow: hidden;
+}
+.feira-kiosk.cursor-oculto { cursor: none; }
+
+/* O kiosk é a página inteira e o palco é escuro: sem isto o `body` fica com o branco e a
+   margem do UA, e sobra um flash branco no primeiro paint (e no overscroll do tablet). */
+html, body { margin: 0; background: #0a0d12; }
+
+/* Superfícies do navegador, tematizadas (exigência de craft-floor) */
+.feira-kiosk ::selection { background: var(--k-verde-viva); color: #04120a; }
+.feira-kiosk :focus-visible { outline: 2px solid var(--k-verde-viva); outline-offset: 3px; border-radius: 6px; }
+/* O anel muda de verde junto com o material: no marfim o verde vivo vale 2,16:1 e some. */
+.feira-info :focus-visible { outline-color: var(--k-verde-txt); }
+.feira-kiosk ::-webkit-scrollbar { width: 10px; height: 10px; }
+.feira-kiosk ::-webkit-scrollbar-thumb { background: #ffffff1f; border-radius: 999px; }
+
+/* ── Topo ──────────────────────────────────────────────────────────────────── */
+.feira-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: clamp(14px, 1.8vw, 24px) clamp(18px, 2.6vw, 44px);
+}
+.feira-marca { display: flex; align-items: center; gap: 13px; }
+.feira-marca-icone {
+  width: clamp(34px, 3vw, 44px);
+  height: clamp(34px, 3vw, 44px);
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  background: var(--k-verde);
+  color: #fff;
+  flex: none;
+  box-shadow: 0 6px 18px -6px #0f6b3c;
+}
+.feira-marca-icone svg { width: 56%; height: 56%; }
+.feira-marca-txt { line-height: 1.15; }
+.feira-marca-txt b {
+  display: block;
+  font-size: clamp(16px, 1.4vw, 20px);
+  font-weight: 700; letter-spacing: -.01em;
+}
+.feira-marca-txt span {
+  font-size: clamp(11px, .95vw, 13px);
+  color: var(--k-clara-2);
+}
+.feira-top-dir { margin-left: auto; display: flex; align-items: center; gap: clamp(10px, 1.3vw, 16px); }
+.feira-relogio {
+  font-size: clamp(14px, 1.2vw, 18px);
+  color: var(--k-clara-2);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .01em;
+}
+.feira-btn-icone {
+  appearance: none;
+  border: 1px solid var(--k-borda-esc);
+  background: transparent;
+  color: var(--k-clara-2);
+  width: 40px; height: 40px;
+  border-radius: 10px;
+  cursor: pointer;
+  display: grid; place-items: center;
+  transition: background .18s ease-out, color .18s ease-out, border-color .18s ease-out;
+  text-decoration: none;
+}
+.feira-btn-icone svg { width: 19px; height: 19px; }
+.feira-btn-icone:hover { background: #ffffff0d; color: var(--k-clara); border-color: #ffffff26; }
+
+/* Saída em DOIS toques. O "×" tinha o mesmo peso do tela-cheia e ia direto para /postos
+   (o app de operação): num kiosk público, um toque errado encerrava a demonstração na
+   frente do visitante. O primeiro clique arma e se identifica; o segundo sai. */
+.feira-btn-icone.confirmar {
+  width: auto; padding: 0 14px; gap: 8px;
+  grid-auto-flow: column;
+  color: #ffc9c9; border-color: #ff6b6b59; background: #ff6b6b1f;
+}
+.feira-btn-icone.confirmar::after {
+  content: "Sair?";
+  font-size: 13px; font-weight: 600; letter-spacing: .01em;
+}
+
+/* ── Palco ────────────────────────────────────────────────────────────────────
+
+   UMA coluna por padrão: só o painel "Aproxime o veículo" / "Bem-vindo!", ocupando a tela
+   inteira. A câmera ao vivo é OPCIONAL (botão no topo) e, quando ligada, o palco volta a
+   ser duas colunas — daí a classe `com-camera` no kiosk em vez de um seletor sobre o
+   `[hidden]` da seção: o grid é do PAI, e o pai precisa saber quantas colunas desenhar. */
+.feira-palco {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(16px, 2vw, 30px);
+  padding: 0 clamp(18px, 2.6vw, 44px) clamp(18px, 2.4vw, 36px);
+}
+.feira-kiosk.com-camera .feira-palco { grid-template-columns: 1.4fr 1fr; }
+.feira-cam[hidden] { display: none; }
+
+/* Sem a câmera ao lado, o painel ganha a largura toda — e um bloco de texto de 30ch
+   perdido num painel de 1900px não é uma vitrine. O conteúdo fica CENTRADO numa medida
+   de leitura, como uma vitrine de fato: um único objeto no meio da tela. */
+.feira-kiosk:not(.com-camera) .feira-info { align-items: center; text-align: center; }
+.feira-kiosk:not(.com-camera) .idle { max-width: 34ch; }
+.feira-kiosk:not(.com-camera) .idle-icone { margin-inline: auto; }
+.feira-kiosk:not(.com-camera) .idle-acoes { align-items: center; }
+.feira-kiosk:not(.com-camera) .reveal { max-width: 620px; }
+
+/* Em PAISAGEM sem câmera o card vira DUAS COLUNAS: cumprimento + placa + captura à
+   esquerda, ficha + mensagem + botão à direita.
+
+   Empilhado ele não cabia, e a conta é simples: o painel virou a tela inteira, a placa
+   cresceu (é o herói) e a captura entrou como bloco novo — mas a altura disponível não
+   mudou. Medido a 1920x1080: card de 1015px num painel de 952px, com o "Próximo veículo"
+   (o ÚNICO caminho de volta ao idle, porque `revelar()` não tem timeout) 83px FORA da
+   tela; a 1280x720 faltavam 44px. Apertar tipografia e imagem só empurrava o problema.
+
+   O grid resolve pelo eixo que de fato sobra: numa TV de estande falta altura e sobra
+   largura. Fora da paisagem (tablet em retrato, celular) o card segue empilhado — lá a
+   altura é que sobra, e já passava. */
+@media (min-aspect-ratio: 1/1) and (min-width: 941px) {
+  .feira-kiosk:not(.com-camera) .reveal:not([hidden]) {
+    max-width: 1180px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    /* `start` e não `center`: com `center` cada item era centrado na sua PRÓPRIA faixa do
+       grid e isso abria buracos — um vão entre "Placa reconhecida" e a captura, e a coluna
+       da direita começando bem abaixo do topo da esquerda. Alinhadas ao início, as duas
+       colunas partem da mesma linha; `align-content` mantém o bloco todo centrado. */
+    align-items: start;
+    align-content: center;
+    column-gap: clamp(28px, 3.4vw, 64px);
+    text-align: left;
+  }
+  /* `grid-column` explícito em todo mundo: sem isto a ordem do DOM preencheria as células
+     em zigue-zague (h1 na 1ª, placa na 2ª...) e a leitura se perderia. */
+  .feira-kiosk:not(.com-camera) .reveal > h1,
+  .feira-kiosk:not(.com-camera) .reveal > .placa-mercosul,
+  .feira-kiosk:not(.com-camera) .reveal > .placa-conf,
+  .feira-kiosk:not(.com-camera) .reveal > .rev-captura { grid-column: 1; }
+  .feira-kiosk:not(.com-camera) .reveal > .ficha-specs,
+  .feira-kiosk:not(.com-camera) .reveal > .ficha-msg,
+  .feira-kiosk:not(.com-camera) .reveal > .btn-avancar { grid-column: 2; }
+  /* A captura encosta logo abaixo de "Placa reconhecida", em vez de boiar na faixa. */
+  .feira-kiosk:not(.com-camera) .reveal .rev-captura {
+    margin-inline: 0;
+    margin-top: clamp(6px, 1.4vh, 18px);
+  }
+  .feira-kiosk:not(.com-camera) .reveal .rev-captura { --cap-h: clamp(90px, 11vh, 165px); }
+  .feira-kiosk:not(.com-camera) .reveal .placa-mercosul { margin-inline: 0; }
+  .feira-kiosk:not(.com-camera) .reveal .btn-avancar { justify-self: start; }
+
+  /* A CASCATA de entrada segue a leitura, e em duas colunas a leitura mudou: a coluna da
+     direita (ficha, mensagem, botão) é lida DEPOIS da esquerda, não intercalada com ela.
+     Os delays do layout empilhado (ficha em .24s, mensagem .48s, botão .56s) foram
+     calculados para uma pilha única — aqui a ficha da direita entraria antes da captura
+     que está à esquerda dela, e a animação apontaria para o lado errado. */
+  .feira-kiosk.reconhecido:not(.com-camera) .reveal > .ficha-specs { animation-delay: .30s; }
+  .feira-kiosk.reconhecido:not(.com-camera) .reveal > .ficha-msg   { animation-delay: .54s; }
+  .feira-kiosk.reconhecido:not(.com-camera) .reveal > .btn-avancar { animation-delay: .62s; }
+  .feira-kiosk.reconhecido:not(.com-camera) .ficha-specs .spec:nth-child(1) { animation-delay: .32s; }
+  .feira-kiosk.reconhecido:not(.com-camera) .ficha-specs .spec:nth-child(2) { animation-delay: .38s; }
+  .feira-kiosk.reconhecido:not(.com-camera) .ficha-specs .spec:nth-child(3) { animation-delay: .44s; }
+  .feira-kiosk.reconhecido:not(.com-camera) .ficha-specs .spec:nth-child(4) { animation-delay: .50s; }
+}
+.feira-kiosk:not(.com-camera) .placa-mercosul { margin-inline: auto; }
+.feira-kiosk:not(.com-camera) .ficha-specs { text-align: left; }
+/* Tela cheia significa mais espaço: a placa (o payload da demonstração) e o cumprimento
+   podem crescer, em vez de manter o teto calculado para meia tela. */
+.feira-kiosk:not(.com-camera) .placa-mercosul { width: min(560px, 96%); }
+.feira-kiosk:not(.com-camera) .placa-mercosul .numero { font-size: clamp(36px, min(6vw, 8vh), 86px); }
+.feira-kiosk:not(.com-camera) .idle h1 { font-size: clamp(34px, 4.4vw, 66px); }
+.feira-kiosk:not(.com-camera) .idle p { font-size: clamp(16px, 1.5vw, 22px); }
+
+/* TELA GRANDE E DEITADA (TV de estande a partir de ~1600px). O idle é o que fica no ar o
+   evento INTEIRO — é ele que chama o visitante — e a 1920px o convite ocupava cerca de um
+   quarto da tela, com marfim vazio em volta. Cresce para o tamanho da sala.
+   Escopado por `min-height` também: um laptop 1600x900 não tem altura para isto. */
+@media (min-width: 1600px) and (min-aspect-ratio: 1/1) and (min-height: 950px) {
+  /* Largura em `px`, NÃO em `ch`: `ch` escala junto com a fonte, então ao subir o h1 para
+     108px o mesmo "26ch" virou uma coluna estreita e o convite quebrou em UMA PALAVRA POR
+     LINHA ("Aproxime / o / veículo"), empurrando a pílula para fora da tela. Medida fixa
+     mantém a linha inteira e deixa o tamanho da fonte ser a única variável. */
+  .feira-kiosk:not(.com-camera) .idle { max-width: 900px; }
+  .feira-kiosk:not(.com-camera) .idle h1 { font-size: clamp(58px, 4.6vw, 88px); }
+  .feira-kiosk:not(.com-camera) .idle p  { font-size: clamp(21px, 1.7vw, 30px); max-width: 30ch; margin-inline: auto; }
+  .feira-kiosk:not(.com-camera) .idle-icone {
+    width: clamp(80px, 5.6vw, 108px); height: clamp(80px, 5.6vw, 108px);
+    border-radius: 22px;
+  }
+  .feira-kiosk:not(.com-camera) .idle .aguardando {
+    font-size: clamp(18px, 1.5vw, 26px); padding: 13px 26px 13px 22px;
+  }
+}
+
+/* O botão da câmera acende quando o feed está no ar — o mesmo princípio do tela-cheia:
+   um botão que alterna estado tem de DIZER em qual estado está. */
+.feira-btn-icone.ativo {
+  color: var(--k-clara);
+  border-color: #2fbd6b59;
+  background: #2fbd6b1f;
+}
+
+/* ── Lado da câmera (palco escuro) ─────────────────────────────────────────── */
+.feira-cam {
+  position: relative;
+  border-radius: 22px;
+  overflow: hidden;
+  background: #04070b;
+  border: 1px solid var(--k-borda-esc);
+  /* Profundidade real: offset + blur (não um halo sem offset). */
+  box-shadow: 0 40px 90px -40px #000;
+  min-height: 0;
+
+  /* A CAIXA tem o aspecto do QUADRO, não o da célula do grid. O JS grava
+     `--cam-aspecto` a partir de `naturalWidth/naturalHeight` no primeiro onload.
+
+     Sem isto a caixa ficava 1051x952 (aspecto 1,10) para um quadro 1920x1080 (1,78) e o
+     `object-fit: cover` jogava fora 37,9% da LARGURA: o visitante via ~62% do que a câmera
+     vê e do que o detector lê, e os cantos de enquadramento moldavam uma região que não
+     existia. Com a caixa no aspecto do quadro não há corte nem banda preta, e a moldura
+     passa a cercar o quadro de verdade. */
+  aspect-ratio: var(--cam-aspecto, 16 / 9);
+  align-self: center;         /* não estica na altura da célula — respeita o aspecto */
+  max-height: 100%;           /* célula baixa: cede a altura e o `contain` evita o corte */
+}
+/* `contain` e não `cover`: em qualquer sobra (célula baixa, aspecto ainda desconhecido)
+   a escolha é mostrar o quadro inteiro com banda, nunca cortar o que o detector lê. */
+.feira-cam img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.feira-cam::after {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(0deg, #04070bcc 0%, transparent 24%, transparent 82%, #04070b66 100%);
+}
+
+/* Moldura de enquadramento + uma varredura sutil.
+
+   É TEATRO, e assumido: o inset é fixo, não é o ROI de ninguém (o contínuo não tem ROI).
+   O que ela precisa ser é honesta na composição — cercar o quadro que está na tela e
+   aparecer com os quatro cantos.
+
+   Os insets vertical e horizontal são diferentes de propósito: o selo AO VIVO cobria 62%
+   do canto superior-esquerdo e a legenda de baixo colidia com os dois cantos inferiores
+   (z-index 3 contra 2), então a moldura aparecia com dois cantos de quatro. Agora ela vive
+   na faixa ENTRE o selo e a legenda, e não disputa pixel com nenhum dos dois. */
+.scanner {
+  position: absolute;
+  inset: clamp(62px, 6.4vw, 88px) clamp(16px, 1.8vw, 28px) clamp(66px, 7vw, 96px);
+  pointer-events: none;
+  z-index: 2;
+}
+.scanner .canto {
+  position: absolute; width: 40px; height: 40px;
+  border: 2px solid #ffffffcc;
+  opacity: .5;
+  transition: border-color .4s ease-out, opacity .4s ease-out;
+}
+.scanner .canto.tl { top: 0; left: 0; border-right: 0; border-bottom: 0; border-top-left-radius: 6px; }
+.scanner .canto.tr { top: 0; right: 0; border-left: 0; border-bottom: 0; border-top-right-radius: 6px; }
+.scanner .canto.bl { bottom: 0; left: 0; border-right: 0; border-top: 0; border-bottom-left-radius: 6px; }
+.scanner .canto.br { bottom: 0; right: 0; border-left: 0; border-top: 0; border-bottom-right-radius: 6px; }
+.scanner .linha {
+  position: absolute; left: 6%; right: 6%; height: 1px;
+  background: linear-gradient(90deg, transparent, #ffffff5c 50%, transparent);
+  animation: feira-sweep 4.6s cubic-bezier(.5,0,.5,1) infinite;
+}
+@keyframes feira-sweep {
+  0%   { top: 4%;  opacity: 0; }
+  16%  { opacity: .9; }
+  84%  { opacity: .9; }
+  100% { top: 96%; opacity: 0; }
+}
+/* Ao reconhecer, a moldura confirma em verde e a varredura para — o único uso do acento aqui. */
+.feira-kiosk.reconhecido .scanner .canto { border-color: var(--k-verde-viva); opacity: 1; }
+.feira-kiosk.reconhecido .scanner .linha { opacity: 0; animation: none; }
+
+/* Selo AO VIVO */
+.ao-vivo {
+  position: absolute; top: clamp(20px, 2.2vw, 32px); left: clamp(20px, 2.2vw, 32px);
+  z-index: 3;
+  display: flex; align-items: center; gap: 9px;
+  padding: 6px 13px;
+  background: #04070b99;
+  backdrop-filter: blur(8px);
+  border: 1px solid #ffffff1f;
+  border-radius: 999px;
+  font-size: clamp(10px, .95vw, 12px);
+  font-weight: 600; letter-spacing: .14em;
+  color: var(--k-clara);
+}
+.ao-vivo .ponto {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #ff4d4d;
+  box-shadow: 0 0 0 0 #ff4d4d66;
+  animation: feira-vivo 2.4s ease-out infinite;
+}
+@keyframes feira-vivo {
+  0% { box-shadow: 0 0 0 0 #ff4d4d55; }
+  60%, 100% { box-shadow: 0 0 0 7px transparent; }
+}
+
+/* Estado da câmera (reconectando / sem sinal) */
+.cam-estado {
+  position: absolute; inset: 0; z-index: 4;
+  display: none;
+  flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+  background: #04070bec; color: var(--k-clara-2);
+  text-align: center; padding: 24px;
+}
+.cam-estado.mostra { display: flex; }
+.cam-estado .spin {
+  width: 32px; height: 32px; border-radius: 50%;
+  border: 2px solid #ffffff1f; border-top-color: var(--k-verde-viva);
+  animation: feira-spin 1s linear infinite;
+}
+@keyframes feira-spin { to { transform: rotate(360deg); } }
+
+.cam-legenda {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+  padding: clamp(18px, 2.1vw, 30px);
+  display: flex; align-items: center; gap: 9px;
+  font-size: clamp(12px, 1.05vw, 15px); color: var(--k-clara-2);
+}
+.cam-legenda svg { width: 17px; height: 17px; flex: none; color: var(--k-verde-viva); }
+.cam-legenda b { color: var(--k-clara); font-weight: 600; }
+
+/* ── Painel de informação (marfim) ─────────────────────────────────────────── */
+.feira-info {
+  position: relative;
+  border-radius: 22px;
+  background: linear-gradient(155deg, var(--k-papel) 0%, var(--k-papel-2) 100%);
+  box-shadow: 0 40px 90px -40px #000, inset 0 1px 0 #ffffff80;
+  color: var(--k-tinta);
+  /* Coluna com rolagem de segurança: `margin-block:auto` no filho centraliza quando há
+     espaço e colapsa para 0 quando o conteúdo é mais alto que o painel (TV 720p, laptop),
+     deixando rolar a partir do topo em vez de CORTAR o topo — o que `align-items:center`
+     + overflow faria. Na TV 1080p do estande sobra espaço e fica centralizado. */
+  display: flex; flex-direction: column;
+  padding: clamp(24px, 3vw, 56px);
+  min-height: 0; overflow-y: auto;
+}
+.feira-estado { width: 100%; margin-block: auto; }
+
+/* `hidden` GANHA DE TUDO. Sem o `!important` isto virou bug em produção: a regra de duas
+   colunas (`.feira-kiosk:not(.com-camera) .reveal { display: grid }`, 4 classes) vencia o
+   `.reveal[hidden] { display: none }` (1 classe + 1 atributo) por especificidade, e o
+   kiosk mostrava os DOIS estados ao mesmo tempo — "Aproxime o veículo" e "Bem-vindo!" com
+   a placa vazia, um por cima do outro, na tela do evento.
+
+   É a mesma armadilha do `button:hover` de 03/09: uma regra nova, mais específica, passa
+   por cima de um invariante que ninguém pensou em proteger. `hidden` é invariante do
+   documento — se o atributo está lá, o elemento não existe na tela. Ponto. */
+.feira-estado[hidden],
+.feira-kiosk [hidden] { display: none !important; }
+
+/* Idle — invitação calma, quase sem movimento */
+.idle { max-width: 30ch; }
+.idle-icone {
+  width: clamp(56px, 5vw, 72px); height: clamp(56px, 5vw, 72px);
+  margin-bottom: clamp(22px, 2.4vw, 32px);
+  display: grid; place-items: center;
+  color: var(--k-tinta);
+  border: 1px solid var(--k-linha);
+  border-radius: 16px;
+  background: #ffffff66;
+}
+.idle-icone svg { width: 54%; height: 54%; }
+.idle h1 {
+  margin: 0 0 14px;
+  font-size: clamp(30px, 3.6vw, 52px);
+  font-weight: 800; letter-spacing: -.03em; line-height: 1.02;
+}
+.idle p {
+  margin: 0;
+  font-size: clamp(15px, 1.35vw, 19px);
+  color: var(--k-tinta-2); line-height: 1.5;
+}
+/* A linha de estado é a ÚNICA coisa que se move no idle, e agora é o único texto de
+   estado na tela — então ela precisa ser legível da distância de quem olha um estande, não
+   um rodapé de 12px. Vira uma "pílula" com fundo: à distância, um pedaço de texto solto
+   sobre marfim some, e o contorno é o que dá a ela o peso de indicador. */
+.idle .aguardando {
+  margin-top: clamp(22px, 2.4vw, 32px);
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 9px 16px 9px 14px;
+  border-radius: 999px;
+  background: #ffffff9c;
+  border: 1px solid var(--k-linha);
+  font-size: clamp(14px, 1.25vw, 18px); color: var(--k-tinta-2);
+  font-weight: 600; letter-spacing: -.005em;
+  /* Sem isto a pílula muda de largura a cada frase ("Aguardando veículo" →
+     "Processando a imagem…") e pula na tela; centrada, ela cresce para os dois lados. */
+  justify-content: center;
+  /* Mensagem longa (as de erro) quebra em duas linhas: sem isto a bolinha ficava centrada
+     na ALTURA do bloco de duas linhas, solta no meio, em vez de junto da primeira linha. */
+  align-items: center;
+  max-width: min(46ch, 100%);
+  text-align: left;
+  line-height: 1.35;
+  transition: background .2s ease-out, border-color .2s ease-out, color .2s ease-out;
+}
+.idle .aguardando .bolinha {
+  width: 9px; height: 9px; border-radius: 50%; background: var(--k-verde-txt);
+  flex: none;
+  animation: feira-espera 1.8s ease-in-out infinite;
+}
+@keyframes feira-espera { 0%,100% { opacity: .28; } 50% { opacity: 1; } }
+
+/* "Processando" tem aparência PRÓPRIA: a bolinha vira um anel girando e a pílula acende em
+   verde. Antes o mesmo ponto piscando servia para "esperando" e para "lendo agora" — os
+   dois estados eram indistinguíveis justo no momento em que o visitante quer saber se a
+   máquina reagiu a ele. */
+.idle .aguardando.processando {
+  background: #12864a14;
+  border-color: #12864a3d;
+  color: var(--k-verde-txt);
+}
+.idle .aguardando.processando .bolinha {
+  background: none;
+  border: 2px solid #12864a3d;
+  border-top-color: var(--k-verde-txt);
+  width: 14px; height: 14px;
+  animation: feira-spin .8s linear infinite;
+}
+
+/* Reveal — o ÚNICO momento autoral de movimento */
+/* `max-width` como no `.idle` (30ch): sem ele, a 1920 a linha da spec ficava com 639px e
+   um VÃO de 442px entre "COMBUSTÍVEL" e "Flex" — a associação rótulo→valor se perde
+   exatamente à distância de TV de estande, que é o caso de uso. */
+.reveal { width: 100%; max-width: 560px; }
+.reveal[hidden] { display: none; }
+
+/* O card do reveal é uma COLUNA FLEX, e a captura é a única parte que cede altura.
+
+   Ela é o bloco mais alto do card e o card não pode crescer: o "Próximo veículo" mora no
+   rodapé e é o ÚNICO caminho de volta ao idle (`revelar()` não tem timeout). Um `height`
+   em vh na imagem já ajudava, mas continuava sendo um chute — o resto do card (cumprimento
+   + placa + ficha + mensagem) varia de altura com o conteúdo da ficha, então nenhum valor
+   fixo serve para todos os casos: a 1440x900 sobrava 15px e a 1280x720 sobravam 81px.
+
+   Aqui a conta é do navegador: o card não passa da altura do painel (`max-height:100%`),
+   todo mundo é `flex:none` e só a captura é `flex: 0 1 auto` com `min-height:0`, então é
+   dela que sai o que faltar. O painel manteve seu `overflow-y:auto` como rede — mas ele
+   deixa de ser o mecanismo, que num kiosk (ninguém rola a tela do estande) não funcionava. */
+/* A CAPTURA dimensiona pela ALTURA, e a largura sai da razão de aspecto do quadro.
+
+   O caminho errado que isto substitui: `width:100%` + `aspect-ratio:16/9` na imagem. A
+   largura do card fixava a altura (620px de card = 349px de imagem), o card passava de
+   1023px numa tela de 900px e jogava o "Próximo veículo" — o ÚNICO caminho de volta ao
+   idle, porque `revelar()` não tem timeout — fora da tela.
+
+   O outro caminho errado: deixar a imagem `flex-shrink:1` para "ceder o que faltar". Ela
+   cedia SEMPRE, até o piso, mesmo com 69px de folga no painel (medido: card 705px num
+   painel de 774px, imagem em 120px de 270px pedidos). Encolher no flex não é condicional
+   a faltar espaço da forma que eu supus.
+
+   O que vale: altura em `vh` (o painel aqui é sempre a tela inteira) e nada de shrink. Sem
+   `max-height:100%` no card, também: com ele o card era CLIPADO (medido: 705px de altura
+   para 762px de conteúdo) e o "Próximo veículo" sumia sem nem a barra de rolagem aparecer
+   — o pior dos dois mundos. A rede continua sendo o `overflow-y:auto` do painel.
+
+   Os tetos por viewport estão calibrados para o card CABER de fato — verificado a
+   1440x900, 1280x720, 768x1024 e 390x844 (ver `verifica_feira.py` no scratchpad). */
+.reveal h1 {
+  margin: 0 0 clamp(16px, 2.2vh, 30px);
+  /* min(vw, vh): não estoura a altura num painel baixo (720p/laptop) nem fica pequeno na
+     TV. O teto está DELIBERADAMENTE abaixo do da placa — o cumprimento acolhe, a placa é
+     que prova a leitura, e era ela que estava perdendo a hierarquia. */
+  font-size: clamp(30px, min(4.4vw, 5.4vh), 62px);
+  font-weight: 800; letter-spacing: -.035em; line-height: .98;
+}
+.reveal h1 .apelido {
+  display: block;
+  margin-top: 8px;
+  font-size: clamp(15px, 1.5vw, 22px);
+  font-weight: 500; letter-spacing: -.01em; color: var(--k-tinta-2);
+}
+
+/* Placa Mercosul — elemento autêntico, herói do painel.
+
+   E agora herói de fato, não só no comentário: media 366px de 751px de painel com
+   glifos de 54px contra os 63px do "Bem-vindo!", ou seja o cumprimento pesava mais que
+   a prova. A placa é o payload da demonstração — é ela que mostra que o sistema LEU. */
+.placa-mercosul {
+  width: min(460px, 94%);
+  margin: 0 0 clamp(18px, 2.2vh, 32px);
+  border-radius: 12px;
+  background: #fbfcfd;
+  border: 3px solid #14161c;
+  box-shadow: 0 16px 34px -16px #0006;
+  overflow: hidden;
+  font-family: var(--fonte-mono, monospace);
+}
+.placa-mercosul .faixa {
+  background: #0a3bce; color: #fff;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 5px 11px;
+  font-size: clamp(9px, .85vw, 12px); font-weight: 700; letter-spacing: .12em;
+}
+.placa-mercosul .faixa .br { display: inline-flex; align-items: center; gap: 6px; }
+.placa-mercosul .faixa .bandeira {
+  width: 15px; height: 11px; border-radius: 2px;
+  background: linear-gradient(#2a9d3f 55%, #f2d024 55% 70%, #2a2f8f 70%);
+}
+.placa-mercosul .numero {
+  color: #14161c; font-weight: 700;
+  /* Teto acima do teto do h1 (56px no bloco apertado, 80px no h1 grande): a placa lidera. */
+  font-size: clamp(32px, min(5.4vw, 7vh), 70px);
+  letter-spacing: clamp(4px, .6vw, 8px);
+  text-align: center;
+  padding: clamp(10px, 1.1vw, 16px) 8px clamp(12px, 1.3vw, 18px);
+  text-indent: clamp(4px, .6vw, 8px);
+}
+
+/* Confirmação da placa — legenda SOB a placa (não um kicker acima do título) */
+.reveal .placa-conf {
+  display: inline-flex; align-items: center; gap: 8px;
+  color: var(--k-verde-txt); font-weight: 600;   /* 5,25:1 — o --k-verde dava 4,11:1 */
+  font-size: clamp(12px, 1.1vw, 15px);
+  margin: 0 0 clamp(16px, 2vh, 28px);
+}
+.reveal .placa-conf svg { width: 17px; height: 17px; }
+
+/* A CAPTURA da leitura — o quadro de onde a placa saiu, com a caixa desenhada.
+
+   É a prova visual que o feed ao vivo dava e que sai da tela quando a câmera está
+   desligada (o padrão). Vive DENTRO do painel marfim, então recebe moldura clara e não
+   a linguagem do palco escuro. `object-fit: contain`: o quadro nunca é cortado, pela mesma
+   razão da caixa da câmera — cortar esconderia justo a região que o detector leu. */
+.rev-captura {
+  /* `width:fit-content` + `margin-inline:auto`: a moldura tem a largura da IMAGEM (que é
+     `width:auto` sobre a altura), e fica centrada no card. Com a moldura em 100% sobrava
+     tarja preta em volta do quadro 16:9. A legenda dentro é `block`, então ela se estica
+     até a largura já definida pela imagem, sem participar da medida. */
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto clamp(16px, 2vh, 26px);
+  background: #0c0f14;
+  border: 1px solid var(--k-linha);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 14px 30px -16px #0007;
+}
+.rev-captura[hidden] { display: none; }
+.rev-captura img {
+  display: block;
+  background: #0c0f14;
+  object-fit: contain;
+  /* `height` manda; `width:auto` deixa a largura sair da razão de aspecto do quadro, então
+     a moldura abraça a foto e não sobra tarja preta dos lados (que num kiosk lê como falha
+     de sinal, não como foto). `max-width` para não vazar num painel estreito.
+
+     A altura vem de `--cap-h`, UM ponto de ajuste — e não de quatro `clamp` soltos
+     espalhados pelas media queries, que foi como eu inverti a hierarquia sem perceber (a
+     foto ficou maior que a placa em TODOS os viewports). A placa é o payload da
+     demonstração e tem de dominar; a captura é prova de apoio. */
+  height: var(--cap-h, clamp(84px, 13vh, 170px));
+  width: auto;
+  max-width: 100%;
+}
+.rev-captura figcaption {
+  padding: 7px 12px;
+  background: #ffffffb3;
+  border-top: 1px solid var(--k-linha);
+  font-size: clamp(10px, .9vw, 12px);
+  font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--k-tinta-2);
+  text-align: left;
+}
+
+/* Ficha — lista de specs (não grade de tiles) */
+.ficha-specs { border-top: 1px solid var(--k-linha); }
+/* Placa sem ficha cadastrada: sem isto sobrava um FIO ÓRFÃO de 1px atravessando o painel
+   entre "Placa reconhecida" e o botão, com nada embaixo. */
+.ficha-specs:empty { border-top: 0; }
+.spec {
+  display: flex; align-items: center; gap: 14px;
+  padding: clamp(9px, 1.5vh, 15px) 2px;
+  border-bottom: 1px solid var(--k-linha);
+}
+.spec .ic {
+  width: clamp(22px, 2vw, 26px); height: clamp(22px, 2vw, 26px);
+  flex: none; color: var(--k-tinta-2);
+}
+.spec .ic svg { width: 100%; height: 100%; }
+.spec.destaque .ic { color: var(--k-verde-txt); }
+.spec .rot {
+  font-size: clamp(11px, 1vw, 13px); color: var(--k-tinta-2);
+  letter-spacing: .09em; text-transform: uppercase; font-weight: 600;
+  flex: none;                        /* o rótulo não encolhe; a sobra é do valor */
+}
+/* O fio que atravessa o vão. `flex: 1` — e por isso o `.val` NÃO pode mais ter
+   `margin-left: auto`: margem automática é resolvida antes do flex-grow e comeria todo o
+   espaço livre, deixando a guia com 0px. `align-self: end` assenta o fio na linha de base
+   do valor, não no meio da linha. */
+.spec .guia {
+  flex: 1 1 auto; min-width: 14px;
+  align-self: end;
+  margin: 0 12px clamp(6px, .9vh, 9px);
+  border-bottom: 1px dotted var(--k-linha);
+}
+.spec .val {
+  text-align: right;
+  font-size: clamp(17px, 1.7vw, 23px); font-weight: 700; color: var(--k-tinta);
+  letter-spacing: -.01em; line-height: 1.2;
+  /* QUEBRA em duas linhas em vez de truncar. Com `nowrap` + ellipsis, "Volkswagen Nivus
+     Highline 200 TSI" sumia a 1440 (392>349) e a 1280 (371>298) — dado de demonstração
+     desaparecendo em silêncio. O `max-width` também LIMITA o vão até o rótulo. */
+  min-width: 0; max-width: 62%;
+}
+.spec .val.ano { font-variant-numeric: tabular-nums; }
+
+/* Entrada da revelação — exponential ease-out, escalonada, a partir do estado visível */
+/* A cadeia cobre os SETE filhos de `.reveal`, na ordem em que eles aparecem na tela:
+   h1, placa, "Placa reconhecida", CAPTURA, ficha, mensagem, botão. A mensagem e o botão
+   entram DEPOIS da última spec (que vai até .44) para a cascata continuar lendo de cima
+   p/ baixo. `#rev-msg` e `#rev-captura` ficam sempre no DOM (só `hidden` quando não têm
+   conteúdo) — se fossem criados/removidos, o botão trocaria de índice e perderia o delay.
+   Um filho `hidden` consome o índice mas não anima, o que só deixa um degrau de vazio na
+   cascata; trocar por `nth-of-type` não resolveria (são tags diferentes). */
+.feira-kiosk.reconhecido .reveal > * { animation: feira-entra .62s cubic-bezier(.16,1,.3,1) both; }
+.feira-kiosk.reconhecido .reveal > *:nth-child(1) { animation-delay: 0s; }
+.feira-kiosk.reconhecido .reveal > *:nth-child(2) { animation-delay: .06s; }
+.feira-kiosk.reconhecido .reveal > *:nth-child(3) { animation-delay: .12s; }
+.feira-kiosk.reconhecido .reveal > *:nth-child(4) { animation-delay: .18s; }
+.feira-kiosk.reconhecido .reveal > *:nth-child(5) { animation-delay: .24s; }
+.feira-kiosk.reconhecido .reveal > *:nth-child(6) { animation-delay: .48s; }
+.feira-kiosk.reconhecido .reveal > *:nth-child(7) { animation-delay: .56s; }
+.feira-kiosk.reconhecido .ficha-specs .spec { animation: feira-entra .55s cubic-bezier(.16,1,.3,1) both; }
+.feira-kiosk.reconhecido .ficha-specs .spec:nth-child(1) { animation-delay: .26s; }
+.feira-kiosk.reconhecido .ficha-specs .spec:nth-child(2) { animation-delay: .32s; }
+.feira-kiosk.reconhecido .ficha-specs .spec:nth-child(3) { animation-delay: .38s; }
+.feira-kiosk.reconhecido .ficha-specs .spec:nth-child(4) { animation-delay: .44s; }
+@keyframes feira-entra {
+  from { opacity: 0; transform: translateY(16px); filter: blur(6px); }
+  to   { opacity: 1; transform: none; filter: blur(0); }
+}
+
+/* Mensagem de boas-vindas da ficha. O campo existe e é editável na configuração desde
+   sempre; o kiosk simplesmente nunca o exibia — o operador preenchia e nada acontecia. */
+.ficha-msg {
+  margin: clamp(14px, 1.8vh, 22px) 0 0;
+  font-size: clamp(14px, 1.25vw, 18px);
+  line-height: 1.45; color: var(--k-tinta-2);
+}
+.ficha-msg[hidden] { display: none; }
+
+/* Ações do idle: só a linha de estado. O "Forçar leitura" virou ícone na barra do topo
+   (controle de operador não divide o palco com o conteúdo numa vitrine de evento). */
+.idle-acoes { margin-top: clamp(24px, 2.6vw, 34px); display: flex; align-items: center; gap: 16px; }
+
+/* O ícone GIRA enquanto lê — feedback do operador, discreto, na barra. Quem conta a
+   história para o visitante é o status no palco, em texto grande. */
+#btn-forcar.girando svg { animation: feira-spin .9s linear infinite; }
+#btn-forcar:disabled { opacity: .55; cursor: default; }
+
+/* Ação primária "Próximo veículo": o verde da marca marca a AÇÃO (colorize) */
+.btn-avancar {
+  display: inline-flex; align-items: center; gap: 10px;
+  margin-top: clamp(22px, 2.4vw, 30px);
+  padding: 13px 22px; border-radius: 12px; border: 0;
+  background: var(--k-verde); color: #fff; font-family: inherit;
+  font-size: clamp(15px, 1.3vw, 18px); font-weight: 700; cursor: pointer;
+  box-shadow: 0 12px 26px -12px #0f6b3c;
+  transition: background .18s ease-out, transform .1s ease-out;
+}
+.btn-avancar svg { width: 19px; height: 19px; }
+/* Hover ESCURECE. Com o verde vivo aqui, o branco em cima caía para 2,44:1. */
+.btn-avancar:hover { background: var(--k-verde-esc); }
+.btn-avancar:active { transform: translateY(1px); }
+
+/* ── Responsivo: retrato / telas estreitas empilham ──────────────────────────
+
+   E o PAINEL passa a ter prioridade sobre a câmera. A ação primária ("Próximo veículo")
+   mora no rodapé do painel e é o ÚNICO caminho de volta ao idle — `revelar()` não tem
+   timeout. Com `1.1fr 1fr` sobrando para a câmera, o painel ficava com 438px para 566px de
+   conteúdo e o botão caía 104px FORA da tela a 768x1024 (153px a 390x844): o kiosk travava
+   no card, e sem nenhuma affordance de rolagem. */
+@media (max-width: 940px), (max-aspect-ratio: 1/1) {
+  /* `.com-camera` porque sem câmera o palco JÁ é uma coluna, e ali não há linha de câmera
+     para dimensionar — aplicar `min-content` na 1ª linha faria o painel (a única linha)
+     encolher para o conteúdo e perder a centralização. */
+  .feira-kiosk.com-camera .feira-palco {
+    grid-template-columns: 1fr;
+    /* `min-content` na câmera, não uma fração: como a caixa já tem o aspecto do quadro,
+       uma fração dava à câmera uma faixa MAIOR do que ela ocupa (122px de palco vazio a
+       390px de largura) enquanto o painel logo abaixo transbordava. Assim a câmera pega
+       exatamente a altura do quadro e todo o resto sobra para o painel. */
+    grid-template-rows: min-content minmax(0, 1fr);
+  }
+  /* Empilhado (tablet/celular) a placa é menor, então a captura acompanha para não passar
+     por cima dela na hierarquia — medido: 123px de foto contra 100px de placa no tablet. */
+  .rev-captura { --cap-h: clamp(64px, 9vh, 96px); }
+  /* `margin-block: 0` no lugar do antigo `align-items: flex-start`, que era INERTE: o
+     painel é `flex-direction: column` e o filho tem `width: 100%`, então alinhar no eixo
+     cruzado não fazia nada ali. Quem centraliza é o `margin-block: auto` do
+     `.feira-estado` — é ele que tem de sair quando o conteúdo é mais alto que o painel. */
+  .feira-estado { margin-block: 0; }
+}
+
+/* ── Alturas apertadas (TV 720p, projetor, laptop, retrato) ───────────────────
+   O painel TEM de caber, pela mesma razão: a ação primária mora no rodapé dele. Então o
+   ritmo vertical aperta em vez de a coluna rolar — a 1280x720 faltavam 8px de 609, e por
+   causa desses 8px o thumb de 10px aparecia sobre o marfim. */
+@media (max-height: 940px), (max-aspect-ratio: 1/1) {
+  .feira-info { padding: clamp(18px, 2.4vw, 40px); }
+  .reveal h1 {
+    font-size: clamp(24px, min(3.4vw, 4.6vh), 42px);
+    margin-bottom: clamp(8px, 1.2vh, 14px);
+  }
+  .reveal h1 .apelido { margin-top: 5px; }
+  .placa-mercosul { margin-bottom: clamp(12px, 1.6vh, 20px); }
+  .placa-mercosul .numero {
+    font-size: clamp(28px, min(4vw, 5.4vh), 50px);
+    padding: clamp(7px, .9vh, 11px) 8px clamp(8px, 1vh, 12px);
+  }
+  .reveal .placa-conf { margin-bottom: clamp(10px, 1.4vh, 18px); }
+  .spec { padding: clamp(6px, 1vh, 11px) 2px; }
+  .spec .val { font-size: clamp(15px, 1.5vw, 20px); }
+  .ficha-msg { margin-top: clamp(10px, 1.2vh, 16px); }
+  .btn-avancar { margin-top: clamp(12px, 1.5vh, 20px); }
+  /* A captura é o bloco mais alto do card: num painel baixo ela cede altura primeiro,
+     senão empurra o "Próximo veículo" — o ÚNICO caminho de volta ao idle — fora da tela. */
+  .rev-captura { margin-bottom: clamp(10px, 1.4vh, 18px); }
+  /* Altura apertada: a captura é o bloco mais alto do card e cede primeiro, senão empurra
+     o "Próximo veículo" fora da tela. Calibrado a 1280x720 e 390x844. */
+  .rev-captura { --cap-h: clamp(56px, 7.5vh, 92px); }
+}
+
+/* Telas MUITO baixas (celular pequeno deitado, 360x640, projetor antigo). Aqui não há
+   ajuste fino que salve: o card tem 7 blocos e a tela tem 520px de painel. A captura sai
+   de cena — ela é a prova de apoio, e a placa (o payload) tem prioridade absoluta sobre
+   ela. Medido a 360x640: 570px de card em 520px de painel, com o botão 170px fora. */
+@media (max-height: 700px) and (max-width: 700px) {
+  .rev-captura { display: none; }
+}
+
+/* ── Totem: TV EM PÉ (retrato alto, tipo 1080x1920) ───────────────────────────
+   Não é "celular grande": a largura ainda dá 1080px e a altura é enorme. Sem isto o card
+   (774px) boiava no meio de 1813px de painel, com ~1000px de marfim vazio em volta — numa
+   tela de estande isso lê como página quebrada, não como composição.
+
+   O conteúdo cresce para ocupar o totem, mantendo a medida de leitura. */
+/* `min-width: 900px`: um totem de TV em pé tem 1080px de largura. A 768px isto pegava o
+   TABLET em retrato, que é um aparelho de mão a 40cm do olho e não um totem a 3m — o
+   conteúdo crescia como numa TV e o painel passava a rolar (medido: 960px de conteúdo em
+   936px de painel). Tablet continua no layout normal.
+
+   Sem piso de aspecto: uma TV 1080x1920 tem razão 0,5625, e o `min-aspect-ratio: 3/5`
+   (0,6) que eu tinha posto aqui EXCLUÍA justamente o totem que a regra existe para
+   atender — a media query não casava e a tela ficava com o conteúdo pequeno, grudado no
+   topo, com metade do painel vazia embaixo. A largura já basta para separar totem de
+   celular. */
+@media (max-aspect-ratio: 1/1) and (min-width: 900px) {
+  .feira-kiosk:not(.com-camera) .idle h1 { font-size: clamp(48px, 7vw, 96px); }
+  .feira-kiosk:not(.com-camera) .idle p  { font-size: clamp(20px, 2.4vw, 34px); }
+  .feira-kiosk:not(.com-camera) .idle { max-width: 22ch; }
+  .idle-icone { width: clamp(72px, 9vw, 120px); height: clamp(72px, 9vw, 120px); }
+  .idle .aguardando { font-size: clamp(18px, 2vw, 28px); padding: 12px 22px 12px 20px; }
+
+  /* De volta ao centro: a query de empilhamento zera o `margin-block` do `.feira-estado`
+     (certo no tablet/celular, onde o conteúdo enche a tela). No totem sobra ~metade da
+     altura, e sem isto o card fica grudado no topo com um vazio enorme embaixo. */
+  .feira-estado { margin-block: auto; }
+  .feira-kiosk:not(.com-camera) .reveal { max-width: 84vw; }
+  .feira-kiosk .reveal h1 { font-size: clamp(44px, 6.2vw, 88px); }
+  /* O apelido acompanha o cumprimento: no totem ele ficava em 22px sob um "Bem-vindo!" de
+     88px — de longe some, e é ele que personaliza a saudação. */
+  .feira-kiosk .reveal h1 .apelido { font-size: clamp(22px, 2.4vw, 36px); margin-top: 12px; }
+  /* `.feira-kiosk` na frente para vencer a regra de tela-cheia da linha ~218
+     (`.feira-kiosk:not(.com-camera) .placa-mercosul .numero`), que é mais específica que
+     um `.placa-mercosul .numero` solto e mantinha a placa em 65px no totem. */
+  .feira-kiosk .placa-mercosul { width: min(78vw, 760px); }
+  .feira-kiosk:not(.com-camera) .placa-mercosul .numero { font-size: clamp(56px, 9vw, 124px); }
+  .feira-kiosk .reveal .placa-conf { font-size: clamp(16px, 1.9vw, 26px); }
+  /* A captura é PROVA DE APOIO, não a heroína: teto em 30% da altura da placa+moldura para
+     ela não virar o maior objeto da tela. Sem esse teto ela crescia com o `vh` do totem e
+     invertia a hierarquia — a foto dominava e a placa, que é o payload da demonstração,
+     ficava menor que ela. */
+  .feira-kiosk .rev-captura { --cap-h: clamp(96px, 7vh, 150px); }
+  .spec { padding: clamp(14px, 1.8vh, 24px) 2px; }
+  .spec .rot { font-size: clamp(14px, 1.5vw, 20px); }
+  .spec .val { font-size: clamp(20px, 2.4vw, 34px); }
+  .spec .ic { width: clamp(28px, 3vw, 40px); height: clamp(28px, 3vw, 40px); }
+  .ficha-msg { font-size: clamp(18px, 2vw, 28px); }
+  .btn-avancar { font-size: clamp(20px, 2.2vw, 30px); padding: 18px 32px; }
+  .btn-avancar svg { width: 26px; height: 26px; }
+}

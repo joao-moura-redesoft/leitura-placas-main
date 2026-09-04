@@ -34,6 +34,46 @@ body {
 }
 :focus:not(:focus-visible) { outline: none; }
 
+/* ── Link de salto ──
+   Invisivel por posicionamento (nao por display:none nem visibility:hidden, que
+   tirariam o elemento da ordem de foco e o tornariam inalcancavel justamente
+   para quem ele serve). Aparece ancorado no topo ao receber foco. */
+.salto-conteudo {
+  position: absolute;
+  left: var(--e-3);
+  top: -100px;
+  z-index: 700;
+  background: var(--marca-btn);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 14px;
+  border-radius: 0 0 var(--r-2) var(--r-2);
+  text-decoration: none;
+  box-shadow: var(--sombra-3);
+  transition: top var(--t-rapida);
+}
+.salto-conteudo:focus { top: 0; }
+
+/* Alvo do salto: `tabindex="-1"` no <main> permite receber foco por programa,
+   e este outline:none evita que o anel de foco desenhe uma moldura em volta da
+   pagina inteira depois do salto — o foco esta la para o teclado continuar
+   dali, nao para ser visto. */
+main:focus { outline: none; }
+
+/* Texto so para leitor de tela. Usado em <th> de coluna de acoes, que precisa
+   de nome acessivel mas nao de rotulo visivel. Nao usa display:none porque
+   isso o esconderia TAMBEM do leitor de tela, que e o unico publico dele. */
+.oculto-visual {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ── Navbar ── */
 nav {
   background: var(--superficie);
@@ -43,11 +83,29 @@ nav {
   display: flex;
   align-items: center;
   gap: 2px;
-  height: 56px;
+  /* min-height, nao height. A barra e `flex-wrap: wrap` e tem 8 itens: numa
+     largura intermediaria (768px do iPad em retrato entra exatamente nessa
+     faixa, e o nome do usuario pode ser longo) os itens quebram para uma
+     segunda linha que, com altura TRAVADA em 56px, era desenhada FORA da caixa
+     da barra — texto da nav por cima do conteudo da pagina, sem fundo. */
+  min-height: 56px;
   position: sticky;
   top: 0;
   z-index: 100;
   flex-wrap: wrap;
+}
+/* Estado ROLADO — o bug de a barra "mesclar" com a pagina.
+   A barra e branca (--superficie) e os cards tambem sao brancos: a unica
+   separacao no repouso e 1px de --borda, que da 1,20:1 contra um card branco,
+   e uma sombra de 4% de opacidade. Na pratica, ao descer o scroll o card
+   passava por baixo e as duas superficies viravam uma so — nao dava para ver
+   onde acabava a barra e comecava a pagina.
+   A classe .rolado e posta pelo app.js a partir de ~4px de scroll: no topo a
+   barra fica rente (sem sombra parasita), e assim que a pagina sai do topo ela
+   sobe para um plano visivelmente acima. */
+nav.rolado {
+  border-bottom-color: var(--borda-forte);
+  box-shadow: var(--sombra-topbar);
 }
 /* Sem backdrop-filter aqui de propósito. A barra é sticky e fica por cima das
    páginas de câmera, onde o conteúdo embaixo é MJPEG ao vivo: desfocar o fundo
@@ -93,7 +151,11 @@ nav a:not(.nav-brand) {
   white-space: nowrap;
   position: relative;
 }
-nav a:not(.nav-brand):hover { color: var(--marca-texto); background: var(--marca-fraca); }
+/* Hover com fundo VISIVEL e texto que escurece. O par anterior
+   (--marca-texto sobre --marca-fraca) invertia o efeito: o item apontado caia
+   de 7,58:1 para 4,79:1 enquanto o fundo mudava so 1,047:1 — quem passava o
+   mouse via o item FICAR mais apagado que os vizinhos. */
+nav a:not(.nav-brand):hover { color: var(--marca-escura); background: var(--marca-hover); }
 
 /* Página atual: base.html marca com aria-current="page". Uma barra fina embaixo
    em vez de fundo colorido — não compete com o hover. */
@@ -107,8 +169,42 @@ nav a[aria-current="page"]::after {
   border-radius: 2px 2px 0 0;
 }
 
-.nav-logout { margin-left: auto !important; font-size: 13px !important; color: var(--texto-3) !important; }
-.nav-logout:hover { color: var(--texto-2) !important; background: var(--superficie-3) !important; }
+/* Bloco de identidade + sair, empurrado para a direita como uma unidade.
+   Antes os dois <a> tinham `margin-left:auto` cada um e o segundo desfazia com
+   `style="margin-left:0 !important"` inline — o que so funcionava enquanto a
+   barra nao quebrava de linha. */
+.nav-conta { margin-left: auto; display: flex; align-items: center; gap: var(--e-1); }
+/* Divisoria antes do bloco: separa "quem sou eu / sair" da NAVEGACAO. Sem ela
+   o nome do usuario lia como se fosse mais um item de menu. */
+.nav-conta::before {
+  content: '';
+  width: 1px; height: 20px;
+  background: var(--borda);
+  margin-right: var(--e-2);
+  flex-shrink: 0;
+}
+
+/* O NOME DO USUARIO. Estava em --texto-3 (#94a3b8 = 2,56:1 sobre a barra
+   branca): ilegivel, e com exatamente o mesmo tamanho e a mesma cor do link
+   "Sair" ao lado — os dois liam como um unico texto cinza indistinto, sem dar
+   para saber qual era a identidade e qual era a acao. Agora o nome e texto de
+   verdade (--texto-2, 7,58:1) com peso, e "Sair" e visivelmente subordinado. */
+.nav-conta .nav-usuario {
+  font-size: 13px !important;
+  font-weight: 600;
+  color: var(--texto-2) !important;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-conta .nav-usuario:hover {
+  color: var(--marca-texto) !important;
+  background: var(--marca-fraca) !important;
+}
+
+.nav-logout { font-size: 13px !important; color: var(--texto-3) !important; }
+.nav-logout:hover { color: var(--erro) !important; background: var(--erro-bg) !important; }
 
 /* Menu suspenso por CLIQUE — hover não existe em tablet, e o técnico usa tablet em campo */
 .nav-menu { position: relative; }
@@ -117,8 +213,8 @@ nav a[aria-current="page"]::after {
   padding: 6px 10px; border-radius: var(--r-1); white-space: nowrap; cursor: pointer;
   font-family: inherit; transition: color var(--t-rapida), background var(--t-rapida);
 }
-.nav-menu-trigger:hover { color: var(--marca-texto); background: var(--marca-fraca); }
-.nav-menu-trigger[aria-expanded="true"] { color: var(--marca-texto); background: var(--marca-fraca); }
+.nav-menu-trigger:hover { color: var(--marca-escura); background: var(--marca-hover); }
+.nav-menu-trigger[aria-expanded="true"] { color: var(--marca-escura); background: var(--marca-hover); }
 
 .nav-menu-itens {
   display: none; position: absolute; top: calc(100% + 4px); left: 0; min-width: 216px;
@@ -136,8 +232,19 @@ nav a[aria-current="page"]::after {
   to   { opacity: 1; transform: none; }
 }
 .nav-menu-itens a { display: block; padding: 8px 12px !important; border-radius: var(--r-1); }
+/* O item apontado PELO MOUSE e o item alcancado PELA SETA recebem o mesmo
+   destaque: o menu e operavel por teclado (ver app.js) e sem isto o foco
+   andava pelo menu sem nada indicar onde estava. */
+.nav-menu-itens a:hover,
+.nav-menu-itens a:focus-visible {
+  color: var(--marca-escura);
+  background: var(--marca-hover);
+  outline: none;
+}
 .nav-menu-itens a small { color: var(--texto-3); font-weight: 400; }
-.nav-sep { height: 1px; background: var(--superficie-3); margin: 5px 8px; }
+/* --superficie-3 dava 1,096:1 contra o painel branco do menu: o separador
+   entre "Documentacao" e "Cadastro avulso" simplesmente nao aparecia. */
+.nav-sep { height: 1px; background: var(--borda); margin: 5px 8px; }
 
 /* Rótulo de seção dentro do menu ("Cadastro avulso"), antes inline no base.html */
 .nav-menu-secao {
@@ -212,7 +319,10 @@ th {
   text-align: left;
   font-size: 11px;
   font-weight: 650;
-  color: var(--texto-3);
+  /* --texto-2 e nao --texto-3: 11px em MAIUSCULA com letter-spacing e o caso
+     mais dificil de ler da tela, e cabecalho de coluna e o que diz ao operador
+     o que ele esta conferindo. 6,92:1 sobre --superficie-2. */
+  color: var(--texto-2);
   text-transform: uppercase;
   letter-spacing: .06em;
   border-bottom: 1px solid var(--borda);
@@ -226,7 +336,9 @@ td {
 }
 tr:last-child td { border-bottom: none; }
 tbody tr { transition: background var(--t-rapida); }
-tbody tr:hover { background: var(--marca-fraca); }
+/* Mesmo motivo do hover da nav: --marca-fraca da 1,047:1 contra a linha
+   branca. Percorrer o historico com o mouse nao destacava linha nenhuma. */
+tbody tr:hover { background: var(--marca-hover); }
 
 /* ── Form elements ── */
 input, select, textarea {
@@ -252,7 +364,17 @@ input:disabled, select:disabled, textarea:disabled {
   background: var(--superficie-3); color: var(--texto-3); cursor: not-allowed;
 }
 input::placeholder, textarea::placeholder { color: var(--texto-3); }
-input[type="checkbox"], input[type="radio"] { accent-color: var(--marca); }
+/* 16px em vez dos 13px nativos, e a margem vertical leva a caixa de linha do
+   <label> a 24px — o <label> e o alvo de toque real, porque clicar nele
+   alterna o controle. `flex-shrink: 0` para a caixa nao ser comprimida dentro
+   dos labels que sao flex. */
+input[type="checkbox"], input[type="radio"] {
+  accent-color: var(--marca);
+  width: 16px;
+  height: 16px;
+  margin: 4px 0;
+  flex-shrink: 0;
+}
 
 label { display: block; font-size: 13px; color: var(--texto-2); font-weight: 500; }
 label input, label select { margin-top: var(--e-1); }
@@ -261,14 +383,21 @@ label input, label select { margin-top: var(--e-1); }
    de desenho entre Chrome no tablet e Firefox no desktop. */
 select:not([multiple]):not([size]) {
   appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23616e80' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
   padding-right: 30px;
 }
 
-/* ── Buttons ── */
-button {
+/* ── Buttons ──
+   `button, .btn`: metade das telas tem um <a> imitando botao com padding,
+   raio e cor escritos a mao — e cada copia errou algo diferente (o "+ Novo
+   posto" ficou com #16a34a de fundo, que da 3,30:1 com texto branco e reprova
+   AA; o "Abrir" ficou quase preto num sistema de acao primaria verde). Com
+   `.btn` valendo aqui, um <a class="btn"> ganha o botao de verdade, e as
+   variantes (.btn-secundario, .btn-perigo, .btn-pequeno) passam a valer para
+   ele tambem. */
+button, .btn {
   padding: 9px 16px;
   border-radius: var(--r-2);
   border: 1px solid transparent;
@@ -278,7 +407,9 @@ button {
   transition: background var(--t-rapida), transform var(--t-rapida),
               box-shadow var(--t-rapida), border-color var(--t-rapida);
   font-family: inherit;
-  background: var(--marca);
+  /* --marca-btn, nao --marca: branco sobre #16a34a da 3,30:1 e reprova WCAG AA
+     (min. 4,5:1 para 14px). #15803d da 5,02:1 com o mesmo verde de marca. */
+  background: var(--marca-btn);
   color: #fff;
   display: inline-flex;
   align-items: center;
@@ -286,9 +417,19 @@ button {
   gap: 6px;
   line-height: 1.35;
   white-space: nowrap;
+  /* Para os <a>: tira o sublinhado e o azul de link herdado. */
+  text-decoration: none;
 }
-button:hover:not(:disabled) { background: var(--marca-forte); box-shadow: var(--sombra-marca); }
-button:active:not(:disabled) { transform: scale(.97); box-shadow: none; }
+/* ATENCAO, ARMADILHA DE ESPECIFICIDADE — leia antes de estilizar um <button>.
+   Este seletor vale (0,2,1): um elemento + :hover + :not(). Um override de UMA
+   classe, tipo `.minha-aba:hover`, vale (0,2,0) e PERDE — o botao fica com o
+   fundo verde primario por cima do seu, e o texto do componente costuma virar
+   ilegivel em cima dele. Isso ja aconteceu com .cfg-tab (1,52:1), .feira-aba
+   (1,81:1) e .doc-tab (que ficava identica a aba ativa).
+   A regra: todo override de hover de button escreve `:hover:not(:disabled)`,
+   para empatar em especificidade e vencer por ordem de declaracao. */
+button:hover:not(:disabled), a.btn:hover { background: var(--marca-btn-hover); box-shadow: var(--sombra-marca); }
+button:active:not(:disabled), a.btn:active { transform: scale(.97); box-shadow: none; }
 button:disabled { opacity: .5; cursor: not-allowed; transform: none !important; box-shadow: none; }
 
 /* Variantes — substituem o `style="background:#fee2e2;color:#b91c1c;border:..."`
@@ -298,17 +439,17 @@ button:disabled { opacity: .5; cursor: not-allowed; transform: none !important; 
   color: var(--texto-2);
   border-color: var(--borda-forte);
 }
-.btn-secundario:hover:not(:disabled) {
+.btn-secundario:hover:not(:disabled), a.btn-secundario:hover {
   background: var(--superficie-2); color: var(--texto);
   border-color: var(--texto-3); box-shadow: var(--sombra-1);
 }
 .btn-perigo { background: var(--erro-bg); color: var(--erro); border-color: var(--erro-borda); }
-.btn-perigo:hover:not(:disabled) {
+.btn-perigo:hover:not(:disabled), a.btn-perigo:hover {
   background: var(--erro); color: #fff; border-color: var(--erro);
   box-shadow: 0 4px 14px rgba(185,28,28,.28);
 }
 .btn-fantasma { background: transparent; color: var(--texto-2); }
-.btn-fantasma:hover:not(:disabled) { background: var(--superficie-3); color: var(--texto); box-shadow: none; }
+.btn-fantasma:hover:not(:disabled), a.btn-fantasma:hover { background: var(--superficie-3); color: var(--texto); box-shadow: none; }
 .btn-pequeno { padding: 5px 10px; font-size: 13px; }
 
 /* Botão ocupado: `<button class="carregando">` troca o conteúdo por um giro.
@@ -405,7 +546,7 @@ button.carregando::after {
 .selo-ao-vivo::before {
   content: '';
   width: 6px; height: 6px; border-radius: 50%;
-  background: #ef4444;
+  background: var(--vivo);
   box-shadow: 0 0 0 0 rgba(239,68,68,.7);
   animation: pulso-vivo 1.8s ease-out infinite;
 }
@@ -538,8 +679,8 @@ button.carregando::after {
 }
 .log-line:last-child { border-bottom: none; }
 .log-INFO    { color: var(--painel-texto); }
-.log-WARNING { color: #fbbf24; }
-.log-ERROR   { color: #f87171; }
+.log-WARNING { color: var(--painel-aviso); }
+.log-ERROR   { color: var(--painel-erro); }
 .log-DEBUG   { color: var(--painel-texto-3); }
 
 /* Barra de rolagem do painel escuro — a clara some no fundo escuro. */
@@ -574,8 +715,11 @@ button.carregando::after {
   margin-bottom: var(--e-3);
   border: 1px solid transparent;
 }
-.alert-err  { background: #fef2f2; color: #dc2626; border-color: var(--erro-borda); }
-.alert-ok   { background: var(--marca-fraca); color: var(--marca); border-color: var(--marca-borda); }
+/* Eram as duas ultimas cores literais do arquivo — justamente o que o
+   comentario do topo proibe. E o .alert-ok, que e o retorno de toda operacao
+   bem-sucedida do sistema, estava em --marca sobre --marca-fraca = 3,15:1. */
+.alert-err  { background: var(--erro-bg); color: var(--erro); border-color: var(--erro-borda); }
+.alert-ok   { background: var(--ok-bg);   color: var(--ok);   border-color: var(--ok-borda); }
 .alert a { color: inherit; font-weight: 600; }
 
 /* ── Aviso global (toast) ──
@@ -586,9 +730,16 @@ button.carregando::after {
 #aviso-global {
   display: none;
   position: fixed;
-  top: 68px;
+  /* Ancorado na altura REAL da barra, nao em 68px fixos: a nav e
+     `flex-wrap: wrap` e cresce quando os itens quebram de linha (tablet em
+     retrato), e o aviso caia por cima dela. */
+  top: calc(var(--altura-nav, 56px) + var(--e-3));
   left: 50%;
-  z-index: 300;
+  /* Acima do modal (400) e do visualizador de imagem (500). Estava em 300, ou
+     seja: um erro de validacao disparado de DENTRO de um modal era pintado por
+     baixo do proprio modal e o operador nunca via por que o salvamento falhou.
+     O aviso e o unico canal de erro do sistema — tem que ser o topo da escala. */
+  z-index: 600;
   max-width: min(680px, 94vw);
   box-shadow: var(--sombra-3);
   border-radius: var(--r-2);
@@ -720,7 +871,7 @@ button.carregando::after {
   min-width: 32px;
   box-shadow: none;
 }
-.visu-btn:hover:not(:disabled) { background: #2b3a4d; box-shadow: none; }
+.visu-btn:hover:not(:disabled) { background: var(--painel-hover); box-shadow: none; }
 .visu-btn:disabled { opacity: .35; }
 .visu-btn.ativo { background: var(--marca); border-color: var(--marca); color: #fff; }
 .visu-zoom {
@@ -853,7 +1004,7 @@ code, .cod {
 }
 .barra > div {
   height: 100%;
-  background: linear-gradient(90deg, #ef4444, #dc2626);
+  background: linear-gradient(90deg, var(--vivo), var(--vivo-forte));
   border-radius: var(--r-pill);
   transition: width var(--t-saida);
 }
@@ -900,17 +1051,92 @@ code, .cod {
 .nao-quebra{ white-space: nowrap; }
 .oculto    { display: none !important; }
 
+/* ── Alvo de toque em link de tabela ──
+   WCAG 2.5.8 (AA) pede 24px na menor dimensao. Um <a> de texto dentro de <td>
+   media 17px de altura: no tablet, acertar "ALTIPLANO" ou "area frente" exigia
+   precisao de mouse. O padding vertical vira alvo de 25px.
+
+   Vale para todo <a> em celula (inclusive .link, .link-forte e os links soltos
+   de area do posto), menos os que ja SAO botao — .btn tem padding proprio.
+
+   Sem `inline-block` o padding nao conta para a caixa: em elemento inline o
+   navegador aumenta a area de clique mas nao a caixa de layout, e a linha de
+   baixo passaria por cima. */
+td a:not(.btn):not(.thumb) {
+  display: inline-block;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+/* Link de voltar ("← Postos", "← Entidades") no topo das telas de detalhe.
+   Era um <a> cru de 16px de altura, estilizado a mao em cada template. */
+.link-voltar {
+  display: inline-block;
+  padding: 4px 8px 4px 0;
+  font-size: 13px;
+  color: var(--texto-2);
+  text-decoration: none;
+}
+.link-voltar:hover { color: var(--marca-texto); text-decoration: underline; }
+
 /* Link dentro de tabela/card, na cor da marca */
 .link { color: var(--marca-texto); text-decoration: none; font-weight: 550; }
 .link:hover { text-decoration: underline; }
 
+/* Link que e o NOME da linha (posto, camera, usuario). Fica na cor de texto
+   normal de proposito: pintar a coluna inteira de verde tiraria o destaque de
+   quem realmente e link de acao na mesma tabela. O sublinhado no hover e o que
+   revela que e clicavel. */
+.link-forte { color: var(--texto); text-decoration: none; font-weight: 600; }
+.link-forte:hover { color: var(--marca-texto); text-decoration: underline; }
+
 /* ── Responsive ── */
-@media (max-width: 720px) {
+/* 820px e nao 720px: 768px (iPad em retrato, o aparelho de campo) caia na faixa
+   descoberta entre os dois valores — a barra ja quebrava de linha ali, mas
+   ainda estava com a tipografia e o espacamento de desktop. */
+@media (max-width: 820px) {
   main { padding: var(--e-4); }
-  nav { height: auto; padding: var(--e-2) var(--e-3); gap: 2px; }
+  nav { padding: var(--e-2) var(--e-3); gap: 2px; }
   nav a:not(.nav-brand) { font-size: 12px; padding: 5px 7px; }
   nav a[aria-current="page"]::after { display: none; }
-  .nav-logout { margin-left: 0 !important; }
+  /* Em duas linhas o bloco de conta vai para o inicio da segunda, sem o
+     empurrao para a direita (que criaria um vao esquisito no meio da barra). */
+  .nav-conta { margin-left: 0; }
+  .nav-conta::before { display: none; }
+  .nav-conta .nav-usuario { max-width: 14ch; }
+  /* O aviso vai para baixo: em cima ele disputaria espaco com a barra de duas
+     linhas, e `top` agora e calculado a partir de --altura-nav. */
   #aviso-global { top: auto; bottom: 16px; }
   .modal { padding: var(--e-5); border-radius: var(--r-3); }
 }
+
+/* ─── Botao dividido: acao principal + variante colada ─────────────────────────
+   Uma peca visual so. Existe porque dois botoes soltos lado a lado ficam ambiguos
+   quando a tela repete o par (varios bicos na mesma camera): nao da para saber de
+   relance qual "⚡" pertence a qual bico. Colados, com raio compartilhado e uma
+   divisoria fina no meio, os dois lem como UM controle daquele bico. */
+.btn-split { display: inline-flex; vertical-align: middle; }
+
+.btn-split > button { border-radius: 0; margin: 0; }
+.btn-split > button:first-child {
+  border-top-left-radius: var(--r-2); border-bottom-left-radius: var(--r-2);
+}
+.btn-split > button:last-child {
+  border-top-right-radius: var(--r-2); border-bottom-right-radius: var(--r-2);
+}
+
+/* A variante herda a cor da acao principal e se distingue por um veu claro, nao por
+   outra cor: cor diferente sugeriria acao de outra natureza, e as duas fazem a MESMA
+   coisa — mudam so o orcamento de tempo. */
+.btn-split > .btn-split-alt {
+  padding-left: 10px; padding-right: 10px;
+  background: color-mix(in srgb, var(--marca) 82%, #fff);
+  /* Divisoria: separa as duas metades sem abrir espaco entre elas. */
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, .28);
+}
+.btn-split > .btn-split-alt:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--marca-forte) 82%, #fff);
+}
+/* Enquanto uma metade trabalha, a outra fica visivelmente fora — as duas disputam o
+   mesmo lock de camera no servidor, entao clicar na outra so renderia um 429. */
+.btn-split > button:disabled { opacity: .55; }

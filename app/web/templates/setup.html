@@ -8,37 +8,54 @@
 
   .wizard-header { margin-bottom: 28px; }
   .wizard-steps { display: flex; gap: 0; margin-bottom: 8px; }
+  /* Esta barra fica FORA do card escuro, direto sobre o fundo claro da pagina —
+     por isso usa a paleta clara. Antes usava azul #4da3ff (2,44:1) e verde
+     #4ade80 (1,62:1), cores pensadas para fundo escuro: em 12px sobre fundo
+     claro o usuario nao conseguia ler em que etapa estava nem quais ja passaram. */
   .wizard-step {
     flex: 1; padding: 10px 4px; text-align: center; font-size: 12px;
-    color: #475569; border-bottom: 3px solid #1e293b; cursor: default;
+    color: var(--texto-3); border-bottom: 3px solid var(--borda); cursor: default;
     transition: color .2s, border-color .2s;
   }
-  .wizard-step.ativa { color: #4da3ff; border-bottom-color: #4da3ff; font-weight: 600; }
-  .wizard-step.concluida { color: #4ade80; border-bottom-color: #4ade80; }
+  .wizard-step.ativa { color: var(--marca-texto); border-bottom-color: var(--marca); font-weight: 600; }
+  .wizard-step.concluida { color: var(--texto-2); border-bottom-color: var(--marca-borda); }
   .wizard-step-num {
     display: inline-block; width: 22px; height: 22px; border-radius: 50%;
-    background: #1e293b; color: #94a3b8; font-size: 11px; font-weight: 700;
+    background: var(--superficie-3); color: var(--texto-2); font-size: 11px; font-weight: 700;
     line-height: 22px; text-align: center; margin-bottom: 4px;
   }
-  .wizard-step.ativa .wizard-step-num { background: #4da3ff; color: white; }
-  .wizard-step.concluida .wizard-step-num { background: #16a34a; color: white; }
+  .wizard-step.ativa .wizard-step-num { background: var(--marca-btn); color: #fff; }
+  .wizard-step.concluida .wizard-step-num { background: var(--marca-btn); color: #fff; }
 
-  .etapa-card { background: #1a1f2b; border-radius: 10px; padding: 32px; max-width: 860px; }
-  .etapa-titulo { margin: 0 0 8px; font-size: 22px; }
-  .etapa-subtitulo { color: #94a3b8; margin: 0 0 24px; font-size: 14px; }
+  .etapa-card {
+    background: var(--painel); border: 1px solid var(--painel-borda);
+    border-radius: var(--r-3); padding: var(--e-8); max-width: 860px;
+  }
+  /* O `color` aqui NAO e cosmetico: os titulos das etapas sao <h1>/<h2> e sem
+     cor propria herdam --texto (#0f172a) do base.css. Sobre o card escuro isso
+     dava 1,08:1 — "Bem-vindo ao ALPR", "Configuracoes Gerais", "Cadastro de
+     Cameras" e "Configuracao Concluida" eram retangulos preto-sobre-preto.
+     `tabindex="-1"` porque irParaEtapa() move o foco para ca ao trocar de etapa
+     (antes o foco caia no <body> e a proxima tabulacao reiniciava na navbar). */
+  .etapa-titulo { margin: 0 0 8px; font-size: 22px; color: var(--painel-texto); outline: none; }
+  .etapa-subtitulo { color: var(--painel-texto-2); margin: 0 0 var(--e-6); font-size: 14px; }
+  .etapa-card h2, .etapa-card h3 { color: var(--painel-texto); }
+  /* Idem para os <small>/<span> de ajuda dentro do card: estavam em #475569
+     (2,13:1) e #64748b (3,39:1) sobre o painel escuro. */
+  .etapa-card small, .etapa-card .ajuda { color: var(--painel-texto-2); }
   .etapa-rodape { display: flex; gap: 12px; margin-top: 28px; align-items: center; flex-wrap: wrap; }
 
-  .setup-label { display: block; font-size: 13px; color: #94a3b8; margin-bottom: 12px; }
+  .setup-label { display: block; font-size: 13px; color: var(--painel-texto-2); margin-bottom: var(--e-3); }
   .setup-label input, .setup-label select { margin-top: 4px; width: 100%; box-sizing: border-box; }
   .setup-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 8px; }
 
   .checklist { list-style: none; padding: 0; margin: 0 0 24px; }
-  .checklist li { padding: 8px 0; border-bottom: 1px solid #1e293b; color: #cbd5e1; font-size: 14px; display: flex; align-items: center; gap: 10px; }
+  .checklist li { padding: 8px 0; border-bottom: 1px solid var(--painel-borda); color: var(--painel-texto); font-size: 14px; display: flex; align-items: center; gap: 10px; }
   .checklist li:last-child { border-bottom: none; }
 
-  .resumo-item { padding: 12px 16px; background: #111827; border-radius: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
-  .resumo-label { font-size: 13px; color: #94a3b8; }
-  .resumo-valor { font-size: 15px; font-weight: 600; color: #e2e8f0; }
+  .resumo-item { padding: var(--e-3) var(--e-4); background: var(--painel-2); border-radius: var(--r-2); margin-bottom: var(--e-2); display: flex; justify-content: space-between; align-items: center; gap: var(--e-3); }
+  .resumo-label { font-size: 13px; color: var(--painel-texto-2); }
+  .resumo-valor { font-size: 15px; font-weight: 600; color: var(--painel-texto); }
 
   .alerta { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; }
   .alerta-info { background: #1e3a5f; color: #93c5fd; }
@@ -46,9 +63,11 @@
   .alerta-erro { background: #450a0a; color: #fca5a5; }
 
   /* Tabela de câmeras (reuso do bulk-add) */
-  .lote-input { background:#0f172a; border:1px solid #334155; border-radius:4px; color:#e2e8f0; padding:4px 6px; font-size:13px; }
-  .lote-input:focus { outline:none; border-color:#4da3ff; }
-  .cam-row td { padding: 4px 5px; border-bottom: 1px solid #1e293b; }
+  .lote-input { background:var(--painel-2); border:1px solid var(--painel-borda); border-radius:var(--r-1); color:var(--painel-texto); padding:4px 6px; font-size:13px; }
+  /* Sem `outline:none`: o anel de foco global (base.css) e o unico indicador
+     de posicao para quem preenche estas ~7 celulas por linha pelo teclado. */
+  .lote-input:focus { border-color:var(--marca); box-shadow:0 0 0 3px rgba(22,163,74,.2); }
+  .cam-row td { padding: 4px 5px; border-bottom: 1px solid var(--painel-borda); }
 </style>
 
 <!-- Barra de etapas -->
@@ -93,7 +112,7 @@
     </div>
 
     <div class="etapa-rodape">
-      <button onclick="irParaEtapa(2)" style="background:#4da3ff;padding:10px 28px;font-size:15px">
+      <button onclick="irParaEtapa(2)" style="padding:10px 28px;font-size:15px">
         Começar &rarr;
       </button>
     </div>
@@ -111,7 +130,7 @@
     <div class="setup-grid">
       <label class="setup-label">Porta HTTP
         <input id="cfg-porta" type="number" value="14000" min="1024" max="65535">
-        <small style="color:#475569">Porta de acesso ao sistema (padrão: 14000)</small>
+        <small style="color:var(--painel-texto-2)">Porta de acesso ao sistema (padrão: 14000)</small>
       </label>
       <label class="setup-label">Engine OCR
         <select id="cfg-ocr">
@@ -121,7 +140,7 @@
           <option value="tesseract">tesseract (padrão, leve)</option>
           <option value="paddleocr">paddleocr</option>
         </select>
-        <small style="color:#475569">auto detecta o padrão da placa e escolhe o melhor engine</small>
+        <small style="color:var(--painel-texto-2)">auto detecta o padrão da placa e escolhe o melhor engine</small>
       </label>
       <label class="setup-label">Detecção automática
         <select id="cfg-deteccao-auto">
@@ -139,11 +158,11 @@
     </div>
 
     <details style="margin-top:16px">
-      <summary style="cursor:pointer;color:#94a3b8;font-size:13px;user-select:none">&#9881; Webhook (opcional)</summary>
+      <summary style="cursor:pointer;color:var(--painel-texto-2);font-size:13px;user-select:none">&#9881; Webhook (opcional)</summary>
       <div style="margin-top:12px">
         <label class="setup-label">URL do webhook
           <input id="cfg-webhook" type="text" placeholder="https://seu-sistema.com/api/placa">
-          <small style="color:#475569">Receberá um POST a cada detecção de placa na lista negra</small>
+          <small style="color:var(--painel-texto-2)">Receberá um POST a cada detecção de placa na lista negra</small>
         </label>
         <label class="setup-label">Disparar webhook em
           <select id="cfg-webhook-todas">
@@ -184,10 +203,10 @@
 
     <!-- Valores padrão -->
     <details open style="margin-bottom:16px">
-      <summary style="cursor:pointer;font-size:13px;color:#94a3b8;padding:10px 14px;background:#111827;border-radius:8px;user-select:none">
+      <summary style="cursor:pointer;font-size:13px;color:var(--painel-texto-2);padding:10px 14px;background:var(--painel-2);border-radius:8px;user-select:none">
         &#9998; Valores padrão para novas linhas
       </summary>
-      <div style="background:#111827;border-radius:0 0 8px 8px;padding:14px;border-top:1px solid #1e293b">
+      <div style="background:var(--painel-2);border-radius:0 0 8px 8px;padding:14px;border-top:1px solid #1e293b">
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px;margin-bottom:12px">
           <label class="setup-label">Tipo
             <select id="s-tipo">
@@ -204,7 +223,7 @@
             <input id="s-usuario" type="text" value="admin">
           </label>
           <label class="setup-label">Senha padrão
-            <input id="s-senha" type="password" placeholder="senha">
+            <input id="s-senha" type="password" placeholder="senha" autocomplete="off">
           </label>
           <label class="setup-label">Subtype
             <select id="s-subtype">
@@ -228,21 +247,21 @@
     <div style="overflow-x:auto;margin-bottom:14px">
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead>
-          <tr style="background:#111827">
-            <th style="padding:8px 6px;color:#94a3b8;text-align:left">Nome</th>
-            <th style="padding:8px 6px;color:#94a3b8;text-align:left">Local</th>
-            <th style="padding:8px 6px;color:#94a3b8;text-align:left;white-space:nowrap">Host / IP</th>
-            <th style="padding:8px 6px;color:#94a3b8;text-align:left">Usuário</th>
-            <th style="padding:8px 6px;color:#94a3b8;text-align:left">Senha</th>
-            <th style="padding:8px 6px;color:#94a3b8;text-align:left">Canal</th>
-            <th style="padding:8px 6px;color:#94a3b8;text-align:center">Ativo</th>
+          <tr style="background:var(--painel-2)">
+            <th style="padding:8px 6px;color:var(--painel-texto-2);text-align:left">Nome</th>
+            <th style="padding:8px 6px;color:var(--painel-texto-2);text-align:left">Local</th>
+            <th style="padding:8px 6px;color:var(--painel-texto-2);text-align:left;white-space:nowrap">Host / IP</th>
+            <th style="padding:8px 6px;color:var(--painel-texto-2);text-align:left">Usuário</th>
+            <th style="padding:8px 6px;color:var(--painel-texto-2);text-align:left">Senha</th>
+            <th style="padding:8px 6px;color:var(--painel-texto-2);text-align:left">Canal</th>
+            <th style="padding:8px 6px;color:var(--painel-texto-2);text-align:center">Ativo</th>
             <th style="padding:8px 6px;width:28px"></th>
             <th style="padding:8px 6px;width:32px"></th>
           </tr>
         </thead>
         <tbody id="setup-tbody"></tbody>
       </table>
-      <p id="setup-sem-linhas" style="color:#64748b;font-size:13px;text-align:center;padding:16px 0;margin:0">
+      <p id="setup-sem-linhas" style="color:var(--painel-texto-2);font-size:13px;text-align:center;padding:16px 0;margin:0">
         Nenhuma câmera adicionada. Clique em "+ Adicionar Linha".
       </p>
     </div>
@@ -254,7 +273,7 @@
       <div style="background:#1e293b;border-radius:4px;height:8px;overflow:hidden;margin-bottom:6px">
         <div id="setup-barra" style="height:100%;background:#4da3ff;width:0%;transition:width .2s"></div>
       </div>
-      <p id="setup-txt" style="font-size:13px;color:#94a3b8;margin:0"></p>
+      <p id="setup-txt" style="font-size:13px;color:var(--painel-texto-2);margin:0"></p>
     </div>
 
     <div id="setup-alerta-cam" style="display:none" class="alerta"></div>
@@ -355,7 +374,8 @@ function adicionarLinhaSetup(dados = {}) {
     <td><input  class="sr-canal lote-input" type="text"     value="${esc(String(dados.canal ?? '1'))}"                            style="width:44px"></td>
     <td style="text-align:center"><input class="sr-ativo" type="checkbox" ${dados.ativo !== false ? 'checked' : ''} style="width:auto;padding:0"></td>
     <td id="setup-st-${id}" style="width:28px;text-align:center;font-size:15px"></td>
-    <td><button onclick="removerLinhaSetup(${id})" style="background:#dc2626;padding:3px 8px;font-size:12px">✕</button></td>`;
+    <td><button onclick="removerLinhaSetup(${id})" class="btn-perigo btn-pequeno"
+                    aria-label="Remover esta câmera da lista" title="Remover linha">✕</button></td>`;
   tbody.appendChild(tr);
   atualizarContadorSetup();
 }
