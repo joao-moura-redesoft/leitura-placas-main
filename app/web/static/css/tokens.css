@@ -77,8 +77,25 @@
   --marca-forte:  #15803d;
   --marca-escura: #14532d;
   --marca-fraca:  #f0fdf4;
+  /* Fundo de HOVER/selecao. --marca-fraca (#f0fdf4) da 1,047:1 contra o branco
+     das superficies: e um destaque que nao se ve, muito menos num tablet sob
+     luz do dia. Resultado pratico: passar o mouse por um item de menu ou por
+     uma linha de tabela nao produzia mudanca perceptivel. #dcf5e5 da 1,152:1
+     — ainda discreto, mas visivel — e ainda aceita texto em --marca-escura a
+     7,91:1, o que deixa o item apontado MAIS legivel que os vizinhos em vez de
+     menos (era o efeito invertido do hover antigo). */
+  --marca-hover:  #dcf5e5;
   --marca-borda:  #bbf7d0;
   --marca-texto:  #15803d;
+
+  /* Fundo de BOTAO primario. Separado de --marca de proposito: texto branco
+     sobre #16a34a da 3,30:1, abaixo do minimo de 4,5:1 da WCAG AA para texto
+     de 14px — e o botao primario e o alvo mais clicado do sistema, lido sob
+     luz do dia num tablet. #15803d da 5,02:1 com branco e #126b35 da 6,60:1.
+     O #16a34a continua intacto onde nao carrega texto: gradiente do logo,
+     anel de foco, bordas, accent-color de checkbox, barra do item ativo. */
+  --marca-btn:       #15803d;
+  --marca-btn-hover: #126b35;
 
   /* ── Superfícies ── */
   --bg:         #f4f7f6;
@@ -93,7 +110,15 @@
   /* ── Texto ── */
   --texto:   #0f172a;
   --texto-2: #475569;
-  --texto-3: #94a3b8;
+  /* #94a3b8 (o valor anterior) da 2,56:1 sobre branco: reprova WCAG AA (4,5:1)
+     por larga margem, e este token pinta TEXTO que o operador precisa ler —
+     cabecalho de tabela, rotulo de KPI, nome do usuario na barra, placeholder,
+     estado vazio. #616e80 da 5,18:1 sobre branco e 4,81:1 sobre --bg (o pior
+     fundo claro do sistema), continuando um degrau visivel abaixo de --texto-2
+     (7,58:1). Para o que e REALMENTE decorativo e nao carrega informacao
+     (traco de icone, seta do select) use --traco-mudo. */
+  --texto-3: #616e80;
+  --traco-mudo: #94a3b8;
 
   /* ── Semânticas ── */
   --ok:        #15803d;  --ok-bg:    #dcfce7;  --ok-borda:    #bbf7d0;
@@ -113,7 +138,17 @@
   --painel-borda:  rgba(255,255,255,.10);
   --painel-texto:  #e2e8f0;
   --painel-texto-2:#8fa3b8;
-  --painel-texto-3:#64748b;
+  --painel-texto-3:#7c8ca3;
+  /* Cores de conteudo do painel escuro. Sao as ultimas que base.css escrevia
+     como hex solto, contra a propria regra do cabecalho dele. Medidas sobre
+     --painel: aviso 10,98:1, erro 6,63:1 — as duas passam AA. */
+  --painel-aviso:  #fbbf24;
+  --painel-erro:   #f87171;
+  --painel-hover:  #2b3a4d;
+  /* Vermelho de "gravando/ao vivo" e da barra de proporcao de falha. E sinal
+     visual, nao texto: nunca recebe conteudo por cima. */
+  --vivo:       #ef4444;
+  --vivo-forte: #dc2626;  /* era #64748b = 3,85:1 sobre --painel; agora 5,36:1 */
 
   /* ── Elevação ──
      Sombras em duas camadas (contato curto + difusão longa). Uma sombra só,
@@ -122,6 +157,11 @@
   --sombra-2: 0 2px 4px rgba(15,23,42,.04), 0 8px 16px -6px rgba(15,23,42,.10);
   --sombra-3: 0 4px 8px rgba(15,23,42,.05), 0 16px 40px -10px rgba(15,23,42,.18);
   --sombra-marca: 0 4px 14px rgba(22,163,74,.30);
+  /* Sombra da barra fixa em estado ROLADO. A nav e branca e os cards tambem:
+     a borda de 1px em --borda da 1,20:1 contra um card branco, ou seja, ao
+     rolar nao ha separacao perceptivel e a barra parece continuar dentro da
+     pagina. Esta sombra e o que devolve o plano de cima. */
+  --sombra-topbar: 0 1px 0 rgba(15,23,42,.06), 0 4px 16px -4px rgba(15,23,42,.16);
 
   /* ── Raio ── */
   --r-1: 6px;

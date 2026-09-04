@@ -2,9 +2,9 @@
 {% block title %}Novo posto — ALPR{% endblock %}
 {% block conteudo %}
 <div style="max-width:900px">
-  <a href="/postos" style="color:#64748b;font-size:13px;text-decoration:none">← Postos</a>
+  <a href="/postos" class="link-voltar">← Postos</a>
   <h1 style="margin:6px 0 6px">Novo posto</h1>
-  <p style="color:#64748b;margin:0 0 22px;font-size:14px">
+  <p style="color:var(--texto-2);margin:0 0 22px;font-size:14px">
     Cadastra tudo numa passada. As áreas de captura são desenhadas no final, uma tela por câmera.
   </p>
 
@@ -31,15 +31,15 @@
   <!-- Câmeras -->
   <div class="card">
     <h2 style="margin:0 0 4px">2. Câmeras</h2>
-    <p style="color:#94a3b8;font-size:13px;margin:0 0 12px">
+    <p style="color:var(--texto-3);font-size:13px;margin:0 0 12px">
       Uma linha por câmera física. Uma mesma câmera pode atender vários bicos.
     </p>
     <details style="margin-bottom:14px">
-      <summary style="cursor:pointer;font-size:13px;color:#64748b;padding:9px 13px;background:#f8fafc;
-               border:1px solid #e2e8f0;border-radius:8px;user-select:none">
+      <summary style="cursor:pointer;font-size:13px;color:var(--texto-2);padding:9px 13px;background:var(--superficie-2);
+               border:1px solid var(--borda);border-radius:8px;user-select:none">
         Credenciais padrão — preenchem cada nova linha
       </summary>
-      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px;
+      <div style="background:var(--superficie-2);border:1px solid var(--borda);border-top:none;border-radius:0 0 8px 8px;
                   padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px">
         <label>Host / DVR<input id="pad-host" placeholder="192.168.1.108" style="width:100%;box-sizing:border-box;margin-top:4px"></label>
         <label>Porta<input id="pad-porta" value="554" style="width:100%;box-sizing:border-box;margin-top:4px"></label>
@@ -53,7 +53,7 @@
         <tbody id="cameras"></tbody>
       </table>
     </div>
-    <button onclick="addCamera()" style="margin-top:12px;background:#fff;color:#374151;border:1px solid #e2e8f0">
+    <button onclick="addCamera()" style="margin-top:12px;background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda)">
       + Câmera
     </button>
   </div>
@@ -61,7 +61,7 @@
   <!-- Automação e bicos -->
   <div class="card">
     <h2 style="margin:0 0 4px">3. Automação e bicos</h2>
-    <p style="color:#94a3b8;font-size:13px;margin:0 0 12px">
+    <p style="color:var(--texto-3);font-size:13px;margin:0 0 12px">
       Códigos precisam ser <strong>exatamente</strong> os que o roteador envia — confirme com quem
       configura o sistema do posto antes de salvar.
     </p>
@@ -71,12 +71,12 @@
     <div class="tabela-rolavel">
       <table>
         <thead><tr><th>Código do bico</th><th>Nome</th><th>Câmera</th>
-          <th>2ª câmera <span style="font-weight:400;color:#94a3b8">(opcional)</span></th>
+          <th>2ª câmera <span style="font-weight:400;color:var(--texto-3)">(opcional)</span></th>
           <th>Bomba</th><th>Lado</th><th></th></tr></thead>
         <tbody id="bicos"></tbody>
       </table>
     </div>
-    <button onclick="addBico()" style="margin-top:12px;background:#fff;color:#374151;border:1px solid #e2e8f0">
+    <button onclick="addBico()" style="margin-top:12px;background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda)">
       + Bico
     </button>
   </div>
@@ -85,11 +85,11 @@
   <div id="progresso" style="display:none" class="card"></div>
 
   <div style="display:flex;gap:10px;margin-bottom:40px">
-    <button onclick="salvar()" id="btn-salvar" style="background:#16a34a;padding:10px 24px;font-size:15px">
+    <button onclick="salvar()" id="btn-salvar" style="background:var(--marca-btn);padding:10px 24px;font-size:15px">
       Criar posto
     </button>
     <a href="/postos" style="display:inline-flex;align-items:center;padding:10px 20px;border-radius:7px;
-       background:#fff;color:#374151;border:1px solid #e2e8f0;text-decoration:none">Cancelar</a>
+       background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda);text-decoration:none">Cancelar</a>
   </div>
 </div>
 {% endblock %}
@@ -124,7 +124,7 @@ function addCamera() {
     <td><input class="c-usuario" value="${esc(val('pad-usuario') || 'admin')}" style="width:85px"></td>
     <td><input class="c-senha"   type="password" value="${esc(val('pad-senha'))}" style="width:90px"></td>
     <td><input class="c-canal"   value="1" style="width:55px"></td>
-    <td><button onclick="removerCamera(${id})" style="background:#dc2626;padding:4px 9px;font-size:12px">✕</button></td>`;
+    <td><button onclick="removerCamera(${id})" style="background:var(--erro);padding:4px 9px;font-size:12px">✕</button></td>`;
   document.getElementById('cameras').appendChild(tr);
   tr.querySelectorAll('.c-nome, .c-local').forEach(i => i.addEventListener('input', syncSelects));
   syncSelects();
@@ -174,7 +174,7 @@ function addBico() {
     <td><input class="b-bomba" type="number" min="1" style="width:70px"></td>
     <td><input class="b-lado"  type="number" min="1" style="width:70px"></td>
     <td><button onclick="document.getElementById('bico-${id}').remove()"
-        style="background:#dc2626;padding:4px 9px;font-size:12px">✕</button></td>`;
+        style="background:var(--erro);padding:4px 9px;font-size:12px">✕</button></td>`;
   document.getElementById('bicos').appendChild(tr);
   syncSelects();
 }

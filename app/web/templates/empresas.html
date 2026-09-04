@@ -5,7 +5,7 @@
   <h1 style="margin:0">Postos</h1>
   <span id="filtro-badge" style="display:none;background:#dcfce7;color:#15803d;padding:4px 12px;
         border-radius:20px;font-size:13px;font-weight:600"></span>
-  <a href="/entidades" style="color:#64748b;font-size:13px;margin-left:auto">← Entidades</a>
+  <a href="/entidades" class="link-voltar">← Entidades</a>
 </div>
 
 <div class="card" style="margin-bottom:16px">
@@ -19,12 +19,12 @@
     </thead>
     <tbody id="tbody"></tbody>
   </table>
-  <p id="sem-itens" style="display:none;color:#94a3b8">Nenhum posto cadastrado.</p>
+  <p id="sem-itens" style="display:none;color:var(--texto-3)">Nenhum posto cadastrado.</p>
 </div>
 
 <!-- Modal -->
 <div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(2px);z-index:100;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:12px;padding:28px;width:460px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+  <div style="background:var(--superficie);border-radius:12px;padding:28px;width:460px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
     <h2 id="modal-titulo" style="margin-top:0">Novo Posto</h2>
     <form id="form" onsubmit="salvar(event)">
       <input type="hidden" id="f-id" value="">
@@ -42,8 +42,8 @@
         Ativa
       </label>
       <div style="display:flex;gap:10px">
-        <button type="submit" style="background:#16a34a">Salvar</button>
-        <button type="button" onclick="fecharModal()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Cancelar</button>
+        <button type="submit" style="background:var(--marca-btn)">Salvar</button>
+        <button type="button" onclick="fecharModal()" style="background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda)">Cancelar</button>
       </div>
     </form>
   </div>
@@ -51,25 +51,25 @@
 
 <!-- Modal API/LGPD: chave própria (opt-in) do /api/leitura + prazo de retenção do posto -->
 <div id="modal-seg-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(2px);z-index:100;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:12px;padding:28px;width:460px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+  <div style="background:var(--superficie);border-radius:12px;padding:28px;width:460px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
     <h2 id="seg-titulo" style="margin-top:0">API / LGPD</h2>
 
     <h3 style="margin-bottom:6px">Chave de API própria</h3>
-    <p style="color:#64748b;font-size:13px;margin:0 0 10px">
-      Vazia = <code style="background:#f1f5f9;padding:2px 5px;border-radius:4px">/api/leitura</code>
+    <p style="color:var(--texto-2);font-size:13px;margin:0 0 10px">
+      Vazia = <code style="background:var(--superficie-3);padding:2px 5px;border-radius:4px">/api/leitura</code>
       continua público para este posto (padrão). Preenchida = o roteador deste cliente
-      passa a precisar mandar <code style="background:#f1f5f9;padding:2px 5px;border-radius:4px">X-API-Key</code>
-      (ou <code style="background:#f1f5f9;padding:2px 5px;border-radius:4px">?api_key=</code>) em toda chamada.
+      passa a precisar mandar <code style="background:var(--superficie-3);padding:2px 5px;border-radius:4px">X-API-Key</code>
+      (ou <code style="background:var(--superficie-3);padding:2px 5px;border-radius:4px">?api_key=</code>) em toda chamada.
     </p>
     <div id="seg-chave-atual" style="margin-bottom:10px"></div>
     <div style="display:flex;gap:10px;margin-bottom:20px">
-      <button type="button" onclick="gerarApiKey()" style="background:#16a34a">Gerar / substituir chave</button>
-      <button type="button" onclick="revogarApiKey()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Revogar (voltar a público)</button>
+      <button type="button" onclick="gerarApiKey()" style="background:var(--marca-btn)">Gerar / substituir chave</button>
+      <button type="button" onclick="revogarApiKey()" style="background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda)">Revogar (voltar a público)</button>
     </div>
 
     <h3 style="margin-bottom:6px">Retenção de dados (LGPD)</h3>
-    <p style="color:#64748b;font-size:13px;margin:0 0 10px">
-      Vazio = usa o prazo padrão do sistema (config. Configuração → <code style="background:#f1f5f9;padding:2px 5px;border-radius:4px">retencao_dias</code>).
+    <p style="color:var(--texto-2);font-size:13px;margin:0 0 10px">
+      Vazio = usa o prazo padrão do sistema (config. Configuração → <code style="background:var(--superficie-3);padding:2px 5px;border-radius:4px">retencao_dias</code>).
       Preenchido = detecções e chamadas deste posto são apagadas depois desse número de dias, independente do padrão.
     </p>
     <label style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
@@ -77,8 +77,8 @@
       dias
     </label>
     <div style="display:flex;gap:10px">
-      <button type="button" onclick="salvarRetencao()" style="background:#16a34a">Salvar prazo</button>
-      <button type="button" onclick="fecharModalSeguranca()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Fechar</button>
+      <button type="button" onclick="salvarRetencao()" style="background:var(--marca-btn)">Salvar prazo</button>
+      <button type="button" onclick="fecharModalSeguranca()" style="background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda)">Fechar</button>
     </div>
   </div>
 </div>
@@ -143,8 +143,8 @@ function renderTabela() {
            border-radius:7px;background:#0f172a;color:#fff;font-size:14px;font-weight:500;
            text-decoration:none;margin-right:4px">Câmeras</a>
         <button onclick="abrirModalSeguranca(${it.id})" style="background:#0f172a;margin-right:4px">API/LGPD</button>
-        <button onclick="editar(${it.id})" style="background:#16a34a;margin-right:4px">Editar</button>
-        <button onclick="remover(${it.id})" style="background:#dc2626">Remover</button>
+        <button onclick="editar(${it.id})" style="background:var(--marca-btn);margin-right:4px">Editar</button>
+        <button onclick="remover(${it.id})" style="background:var(--erro)">Remover</button>
       </td>
     </tr>`;
   });
@@ -219,7 +219,7 @@ function renderChaveAtual(chave) {
   }
   if (chave === MASCARA_CHAVE) {
     el.innerHTML = '<span class="badge badge-ok">Chave ativa</span> '
-      + '<span style="font-size:12px;color:#64748b">'
+      + '<span style="font-size:12px;color:var(--texto-2)">'
       + 'A chave só aparece no momento em que é gerada. Perdeu? Gere outra — '
       + 'a anterior deixa de valer na hora.</span>';
     return;

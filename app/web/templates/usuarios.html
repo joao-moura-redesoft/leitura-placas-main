@@ -5,7 +5,7 @@
 
 <div class="card" style="margin-bottom:16px">
   <button onclick="abrirModal()">+ Novo Usuário</button>
-  <p style="margin-top:10px;color:#64748b;font-size:13px">
+  <p style="margin-top:10px;color:var(--texto-2);font-size:13px">
     <strong>admin</strong> vê e edita tudo. <strong>operador</strong> vê todos os
     postos e opera o dia a dia, mas não administra (sem configuração do sistema nem
     cadastro estrutural). <strong>cliente</strong> só vê os dados do posto escolhido.
@@ -21,12 +21,12 @@
     <tbody id="tbody"></tbody>
   </table>
   </div>
-  <p id="sem-itens" style="display:none;color:#94a3b8">Nenhum usuário cadastrado.</p>
+  <p id="sem-itens" style="display:none;color:var(--texto-3)">Nenhum usuário cadastrado.</p>
 </div>
 
 <!-- Modal criar/editar -->
 <div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(2px);z-index:100;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:12px;padding:28px;width:440px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+  <div style="background:var(--superficie);border-radius:12px;padding:28px;width:440px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
     <h2 id="modal-titulo" style="margin-top:0">Novo Usuário</h2>
     <form id="form" onsubmit="salvar(event)">
       <input type="hidden" id="f-id" value="">
@@ -58,8 +58,8 @@
         Ativo
       </label>
       <div style="display:flex;gap:10px">
-        <button type="submit" style="background:#16a34a">Salvar</button>
-        <button type="button" onclick="fecharModal()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Cancelar</button>
+        <button type="submit" style="background:var(--marca-btn)">Salvar</button>
+        <button type="button" onclick="fecharModal()" style="background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda)">Cancelar</button>
       </div>
     </form>
   </div>
@@ -67,7 +67,7 @@
 
 <!-- Modal redefinir senha -->
 <div id="modal-senha-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(2px);z-index:100;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:12px;padding:28px;width:380px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+  <div style="background:var(--superficie);border-radius:12px;padding:28px;width:380px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
     <h2 style="margin-top:0">Redefinir senha</h2>
     <form onsubmit="salvarSenha(event)">
       <input type="hidden" id="s-id" value="">
@@ -75,8 +75,8 @@
         <input id="s-senha" type="password" required style="width:100%;box-sizing:border-box;margin-top:4px">
       </label>
       <div style="display:flex;gap:10px">
-        <button type="submit" style="background:#16a34a">Salvar</button>
-        <button type="button" onclick="fecharModalSenha()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Cancelar</button>
+        <button type="submit" style="background:var(--marca-btn)">Salvar</button>
+        <button type="button" onclick="fecharModalSenha()" style="background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda)">Cancelar</button>
       </div>
     </form>
   </div>
@@ -126,9 +126,9 @@ function renderTabela() {
       <td>${papel}</td>
       <td>${it.empresa_nome ? esc(it.empresa_nome) : '—'}</td>
       <td>${status}</td>
-      <td style="color:#64748b;font-size:13px;white-space:nowrap">${it.ultimo_login ? new Date(it.ultimo_login).toLocaleString('pt-BR') : 'Nunca'}</td>
+      <td style="color:var(--texto-2);font-size:13px;white-space:nowrap">${it.ultimo_login ? new Date(it.ultimo_login).toLocaleString('pt-BR') : 'Nunca'}</td>
       <td>
-        <button onclick="editar(${it.id})" style="background:#16a34a;margin-right:4px">Editar</button>
+        <button onclick="editar(${it.id})" style="background:var(--marca-btn);margin-right:4px">Editar</button>
         <button onclick="abrirModalSenha(${it.id})" style="background:#0f172a">Senha</button>
       </td>
     </tr>`;

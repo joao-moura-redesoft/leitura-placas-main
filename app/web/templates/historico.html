@@ -3,7 +3,7 @@
 {% block conteudo %}
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
   <h1 style="margin:0">Histórico de Leituras</h1>
-  <span id="contador" style="color:#94a3b8;font-size:13px"></span>
+  <span id="contador" style="color:var(--texto-3);font-size:13px"></span>
 </div>
 
 <div class="card" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
@@ -41,18 +41,22 @@
     </select>
   </label>
   <button onclick="carregar()" style="height:36px">Buscar</button>
-  <button onclick="limparFiltros()" style="height:36px;background:#fff;color:#374151;border:1px solid #e2e8f0">Limpar</button>
+  <button onclick="limparFiltros()" style="height:36px;background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda)">Limpar</button>
 </div>
 
 <!-- Consulta em lote. Só aparece para admin e só quando o recurso está ligado — para quem
      não usa a integração, o histórico continua exatamente como era. -->
-<div id="barra-veiculos" style="display:none;margin-bottom:12px;padding:10px 12px;background:#f8fafc;
-     border:1px solid #e2e8f0;border-radius:8px;align-items:center;gap:10px;flex-wrap:wrap">
+<div id="barra-veiculos" style="display:none;margin-bottom:12px;padding:10px 12px;background:var(--superficie-2);
+     border:1px solid var(--borda);border-radius:8px;align-items:center;gap:10px;flex-wrap:wrap">
   <button type="button" id="btn-lote" onclick="consultarLote()" style="height:32px">Consultar placas sem dados</button>
-  <span id="lote-status" style="color:#64748b;font-size:14px"></span>
+  <span id="lote-status" style="color:var(--texto-2);font-size:14px"></span>
 </div>
 
 <div class="card">
+  {# 9 colunas: a tabela mais larga do sistema. Sem .tabela-rolavel a rolagem
+     horizontal ia para o documento (e a barra fixa ia junto) na faixa entre
+     821px e ~1100px, que e o tablet em paisagem. #}
+  <div class="tabela-rolavel">
   <table>
     <thead>
       <tr>
@@ -62,7 +66,8 @@
     </thead>
     <tbody id="corpo"></tbody>
   </table>
-  <p id="vazio" style="display:none;color:#94a3b8;margin:12px 0 0">Nenhuma leitura encontrada com esses filtros.</p>
+  </div>
+  <p id="vazio" style="display:none;color:var(--texto-3);margin:12px 0 0">Nenhuma leitura encontrada com esses filtros.</p>
   <p id="aviso-testes" style="display:none;margin:10px 0 0;padding:10px 12px;background:#f0f9ff;
      border:1px solid #bae6fd;border-radius:6px;color:#0c4a6e;font-size:13px"></p>
 </div>
@@ -152,7 +157,7 @@ function imagens(d, i) {
         <img src="${esc(d.frame)}" alt="Ampliar o quadro da câmera da leitura ${esc(d.placa)}"
              loading="lazy" style="height:34px"></button>`);
   } else if (d.snapshot) {
-    partes.push('<span style="color:#cbd5e1;font-size:12px" title="Leitura anterior à gravação do quadro">só recorte</span>');
+    partes.push('<span style="color:var(--texto-2);font-size:12px" title="Leitura anterior à gravação do quadro">só recorte</span>');
   }
   return partes.join('') || '—';
 }
@@ -221,16 +226,16 @@ async function carregar() {
   document.getElementById('corpo').innerHTML = r.map((d, i) => {
     // Leituras anteriores ao multi-tenant não têm bico — marca em vez de fingir que tem.
     const posto = d.empresa_nome
-      ? `<a href="/posto/${d.empresa_id}" style="color:#16a34a;text-decoration:none">${esc(d.empresa_nome)}</a>`
-      : '<span style="color:#cbd5e1" title="leitura anterior ao cadastro multi-tenant">—</span>';
+      ? `<a href="/posto/${d.empresa_id}" style="color:var(--marca-texto);text-decoration:none">${esc(d.empresa_nome)}</a>`
+      : '<span class="t-mudo" title="leitura anterior ao cadastro multi-tenant">—</span>';
     const bico = d.bico_codigo
-      ? esc(d.bico_codigo) + (d.bico_nome ? ` <span style="color:#94a3b8">${esc(d.bico_nome)}</span>` : '')
-      : '<span style="color:#cbd5e1">—</span>';
+      ? esc(d.bico_codigo) + (d.bico_nome ? ` <span style="color:var(--texto-3)">${esc(d.bico_nome)}</span>` : '')
+      : '<span class="t-mudo">—</span>';
     // Marca visualmente o que veio de teste, para não confundir com abastecimento real
     const selo = d.origem === 'teste'
       ? ' <span class="badge badge-warn" title="Leitura disparada pela interface, não pelo roteador">teste</span>'
       : d.origem === 'pipeline'
-        ? ' <span class="badge" style="background:#f1f5f9;color:#475569" title="Detecção contínua do stream">contínuo</span>'
+        ? ' <span class="badge" style="background:var(--superficie-3);color:var(--texto-2)" title="Detecção contínua do stream">contínuo</span>'
         : '';
     // Leitura gravada sem consenso suficiente — é a que pode cobrar o cliente errado.
     // Vale para as DUAS origens: o contínuo também mede o próprio acordo (votos do
@@ -280,12 +285,12 @@ async function carregar() {
       ? `<span title="${esc(tituloVeiculo)}"
               style="border-bottom:1px dotted #94a3b8;cursor:help">${
            d.tipo_veiculo === 'moto' ? 'Moto' : 'Carro'}</span>`
-      : `<span style="color:#cbd5e1" title="${esc(tituloVeiculo)}">—</span>`;
+      : `<span class="t-mudo" title="${esc(tituloVeiculo)}">—</span>`;
     return `<tr${d.origem === 'teste' ? ' style="opacity:.72"' : ''}>
-      <td><strong style="font-family:'Consolas',monospace;letter-spacing:.04em">${esc(d.placa)}</strong>${selo}${conferir}</td>
+      <td><span class="placa">${esc(d.placa)}</span>${selo}${conferir}</td>
       <td><span class="badge badge-${esc(d.padrao)}">${esc(d.padrao)}</span></td>
       <td>${veiculo}</td>
-      <td class="comb" data-placa="${esc(d.placa)}"><span style="color:#cbd5e1">—</span></td>
+      <td class="comb" data-placa="${esc(d.placa)}"><span class="t-mudo" aria-hidden="true">—</span></td>
       <td>${(d.confianca * 100).toFixed(0)}%</td>
       <td>${posto}</td>
       <td>${bico}</td>
@@ -315,9 +320,9 @@ function celulaVeiculo(placa, v) {
   if (v && v.consulta === 'inexistente') {
     // Consultada E sem registro é diferente de nunca consultada: oferecer "consultar"
     // aqui faria o operador pagar de novo por uma resposta que já temos.
-    return '<span style="color:#94a3b8" title="A base consultada não tem registro desta placa">não consta</span>';
+    return '<span style="color:var(--texto-3)" title="A base consultada não tem registro desta placa">não consta</span>';
   }
-  if (!EH_ADMIN) return '<span style="color:#cbd5e1" title="Sem dados consultados">—</span>';
+  if (!EH_ADMIN) return '<span class="t-mudo" title="Sem dados consultados">—</span>';
   return `<button type="button" class="btn-consultar" data-placa="${esc(placa)}"
             onclick="consultarPlaca('${esc(placa)}', this)"
             title="Consulta a apiplacas e gasta 1 crédito pré-pago"

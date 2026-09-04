@@ -6,7 +6,7 @@
 <div class="card" style="margin-bottom:16px;max-width:460px">
   <h3 style="margin-top:0;margin-bottom:10px">Dados</h3>
   <p style="margin:0 0 4px"><strong id="mc-nome">—</strong></p>
-  <p style="margin:0 0 4px;color:#64748b;font-size:14px" id="mc-email">—</p>
+  <p style="margin:0 0 4px;color:var(--texto-2);font-size:14px" id="mc-email">—</p>
   <span class="badge badge-mercosul" id="mc-papel" style="margin-top:6px;display:inline-flex"></span>
 </div>
 
@@ -22,13 +22,13 @@
     <label style="display:block;margin-bottom:16px">Confirmar nova senha
       <input id="s-confirma" type="password" required style="width:100%;box-sizing:border-box;margin-top:4px">
     </label>
-    <button type="submit" style="background:#16a34a">Salvar nova senha</button>
+    <button type="submit" style="background:var(--marca-btn)">Salvar nova senha</button>
   </form>
 </div>
 
 <div class="card" style="max-width:640px;margin-top:16px">
   <h3 style="margin-top:0;margin-bottom:4px">Sessões ativas</h3>
-  <p style="margin:0 0 12px;color:#64748b;font-size:13px">
+  <p style="margin:0 0 12px;color:var(--texto-2);font-size:13px">
     Todo lugar em que sua conta está logada agora. Se não reconhecer algum, revogue —
     ele vai precisar entrar de novo com a senha.
   </p>
@@ -80,7 +80,7 @@ async function carregarSessoes() {
     <td>${new Date(s.criado_em).toLocaleString('pt-BR')}</td>
     <td>${new Date(s.expira_em * 1000).toLocaleString('pt-BR')}</td>
     <td>${s.atual ? '<span class="badge badge-ok">Esta sessão</span>' : ''}</td>
-    <td>${s.atual ? '—' : `<button onclick="revogarSessao('${esc(s.token)}')" style="background:#dc2626">Revogar</button>`}</td>
+    <td>${s.atual ? '—' : `<button onclick="revogarSessao('${esc(s.token)}')" style="background:var(--erro)">Revogar</button>`}</td>
   </tr>`).join('');
 }
 

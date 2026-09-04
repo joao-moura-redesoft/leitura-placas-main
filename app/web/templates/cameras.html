@@ -5,19 +5,19 @@
   <h1 style="margin:0">Câmeras</h1>
   <span id="filtro-badge" style="display:none;background:#dcfce7;color:#15803d;padding:4px 12px;
         border-radius:20px;font-size:13px;font-weight:600"></span>
-  <a href="/postos" style="color:#64748b;font-size:13px;margin-left:auto">← Postos</a>
+  <a href="/postos" class="link-voltar">← Postos</a>
 </div>
-<p style="color:#64748b;margin:0 0 20px;font-size:14px">
+<p style="color:var(--texto-2);margin:0 0 20px;font-size:14px">
   Cada câmera pertence a um posto (empresa) e o campo <strong>Local</strong> diz onde ela
   está instalada. Bomba/lado e área de captura pertencem ao bico, cadastrado na
-  <a href="/postos" style="color:#16a34a">tela do posto</a> — uma câmera pode servir
+  <a href="/postos" style="color:var(--marca-texto)">tela do posto</a> — uma câmera pode servir
   vários bicos, e um bico pode usar duas câmeras (traseira + frente).
 </p>
 
 <div class="card" style="margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
   <button onclick="abrirModal()">+ Nova Câmera</button>
   <button onclick="abrirModalLote()" style="background:#7c3aed">&#9776; Adicionar em Lote</button>
-  <button onclick="toggleScan()" id="btn-toggle-scan" style="background:#fff;color:#374151;border:1px solid #e2e8f0">&#128269; Localizar na Rede</button>
+  <button onclick="toggleScan()" id="btn-toggle-scan" style="background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda)">&#128269; Localizar na Rede</button>
 </div>
 
 <!-- Painel de Scan RTSP -->
@@ -37,11 +37,11 @@
         <input id="scan-timeout" type="text" value="0.3"
                style="width:100%;box-sizing:border-box;margin-top:4px">
       </label>
-      <button onclick="iniciarScan()" id="btn-scan" style="background:#16a34a;height:36px;align-self:flex-end">
+      <button onclick="iniciarScan()" id="btn-scan" style="background:var(--marca-btn);height:36px;align-self:flex-end">
         Escanear
       </button>
     </div>
-    <div id="scan-status" style="font-size:13px;color:#94a3b8;margin-bottom:10px"></div>
+    <div id="scan-status" style="font-size:13px;color:var(--texto-3);margin-bottom:10px"></div>
     <div id="scan-resultados"></div>
   </div>
 </div>
@@ -56,12 +56,12 @@
     </thead>
     <tbody id="tbody"></tbody>
   </table>
-  <p id="sem-cameras" style="display:none;color:#94a3b8">Nenhuma câmera cadastrada.</p>
+  <p id="sem-cameras" style="display:none;color:var(--texto-3)">Nenhuma câmera cadastrada.</p>
 </div>
 
 <!-- Modal -->
 <div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(2px);z-index:100;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:12px;padding:28px;width:560px;max-width:96vw;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+  <div style="background:var(--superficie);border-radius:12px;padding:28px;width:560px;max-width:96vw;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.18)">
     <h2 id="modal-titulo" style="margin-top:0">Nova Câmera</h2>
     <form id="form-camera" onsubmit="salvarCamera(event)">
       <input type="hidden" id="cam-id" value="">
@@ -128,7 +128,7 @@
       <!-- URL personalizada (opcional — substitui host/canal se preenchida) -->
       <div id="secao-url-custom">
         <label style="display:block;margin-bottom:12px">URL RTSP personalizada
-          <small style="color:#94a3b8;font-weight:normal"> — preencha para substituir os campos acima</small>
+          <small style="color:var(--texto-3);font-weight:normal"> — preencha para substituir os campos acima</small>
           <input id="cam-rtsp-url" type="text" placeholder="rtsp://admin:senha@10.0.200.15:554/stream1"
                  style="width:100%;box-sizing:border-box;margin-top:4px">
         </label>
@@ -147,9 +147,9 @@
       </label>
 
       <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button type="submit" style="background:#16a34a">Salvar</button>
-        <button type="button" id="btn-testar" onclick="testarCamera()" style="background:#16a34a">Testar Conexão</button>
-        <button type="button" onclick="fecharModal()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Cancelar</button>
+        <button type="submit" style="background:var(--marca-btn)">Salvar</button>
+        <button type="button" id="btn-testar" onclick="testarCamera()" style="background:var(--marca-btn)">Testar Conexão</button>
+        <button type="button" onclick="fecharModal()" style="background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda)">Cancelar</button>
       </div>
     </form>
     <div id="teste-resultado" style="margin-top:14px"></div>
@@ -159,7 +159,7 @@
 
 <!-- Modal Lote -->
 <div id="modal-lote" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(2px);z-index:100;align-items:flex-start;justify-content:center;padding:20px 8px;overflow-y:auto">
-  <div style="background:#fff;border-radius:12px;padding:28px;width:1060px;max-width:98vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+  <div style="background:var(--superficie);border-radius:12px;padding:28px;width:1060px;max-width:98vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
     <h2 style="margin-top:0">Adicionar Câmeras em Lote</h2>
 
     <label style="display:block;margin-bottom:16px;max-width:420px">Posto — aplica a todas as linhas
@@ -168,11 +168,11 @@
 
     <!-- Valores padrão para preenchimento -->
     <details style="margin-bottom:16px">
-      <summary style="cursor:pointer;font-size:13px;color:#64748b;padding:10px 14px;background:#f8fafc;border-radius:8px;user-select:none;border:1px solid #e2e8f0">
+      <summary style="cursor:pointer;font-size:13px;color:var(--texto-2);padding:10px 14px;background:var(--superficie-2);border-radius:8px;user-select:none;border:1px solid var(--borda)">
         &#9998; Valores padrão para novas linhas
-        <small style="color:#94a3b8;margin-left:8px">— preenche automaticamente ao gerar ou adicionar linha</small>
+        <small style="color:var(--texto-3);margin-left:8px">— preenche automaticamente ao gerar ou adicionar linha</small>
       </summary>
-      <div style="background:#f8fafc;border-radius:0 0 8px 8px;padding:14px;border:1px solid #e2e8f0;border-top:none">
+      <div style="background:var(--superficie-2);border-radius:0 0 8px 8px;padding:14px;border:1px solid var(--borda);border-top:none">
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px;margin-bottom:12px">
           <label>Tipo
             <select id="lote-tipo" style="width:100%;margin-top:4px">
@@ -205,10 +205,10 @@
             </select>
           </label>
         </div>
-        <button onclick="aplicarPadroesTodas()" style="background:#fff;color:#374151;border:1px solid #e2e8f0;font-size:12px">
+        <button onclick="aplicarPadroesTodas()" style="background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda);font-size:12px">
           Aplicar padrões a todas as linhas
         </button>
-        <small style="color:#94a3b8;margin-left:8px">sobrescreve usuário e senha de cada linha</small>
+        <small style="color:var(--texto-3);margin-left:8px">sobrescreve usuário e senha de cada linha</small>
       </div>
     </details>
 
@@ -216,40 +216,40 @@
     <div style="overflow-x:auto;margin-bottom:14px">
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead>
-          <tr style="background:#f8fafc">
-            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Nome</th>
-            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Local</th>
-            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0;white-space:nowrap">Host / IP</th>
-            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Usuário</th>
-            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Senha</th>
-            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Canal</th>
-            <th style="padding:8px 6px;text-align:center;font-size:11px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Ativo</th>
+          <tr style="background:var(--superficie-2)">
+            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:var(--texto-2);text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Nome</th>
+            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:var(--texto-2);text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Local</th>
+            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:var(--texto-2);text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0;white-space:nowrap">Host / IP</th>
+            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:var(--texto-2);text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Usuário</th>
+            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:var(--texto-2);text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Senha</th>
+            <th style="padding:8px 6px;text-align:left;font-size:11px;font-weight:600;color:var(--texto-2);text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Canal</th>
+            <th style="padding:8px 6px;text-align:center;font-size:11px;font-weight:600;color:var(--texto-2);text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #e2e8f0">Ativo</th>
             <th style="padding:8px 6px;width:28px;border-bottom:2px solid #e2e8f0"></th>
             <th style="padding:8px 6px;width:32px;border-bottom:2px solid #e2e8f0"></th>
           </tr>
         </thead>
         <tbody id="lote-tbody"></tbody>
       </table>
-      <p id="lote-sem-linhas" style="color:#64748b;font-size:13px;text-align:center;padding:16px 0;margin:0">
+      <p id="lote-sem-linhas" style="color:var(--texto-2);font-size:13px;text-align:center;padding:16px 0;margin:0">
         Nenhuma câmera adicionada. Clique em "+ Adicionar Linha".
       </p>
     </div>
 
-    <button onclick="adicionarLinhaLote()" style="background:#fff;color:#374151;border:1px solid #e2e8f0;margin-bottom:16px">+ Adicionar Linha</button>
+    <button onclick="adicionarLinhaLote()" style="background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda);margin-bottom:16px">+ Adicionar Linha</button>
 
     <!-- Barra de progresso -->
     <div id="lote-progresso" style="display:none;margin-bottom:16px">
       <div style="background:#e2e8f0;border-radius:4px;height:8px;overflow:hidden;margin-bottom:6px">
         <div id="lote-barra" style="height:100%;background:#7c3aed;width:0%;transition:width .2s"></div>
       </div>
-      <p id="lote-txt" style="font-size:13px;color:#64748b;margin:0"></p>
+      <p id="lote-txt" style="font-size:13px;color:var(--texto-2);margin:0"></p>
     </div>
 
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <button id="btn-salvar-lote" onclick="salvarLote()" style="background:#16a34a">
+      <button id="btn-salvar-lote" onclick="salvarLote()" style="background:var(--marca-btn)">
         Salvar (<span id="lote-count">0</span>)
       </button>
-      <button onclick="fecharModalLote()" style="background:#fff;color:#374151;border:1px solid #e2e8f0">Cancelar</button>
+      <button onclick="fecharModalLote()" style="background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda)">Cancelar</button>
     </div>
   </div>
 </div>
@@ -258,7 +258,7 @@
   #modal-overlay { display: none; }
   #modal-overlay.aberto { display: flex !important; }
   #modal-lote.aberto { display: flex !important; }
-  .lote-input { background:#fff;border:1px solid #e2e8f0;border-radius:5px;color:#1e293b;padding:4px 7px;font-size:13px;outline:none;transition:border-color .15s }
+  .lote-input { background:var(--superficie);border:1px solid var(--borda);border-radius:5px;color:var(--texto);padding:4px 7px;font-size:13px;outline:none;transition:border-color .15s }
   .lote-input:focus { border-color:#7c3aed;box-shadow:0 0 0 2px rgba(124,58,237,.1) }
   #lote-tbody tr { border-bottom:1px solid #f1f5f9; }
 </style>
@@ -341,15 +341,15 @@ function renderTabela() {
       <td>${cam.camera_tipo}</td>
       <td>${esc(hostOuIndice)}</td>
       <td>${usos.length
-            ? `${usos.length}${detalhe ? `<div style="color:#94a3b8;font-size:12px">${detalhe}</div>` : ''}`
-            : '<span style="color:#94a3b8">—</span>'}</td>
+            ? `${usos.length}${detalhe ? `<div style="color:var(--texto-3);font-size:12px">${detalhe}</div>` : ''}`
+            : '<span style="color:var(--texto-3)">—</span>'}</td>
       <td>${ativo}</td>
       <td style="white-space:nowrap">
         <a href="/roi-camera/${cam.id}" style="display:inline-flex;align-items:center;padding:8px 12px;
            border-radius:7px;background:#0f172a;color:#fff;font-size:14px;font-weight:500;
            text-decoration:none;margin-right:4px">Abrir</a>
-        <button onclick="editarCamera(${cam.id})" style="background:#16a34a;margin-right:4px">Editar</button>
-        <button onclick="removerCamera(${cam.id})" style="background:#dc2626">Remover</button>
+        <button onclick="editarCamera(${cam.id})" style="background:var(--marca-btn);margin-right:4px">Editar</button>
+        <button onclick="removerCamera(${cam.id})" style="background:var(--erro)">Remover</button>
       </td>
     </tr>`;
   });
@@ -587,11 +587,11 @@ async function iniciarScan() {
     ul.style.cssText = 'list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px';
     data.hosts.forEach(ip => {
       const li = document.createElement('li');
-      li.style.cssText = 'display:flex;align-items:center;gap:10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:8px 12px';
+      li.style.cssText = 'display:flex;align-items:center;gap:10px;background:var(--superficie-2);border:1px solid var(--borda);border-radius:6px;padding:8px 12px';
       li.innerHTML = `
-        <span style="font-family:monospace;color:#0f172a;flex:1">${esc(ip)}</span>
-        <span style="font-size:12px;color:#64748b">porta ${esc(porta)}</span>
-        <button onclick="usarIpScan('${esc(ip)}', '${esc(porta)}')" style="background:#16a34a;padding:4px 10px;font-size:12px">
+        <span style="font-family:monospace;color:var(--texto);flex:1">${esc(ip)}</span>
+        <span style="font-size:12px;color:var(--texto-2)">porta ${esc(porta)}</span>
+        <button onclick="usarIpScan('${esc(ip)}', '${esc(porta)}')" style="background:var(--marca-btn);padding:4px 10px;font-size:12px">
           Usar este IP
         </button>`;
       ul.appendChild(li);
@@ -689,7 +689,7 @@ function adicionarLinhaLote(dados = {}) {
     <td id="lote-status-${id}" style="padding:4px 5px;width:28px;text-align:center;font-size:15px"></td>
     <td style="padding:4px 5px">
       <button onclick="removerLinhaLote(${id})"
-              style="background:#dc2626;padding:3px 8px;font-size:12px">✕</button>
+              style="background:var(--erro);padding:3px 8px;font-size:12px">✕</button>
     </td>`;
   tbody.appendChild(tr);
   atualizarContadorLote();

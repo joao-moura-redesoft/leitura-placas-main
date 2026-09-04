@@ -2,25 +2,31 @@
 {% block title %}Configuração — ALPR{% endblock %}
 {% block conteudo %}
 <h1 id="titulo-config" style="cursor:default; user-select:none;" onclick="_toqueSecreto()">Configuração</h1>
-<p style="color:#64748b; margin-bottom: 20px;">Alterações são salvas em <code>config.txt</code> e o pipeline é reiniciado automaticamente.</p>
+<p class="t-suave mb-4">Alterações são salvas em <code>config.txt</code> e o pipeline é reiniciado automaticamente.</p>
 
-<nav class="cfg-tabs">
-  <button class="cfg-tab active" data-tab="camera"   onclick="trocarTab(this)">Câmera</button>
-  <button class="cfg-tab"        data-tab="deteccao" onclick="trocarTab(this)">Detecção</button>
-  <button class="cfg-tab"        data-tab="ocr"      onclick="trocarTab(this)">OCR</button>
-  <button class="cfg-tab"        data-tab="saidas"   onclick="trocarTab(this)">Saídas</button>
-  <button class="cfg-tab"        data-tab="sistema"  onclick="trocarTab(this)">Sistema</button>
-</nav>
+{# role="tablist" + role="tab": eram cinco <button> soltos dentro de um <nav>,
+   anunciados pelo leitor de tela sem nenhuma relacao com os paineis. #}
+<div class="cfg-tabs" role="tablist" aria-label="Seções da configuração">
+  <button type="button" role="tab" id="aba-camera" aria-controls="tab-camera" aria-selected="true" class="cfg-tab active" data-tab="camera" onclick="trocarTab(this)">Câmera</button>
+  <button type="button" role="tab" id="aba-deteccao" aria-controls="tab-deteccao" aria-selected="false" class="cfg-tab" data-tab="deteccao" onclick="trocarTab(this)">Detecção</button>
+  <button type="button" role="tab" id="aba-ocr" aria-controls="tab-ocr" aria-selected="false" class="cfg-tab" data-tab="ocr" onclick="trocarTab(this)">OCR</button>
+  <button type="button" role="tab" id="aba-saidas" aria-controls="tab-saidas" aria-selected="false" class="cfg-tab" data-tab="saidas" onclick="trocarTab(this)">Saídas</button>
+  <button type="button" role="tab" id="aba-sistema" aria-controls="tab-sistema" aria-selected="false" class="cfg-tab" data-tab="sistema" onclick="trocarTab(this)">Sistema</button>
+</div>
 
-<form id="form-config" onsubmit="event.preventDefault(); salvar();">
+{# O formulario cobre as 5 abas, e as inativas sao display:none. Um campo invalido
+     numa aba escondida abortava o submit sem mensagem alguma — o browser nao consegue
+     nem focar o campo para reclamar. `validarAntesDeSalvar` abre a aba do campo antes
+     de reportar. #}
+<form id="form-config" onsubmit="event.preventDefault(); if (validarAntesDeSalvar()) salvar();">
 
 <!-- ═══════════════════════════════════════════════════════ ABA CÂMERA -->
-<div class="tab-pane active" id="tab-camera">
+<div class="tab-pane active" id="tab-camera" role="tabpanel" aria-labelledby="aba-camera" tabindex="0">
 
   <div class="card">
     <h2 style="margin-top:0;">Conexão da Câmera</h2>
     <div class="grid-form">
-      <label>Protocolo <span class="help" data-tip="Tipo de câmera a usar. USB para webcam local, RTSP para câmera IP com URL direta, Intelbras para modelos VIP via protocolo Dahua/RTSP, CSI para câmera flat-cable do Raspberry Pi.">?</span>
+      <label>Protocolo <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Tipo de câmera a usar. USB para webcam local, RTSP para câmera IP com URL direta, Intelbras para modelos VIP via protocolo Dahua/RTSP, CSI para câmera flat-cable do Raspberry Pi.">?</button>
         <select name="camera_tipo" id="camera_tipo" onchange="mostrarSecaoProtocolo()">
           <option value="usb">USB / Webcam local</option>
           <option value="rtsp">RTSP (URL direta — inclui IP/PTZ)</option>
@@ -33,7 +39,7 @@
     <fieldset class="proto-secao" data-proto="usb">
       <legend>USB</legend>
       <div class="grid-form">
-        <label>Índice do dispositivo <span class="help" data-tip="Número da câmera USB no sistema. 0 = primeira câmera, 1 = segunda. Se só houver uma webcam, use 0.">?</span>
+        <label>Índice do dispositivo <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Número da câmera USB no sistema. 0 = primeira câmera, 1 = segunda. Se só houver uma webcam, use 0.">?</button>
           <input type="text" name="camera_indice" placeholder="0">
         </label>
       </div>
@@ -42,10 +48,10 @@
     <fieldset class="proto-secao" data-proto="rtsp">
       <legend>RTSP — URL completa</legend>
       <div class="grid-form">
-        <label style="grid-column: 1 / -1;">URL <span class="help" data-tip="Endereço RTSP completo da câmera IP. Exemplo: rtsp://admin:senha@192.168.1.10:554/cam/realmonitor?channel=1&subtype=1">?</span>
+        <label style="grid-column: 1 / -1;">URL <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Endereço RTSP completo da câmera IP. Exemplo: rtsp://admin:senha@192.168.1.10:554/cam/realmonitor?channel=1&subtype=1">?</button>
           <input type="text" name="camera_indice" placeholder="rtsp://usuario:senha@host:554/path">
         </label>
-        <label>Transporte <span class="help" data-tip="TCP é mais estável e evita perda de frames em redes congestionadas (recomendado). UDP é mais rápido mas pode perder pacotes. Troque para UDP apenas se TCP causar latência excessiva.">?</span>
+        <label>Transporte <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="TCP é mais estável e evita perda de frames em redes congestionadas (recomendado). UDP é mais rápido mas pode perder pacotes. Troque para UDP apenas se TCP causar latência excessiva.">?</button>
           <select name="rtsp_transporte">
             <option value="tcp">TCP (recomendado — mais estável)</option>
             <option value="udp">UDP (mais rápido, pode perder frames)</option>
@@ -57,34 +63,34 @@
     <fieldset class="proto-secao" data-proto="intelbras">
       <legend>Intelbras VIP</legend>
       <div class="grid-form">
-        <label>Host <span class="help" data-tip="Endereço IP da câmera na rede local. Exemplo: 192.168.1.108. Recomenda-se fixar o IP no DHCP do roteador.">?</span>
+        <label>Host <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Endereço IP da câmera na rede local. Exemplo: 192.168.1.108. Recomenda-se fixar o IP no DHCP do roteador.">?</button>
           <input type="text" name="intelbras_host" placeholder="192.168.1.108">
         </label>
-        <label>Porta <span class="help" data-tip="Porta RTSP da câmera. Padrão Intelbras: 554.">?</span>
+        <label>Porta <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Porta RTSP da câmera. Padrão Intelbras: 554.">?</button>
           <input type="number" name="intelbras_porta" min="1" max="65535">
         </label>
-        <label>Usuário <span class="help" data-tip="Usuário de acesso ao stream. Padrão de fábrica: admin.">?</span>
+        <label>Usuário <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Usuário de acesso ao stream. Padrão de fábrica: admin.">?</button>
           <input type="text" name="intelbras_usuario">
         </label>
-        <label>Senha <span class="help" data-tip="Senha do usuário. Deixe em branco para manter a senha já salva sem alterá-la.">?</span>
+        <label>Senha <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Senha do usuário. Deixe em branco para manter a senha já salva sem alterá-la.">?</button>
           <input type="password" name="intelbras_senha" placeholder="••••">
         </label>
-        <label>Canal <span class="help" data-tip="Canal de vídeo. Use 1 para câmeras standalone. Em DVR/NVR, cada câmera tem um canal (1, 2, 3…).">?</span>
+        <label>Canal <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Canal de vídeo. Use 1 para câmeras standalone. Em DVR/NVR, cada câmera tem um canal (1, 2, 3…).">?</button>
           <input type="number" name="intelbras_canal" min="1">
         </label>
-        <label>Subtype <span class="help" data-tip="0 = main stream (alta resolução). 1 = sub stream (menor resolução, recomendado para Raspberry Pi).">?</span>
+        <label>Subtype <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="0 = main stream (alta resolução). 1 = sub stream (menor resolução, recomendado para Raspberry Pi).">?</button>
           <select name="intelbras_subtype">
             <option value="0">0 — main (alta resolução)</option>
             <option value="1">1 — sub (recomendado Pi)</option>
           </select>
         </label>
-        <label>Formato <span class="help" data-tip="'Padrão' funciona na maioria dos modelos VIP. 'Legado' para VIP 1120, 1220 e 1130.">?</span>
+        <label>Formato <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="'Padrão' funciona na maioria dos modelos VIP. 'Legado' para VIP 1120, 1220 e 1130.">?</button>
           <select name="intelbras_formato">
             <option value="padrao">Padrão (maioria dos modelos)</option>
             <option value="legado">Legado (VIP 1120/1220/1130)</option>
           </select>
         </label>
-        <label>Transporte <span class="help" data-tip="TCP é mais estável e evita perda de frames em redes congestionadas (recomendado). UDP é mais rápido mas pode perder pacotes.">?</span>
+        <label>Transporte <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="TCP é mais estável e evita perda de frames em redes congestionadas (recomendado). UDP é mais rápido mas pode perder pacotes.">?</button>
           <select name="rtsp_transporte">
             <option value="tcp">TCP (recomendado — mais estável)</option>
             <option value="udp">UDP (mais rápido, pode perder frames)</option>
@@ -95,23 +101,23 @@
 
     <fieldset class="proto-secao" data-proto="csi">
       <legend>CSI</legend>
-      <p style="color:#94a3b8; margin: 0;">Sem parâmetros adicionais — usa libcamerasrc do Raspberry Pi.</p>
+      <p style="color:var(--texto-3); margin: 0;">Sem parâmetros adicionais — usa libcamerasrc do Raspberry Pi.</p>
     </fieldset>
 
     <div style="margin-top: 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
       <button type="button" onclick="testarConexao()">Testar conexão</button>
-      <span id="teste-status" style="color:#94a3b8;"></span>
+      <span id="teste-status" style="color:var(--texto-3);"></span>
     </div>
     <div id="preview-area" style="margin-top: 12px; display:none;">
-      <p style="color:#94a3b8; margin: 0 0 6px 0;">Preview da câmera (frame único):</p>
-      <img id="preview-img" style="max-width: 100%; max-height: 480px; border-radius: 6px; border: 1px solid #e2e8f0;" alt="Preview">
+      <p style="color:var(--texto-3); margin: 0 0 6px 0;">Preview da câmera (frame único):</p>
+      <img id="preview-img" style="max-width: 100%; max-height: 480px; border-radius: 6px; border:1px solid var(--borda);" alt="Preview">
     </div>
   </div>
 
   <div class="card">
     <h2 style="margin-top:0;">Captura</h2>
     <div class="grid-form">
-      <label>Resolução <span class="help" data-tip="Largura × altura do frame capturado. Resoluções maiores melhoram leitura de placas distantes, mas aumentam uso de CPU e RAM. Para Raspberry Pi, HD (1280×720) é o ponto de equilíbrio recomendado.">?</span>
+      <label>Resolução <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Largura × altura do frame capturado. Resoluções maiores melhoram leitura de placas distantes, mas aumentam uso de CPU e RAM. Para Raspberry Pi, HD (1280×720) é o ponto de equilíbrio recomendado.">?</button>
         <select id="resolucao_preset" onchange="aplicarPreset()">
           <option value="640x480">VGA — 640×480 (mais leve)</option>
           <option value="1280x720">HD — 1280×720 (padrão)</option>
@@ -121,17 +127,17 @@
           <option value="custom">Personalizado</option>
         </select>
       </label>
-      <label>Largura (px) <span class="help" data-tip="Largura do frame em pixels.">?</span>
+      <label>Largura (px) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Largura do frame em pixels.">?</button>
         <input type="number" name="camera_largura" id="camera_largura" min="160" max="3840">
       </label>
-      <label>Altura (px) <span class="help" data-tip="Altura do frame em pixels.">?</span>
+      <label>Altura (px) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Altura do frame em pixels.">?</button>
         <input type="number" name="camera_altura" id="camera_altura" min="120" max="2160">
       </label>
-      <label>FPS da câmera <span class="help" data-tip="Quadros por segundo solicitados à câmera. 15 fps é suficiente para placas em movimento moderado. Valores muito altos consomem CPU sem ganho real.">?</span>
+      <label>FPS da câmera <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Quadros por segundo solicitados à câmera. 15 fps é suficiente para placas em movimento moderado. Valores muito altos consomem CPU sem ganho real.">?</button>
         <input type="number" name="camera_fps" min="1" max="60">
       </label>
     </div>
-    <p style="color:#94a3b8; font-size: 12px; margin: 8px 0 0 0;">
+    <p class="t-suave" style="font-size:12px; margin:8px 0 0 0;">
       Resoluções maiores melhoram a leitura de placas distantes mas pesam no CPU.
       Em câmera USB, FPS pode cair em resoluções altas dependendo do modelo.
     </p>
@@ -141,18 +147,18 @@
 
 
 <!-- ═══════════════════════════════════════════════════════ ABA DETECÇÃO -->
-<div class="tab-pane" id="tab-deteccao">
+<div class="tab-pane" id="tab-deteccao" role="tabpanel" aria-labelledby="aba-deteccao" tabindex="0">
 
   <div class="card">
     <h2 style="margin-top:0;">Modelo de Detecção</h2>
     <div class="grid-form">
-      <label>Backend <span class="help" data-tip="open-image-models (MIT, uso comercial livre) baixa um YOLOv9-t ONNX automaticamente. ONNX local usa um arquivo .onnx seu (models/) e permite votação por múltiplos modelos.">?</span>
+      <label>Backend <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="open-image-models (MIT, uso comercial livre) baixa um YOLOv9-t ONNX automaticamente. ONNX local usa um arquivo .onnx seu (models/) e permite votação por múltiplos modelos.">?</button>
         <select name="detector_backend">
           <option value="open_image_models">open-image-models (MIT — comercial OK)</option>
           <option value="onnx">ONNX local (models/*.onnx)</option>
         </select>
       </label>
-      <label>Modelo (open-image-models) <span class="help" data-tip="Tamanho de entrada do YOLOv9. Menor (256/384) = mais rápido no Raspberry Pi; maior (512/640) = mais preciso. Baixado automaticamente no primeiro uso.">?</span>
+      <label>Modelo (open-image-models) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Tamanho de entrada do YOLOv9. Menor (256/384) = mais rápido no Raspberry Pi; maior (512/640) = mais preciso. Baixado automaticamente no primeiro uso.">?</button>
         <select name="oim_modelo">
           <option value="yolo-v9-t-256-license-plate-end2end">yolo-v9-t 256 (mais rápido)</option>
           <option value="yolo-v9-t-384-license-plate-end2end">yolo-v9-t 384 (equilíbrio)</option>
@@ -162,30 +168,38 @@
           <option value="yolo-v9-s-608-license-plate-end2end">yolo-v9-s 608 (maior)</option>
         </select>
       </label>
-      <label>Modelo principal (ONNX local) <span class="help" data-tip="Usado quando o Backend é 'ONNX local'. Caminho para o arquivo .onnx do modelo treinado para detectar placas.">?</span>
+      <label>Modelo principal (ONNX local) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Usado quando o Backend é 'ONNX local'. Caminho para o arquivo .onnx do modelo treinado para detectar placas.">?</button>
         <input type="text" name="modelo_path">
       </label>
-      <label>Modelos extras de validação <span class="help" data-tip="Modelos ONNX adicionais para confirmar detecções por votação. Coloque os arquivos .onnx na pasta models/ para aparecerem aqui.">?</span>
+      {# NAO pode ser <label>: o <label> externo envolvia os <label> dos checkboxes
+         (HTML invalido) e, como input[type=hidden] nao e "labelable", o controle
+         rotulado virava o PRIMEIRO checkbox de dentro — clicar no texto
+         "Modelos extras de validação" ou no "?" ligava/desligava esse engine sem o
+         usuario perceber. Virou <div> com um <span> de rotulo. #}
+      <div class="campo-composto">
+        <span class="rotulo-campo" id="rot-modelos">Modelos extras de validação <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Modelos ONNX adicionais para confirmar detecções por votação. Coloque os arquivos .onnx na pasta models/ para aparecerem aqui.">?</button></span>
         <input type="hidden" name="detector_modelos_extra" id="modelos-extra-value">
-        <div id="modelos-dropdown" class="engines-dropdown" onclick="toggleModelosDropdown(event)">
+        <button type="button" id="modelos-dropdown" class="engines-dropdown"
+                aria-expanded="false" aria-controls="modelos-panel" aria-labelledby="rot-modelos"
+                onclick="toggleModelosDropdown(event)">
           <span id="modelos-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Nenhum (só modelo principal)</span>
-          <span style="flex-shrink:0;margin-left:6px">▾</span>
-        </div>
+          <span style="flex-shrink:0;margin-left:6px" aria-hidden="true">▾</span>
+        </button>
         <div id="modelos-panel">
-          <div id="modelos-lista" style="padding:8px;font-size:12px;color:#64748b">Carregando…</div>
+          <div id="modelos-lista" style="padding:8px;font-size:12px;color:var(--texto-2)">Carregando…</div>
         </div>
-      </label>
-      <label>Votos mínimos (detector) <span class="help" data-tip="Número mínimo de modelos que precisam detectar a mesma região para aceitar. 1 = aceita qualquer modelo. 2 = exige ≥2 concordando.">?</span>
+      </div>
+      <label>Votos mínimos (detector) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Número mínimo de modelos que precisam detectar a mesma região para aceitar. 1 = aceita qualquer modelo. 2 = exige ≥2 concordando.">?</button>
         <select name="detector_votos_minimos">
           <option value="1">1 — aceita qualquer modelo (padrão)</option>
           <option value="2">2 — exige ≥ 2 modelos concordando</option>
           <option value="3">3 — exige ≥ 3 modelos concordando</option>
         </select>
       </label>
-      <label>Confiança mínima <span class="help" data-tip="Nível mínimo de confiança do YOLO para aceitar uma detecção (0.0 a 1.0). Recomendado: 0.40 a 0.60.">?</span>
+      <label>Confiança mínima <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Nível mínimo de confiança do YOLO para aceitar uma detecção (0.0 a 1.0). Recomendado: 0.40 a 0.60.">?</button>
         <input type="number" step="0.01" min="0" max="1" name="conf_threshold">
       </label>
-      <label>NMS threshold <span class="help" data-tip="Non-Maximum Suppression — elimina detecções duplicadas sobrepostas. Valores menores são mais rigorosos. Recomendado: 0.45.">?</span>
+      <label>NMS threshold <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Non-Maximum Suppression — elimina detecções duplicadas sobrepostas. Valores menores são mais rigorosos. Recomendado: 0.45.">?</button>
         <input type="number" step="0.01" min="0" max="1" name="nms_threshold">
       </label>
     </div>
@@ -193,7 +207,7 @@
 
   <div class="card">
     <h2 style="margin-top:0;">Detecção em 2 Estágios (Veículo → Placa)</h2>
-    <p style="margin-top:0;color:#64748b;font-size:.85rem">
+    <p class="t-suave" style="margin-top:0;font-size:.85rem">
       Detecta o veículo primeiro (YOLOX-s, licença Apache-2.0) e busca a placa só dentro
       dele — elimina falsos positivos fora de veículo (texto de fundo, placas de exemplo
       em telas) e melhora placa pequena/distante. Se nenhum veículo for achado, cai para a
@@ -201,28 +215,28 @@
       Baixe o modelo com <code>python scripts/baixar_modelo.py --veiculo</code>.
     </p>
     <div class="grid-form">
-      <label>Na leitura (Ler Placa / GET) <span class="help" data-tip="Ativa os 2 estágios só na leitura sob demanda, que tolera a latência extra do modelo de veículo. Recomendado: Sim.">?</span>
+      <label>Na leitura (Ler Placa / GET) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Ativa os 2 estágios só na leitura sob demanda, que tolera a latência extra do modelo de veículo. Recomendado: Sim.">?</button>
         <select name="veiculo_dois_estagios_get">
           <option value="sim">Sim — mais preciso</option>
           <option value="nao">Não</option>
         </select>
       </label>
-      <label>No stream ao vivo <span class="help" data-tip="Ativa os 2 estágios também no stream contínuo. Roda 2 modelos por frame — mais preciso, porém mais pesado. Recomendado: Não, a menos que o servidor tenha CPU sobrando.">?</span>
+      <label>No stream ao vivo <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Ativa os 2 estágios também no stream contínuo. Roda 2 modelos por frame — mais preciso, porém mais pesado. Recomendado: Não, a menos que o servidor tenha CPU sobrando.">?</button>
         <select name="veiculo_dois_estagios_live">
           <option value="nao">Não — stream leve</option>
           <option value="sim">Sim — filtra também ao vivo</option>
         </select>
       </label>
-      <label>Modo estrito <span class="help" data-tip="Não = se nenhum veículo for detectado, busca a placa no frame inteiro (nunca fica pior que hoje). Sim = sem veículo, sem placa — filtro mais rigoroso, mas pode perder leituras se o detector de veículo falhar.">?</span>
+      <label>Modo estrito <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Não = se nenhum veículo for detectado, busca a placa no frame inteiro (nunca fica pior que hoje). Sim = sem veículo, sem placa — filtro mais rigoroso, mas pode perder leituras se o detector de veículo falhar.">?</button>
         <select name="veiculo_obrigatorio">
           <option value="nao">Não — cai para frame inteiro (seguro)</option>
           <option value="sim">Sim — exige veículo detectado</option>
         </select>
       </label>
-      <label>Confiança mínima (veículo) <span class="help" data-tip="Nível mínimo de confiança do detector de veículo (0.0 a 1.0). Recomendado: 0.40.">?</span>
+      <label>Confiança mínima (veículo) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Nível mínimo de confiança do detector de veículo (0.0 a 1.0). Recomendado: 0.40.">?</button>
         <input type="number" step="0.01" min="0" max="1" name="veiculo_conf">
       </label>
-      <label>Máx. veículos por frame <span class="help" data-tip="Limita quantos veículos (os maiores primeiro) disparam busca de placa por frame. Protege a latência em cenas movimentadas (estacionamento/rua com muitos veículos visíveis). Recomendado: 5.">?</span>
+      <label>Máx. veículos por frame <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Limita quantos veículos (os maiores primeiro) disparam busca de placa por frame. Protege a latência em cenas movimentadas (estacionamento/rua com muitos veículos visíveis). Recomendado: 5.">?</button>
         <input type="number" step="1" min="1" max="30" name="veiculo_max_veiculos">
       </label>
     </div>
@@ -230,7 +244,7 @@
 
   <div class="card">
     <h2 style="margin-top:0;">Varredura em Janelas (recupera placa de moto)</h2>
-    <p style="margin-top:0;color:#64748b;font-size:.85rem">
+    <p class="t-suave" style="margin-top:0;font-size:.85rem">
       Quando a leitura não acha <strong>nenhuma</strong> placa no recorte do bico, revarre
       esse recorte em janelas sobrepostas menores. É o que recupera placa de <strong>moto
       parada na bomba</strong>: o detector redimensiona tudo o que recebe para 608 px, então
@@ -239,22 +253,29 @@
       Custa passadas extras <em>só</em> nas leituras que iriam falhar de todo jeito.
     </p>
     <div class="grid-form">
-      <label>Ativa na leitura (Ler Placa / GET) <span class="help" data-tip="Recomendado: Sim. Só entra quando a passada normal não achou nada, então não afeta a latência das leituras de carro.">?</span>
+      <label>Ativa na leitura (Ler Placa / GET) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Recomendado: Sim. Só entra quando a passada normal não achou nada, então não afeta a latência das leituras de carro.">?</button>
         <select name="tiles_fallback_get">
           <option value="sim">Sim — recupera placa pequena</option>
           <option value="nao">Não</option>
         </select>
       </label>
-      <label>Lado da janela (px) <span class="help" data-tip="Tamanho alvo de cada janela, em pixels do recorte analisado. Medido em cena real: janelas de ~250-320px pegam moto+placa juntas e detectam; o recorte inteiro não. Recomendado: 300.">?</span>
-        <input type="number" step="10" min="64" max="1280" name="tiles_lado_alvo">
+      <label>Lado da janela (px) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Tamanho alvo de cada janela, em pixels do recorte analisado. Medido em cena real: janelas de ~250-320px pegam moto+placa juntas e detectam; o recorte inteiro não. Recomendado: 300.">?</button>
+        {# step="1": com step="10" e min="64" os unicos valores validos eram 64, 74, ... 294, 304 —
+           e o DEFAULT do sistema e 300 (app/core/config.py:75). O campo ficava em
+           stepMismatch, o Chrome abortava o submit do formulario inteiro sem disparar
+           onsubmit, e "Salvar e reiniciar pipeline" nao fazia nada (o erro so aparecia
+           no console, porque o campo esta numa aba com display:none e nem recebe foco).
+           O config.txt do proprio repo esta com 294: o valor medido foi arredondado
+           pelo spinner e perdido em silencio. #}
+        <input type="number" step="1" min="64" max="1280" name="tiles_lado_alvo">
       </label>
-      <label>Sobreposição <span class="help" data-tip="Sobreposição entre janelas vizinhas. FAIXA ÚTIL ESTREITA: 0.25 a 0.35. Acima disso cada janela cresce até virar o recorte inteiro, que é justamente o enquadramento que falha (medido: 0.40 e 0.50 não acham nada). Recomendado: 0.30 — não mexa sem medir.">?</span>
+      <label>Sobreposição <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Sobreposição entre janelas vizinhas. FAIXA ÚTIL ESTREITA: 0.25 a 0.35. Acima disso cada janela cresce até virar o recorte inteiro, que é justamente o enquadramento que falha (medido: 0.40 e 0.50 não acham nada). Recomendado: 0.30 — não mexa sem medir.">?</button>
         <input type="number" step="0.05" min="0" max="0.9" name="tiles_sobreposicao">
       </label>
-      <label>Máx. janelas por foto <span class="help" data-tip="Teto de janelas varridas por tentativa — freio de latência (~200ms por janela em CPU). Se o recorte pedir mais janelas que o teto, as janelas ficam maiores em vez de deixar parte do recorte sem varrer. Recomendado: 6.">?</span>
+      <label>Máx. janelas por foto <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Teto de janelas varridas por tentativa — freio de latência (~200ms por janela em CPU). Se o recorte pedir mais janelas que o teto, as janelas ficam maiores em vez de deixar parte do recorte sem varrer. Recomendado: 6.">?</button>
         <input type="number" step="1" min="1" max="24" name="tiles_max_janelas">
       </label>
-      <label>Confiança mínima (janelas) <span class="help" data-tip="Limiar só das janelas, mais permissivo que o geral de propósito: aqui já se sabe que o caminho normal falhou, e a placa de moto sai raspando o limiar (0.19 a 0.37 medido). Um recorte ruim ainda tem que passar pelo OCR, pela validação de formato e pelo consenso entre fotos. Recomendado: 0.15.">?</span>
+      <label>Confiança mínima (janelas) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Limiar só das janelas, mais permissivo que o geral de propósito: aqui já se sabe que o caminho normal falhou, e a placa de moto sai raspando o limiar (0.19 a 0.37 medido). Um recorte ruim ainda tem que passar pelo OCR, pela validação de formato e pelo consenso entre fotos. Recomendado: 0.15.">?</button>
         <input type="number" step="0.01" min="0" max="1" name="tiles_conf">
       </label>
     </div>
@@ -263,16 +284,16 @@
   <div class="card">
     <h2 style="margin-top:0;">Modo de Detecção</h2>
     <div class="grid-form">
-      <label>Detecção automática <span class="help" data-tip="Sim = detecta placas continuamente no stream em tempo real. Não = detecção só ocorre ao clicar 'Ler Placa'.">?</span>
+      <label>Detecção automática <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Sim = detecta placas continuamente no stream em tempo real. Não = detecção só ocorre ao clicar 'Ler Placa'.">?</button>
         <select name="deteccao_automatica">
           <option value="sim">Sim — contínua (tempo real)</option>
           <option value="nao">Não — somente pelo botão</option>
         </select>
       </label>
-      <label>FPS máx de detecção <span class="help" data-tip="Limita quantas vezes por segundo o YOLO é executado — e também a frequência do ajuste de imagem (aba Detecção → Ajuste de Ambiente), que roda junto. Reduzir alivia CPU bastante. Recomendado: 5.">?</span>
+      <label>FPS máx de detecção <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Limita quantas vezes por segundo o YOLO é executado — e também a frequência do ajuste de imagem (aba Detecção → Ajuste de Ambiente), que roda junto. Reduzir alivia CPU bastante. Recomendado: 5.">?</button>
         <input type="number" name="deteccao_fps_max" min="1" max="30">
       </label>
-      <label>Fotos mínimas por leitura (botão) <span class="help" data-tip="Número MÍNIMO de fotos tiradas ao clicar 'Ler Placa' antes de considerar parar. O sistema continua tirando fotos até o consenso ficar forte (ver 'Loop de leitura' abaixo) ou até o máximo. Recomendado: 3.">?</span>
+      <label>Fotos mínimas por leitura (botão) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Número MÍNIMO de fotos tiradas ao clicar 'Ler Placa' antes de considerar parar. O sistema continua tirando fotos até o consenso ficar forte (ver 'Loop de leitura' abaixo) ou até o máximo. Recomendado: 3.">?</button>
         <input type="number" name="snapshots_votacao" min="1" max="10">
       </label>
     </div>
@@ -280,20 +301,20 @@
 
   <div class="card">
     <h2 style="margin-top:0;">Loop de Leitura por Confiança (Ler Placa)</h2>
-    <p style="margin-top:0;color:#64748b;font-size:.85rem">
+    <p class="t-suave" style="margin-top:0;font-size:.85rem">
       Em vez de tirar um número fixo de fotos e votar uma vez, o botão "Ler Placa" tira
       fotos incrementalmente e para assim que a concordância entre as leituras ficar forte
       — padrão "reject-retry" usado por ALPR comerciais. Sempre respeita o mínimo de fotos
       acima antes de considerar parar antecipadamente.
     </p>
     <div class="grid-form">
-      <label>Máximo de fotos <span class="help" data-tip="Limite superior de fotos tiradas antes de desistir e responder com o melhor resultado obtido até ali. Recomendado: 12.">?</span>
+      <label>Máximo de fotos <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Limite superior de fotos tiradas antes de desistir e responder com o melhor resultado obtido até ali. Recomendado: 12.">?</button>
         <input type="number" name="leitura_max_tentativas" min="1" max="50">
       </label>
-      <label>Timeout (segundos) <span class="help" data-tip="Tempo máximo do loop de leitura, mesmo que o máximo de fotos não seja atingido. Em CPU cada tentativa pode levar vários segundos (detecção em 2 estágios + ensemble de OCR) — em GPU é bem mais rápido. Recomendado: 25-30 (teto de segurança, o loop já para antes via concordância mínima).">?</span>
+      <label>Timeout (segundos) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Tempo máximo do loop de leitura, mesmo que o máximo de fotos não seja atingido. Em CPU cada tentativa pode levar vários segundos (detecção em 2 estágios + ensemble de OCR) — em GPU é bem mais rápido. Recomendado: 25-30 (teto de segurança, o loop já para antes via concordância mínima).">?</button>
         <input type="number" step="0.5" min="1" max="120" name="leitura_timeout_seg">
       </label>
-      <label>Concordância mínima <span class="help" data-tip="Fração (0 a 1) do peso das leituras que precisa concordar com a placa eleita para parar antecipadamente com confiança. Recomendado: 0.80 (80%).">?</span>
+      <label>Concordância mínima <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Fração (0 a 1) do peso das leituras que precisa concordar com a placa eleita para parar antecipadamente com confiança. Recomendado: 0.80 (80%).">?</button>
         <input type="number" step="0.05" min="0.3" max="1" name="leitura_acordo_minimo">
       </label>
     </div>
@@ -301,7 +322,7 @@
 
   <div class="card">
     <h2 style="margin-top:0;">Modo de captura rápida</h2>
-    <p style="margin-top:0;color:#64748b;font-size:.85rem">
+    <p class="t-suave" style="margin-top:0;font-size:.85rem">
       Perfil opcional que o sistema do posto aciona por chamada, com
       <code>?rapido=1</code> em <code>/api/leitura</code>. Ele responde em poucos segundos
       em vez de dezenas, usando os mesmos modelos do stream ao vivo: uma foto, sem
@@ -311,22 +332,22 @@
       perfis: o que muda é a chance de a leitura sair "a conferir".
     </p>
     <div class="grid-form">
-      <label>Permitir o modo rápido <span class="help" data-tip="Desligar faz o servidor ignorar o parâmetro `rapido=1` e rodar a leitura completa, avisando quem chamou. É o interruptor para um posto onde o perfil leve se mostrou ruim demais, sem precisar mexer no sistema do posto.">?</span>
+      <label>Permitir o modo rápido <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Desligar faz o servidor ignorar o parâmetro `rapido=1` e rodar a leitura completa, avisando quem chamou. É o interruptor para um posto onde o perfil leve se mostrou ruim demais, sem precisar mexer no sistema do posto.">?</button>
         <select name="rapido_ativo">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
         </select>
       </label>
-      <label>Timeout do modo rápido (s) <span class="help" data-tip="Tempo máximo do loop quando a chamada pede o modo rápido. Recomendado: 5.">?</span>
+      <label>Timeout do modo rápido (s) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Tempo máximo do loop quando a chamada pede o modo rápido. Recomendado: 5.">?</button>
         <input type="number" step="0.5" min="1" max="60" name="rapido_timeout_seg">
       </label>
-      <label>Máximo de fotos (rápido) <span class="help" data-tip="Limite de fotos no modo rápido. Duas, e não uma: é a segunda que permite o loop parar por concordância em vez de por tempo esgotado. Recomendado: 2.">?</span>
+      <label>Máximo de fotos (rápido) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Limite de fotos no modo rápido. Duas, e não uma: é a segunda que permite o loop parar por concordância em vez de por tempo esgotado. Recomendado: 2.">?</button>
         <input type="number" name="rapido_max_tentativas" min="1" max="10">
       </label>
-      <label>Fotos mínimas (rápido) <span class="help" data-tip="Mínimo de fotos antes de o modo rápido poder parar. Recomendado: 1.">?</span>
+      <label>Fotos mínimas (rápido) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Mínimo de fotos antes de o modo rápido poder parar. Recomendado: 1.">?</button>
         <input type="number" name="rapido_snapshots_votacao" min="1" max="5">
       </label>
-      <label>Espera pelo 1º frame (s) <span class="help" data-tip="Quanto esperar a câmera ao vivo publicar um quadro antes de desistir. É a maior economia do modo: no perfil completo são 20 segundos, e essa espera acontece ANTES do loop, fora do timeout. Recomendado: 2.">?</span>
+      <label>Espera pelo 1º frame (s) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Quanto esperar a câmera ao vivo publicar um quadro antes de desistir. É a maior economia do modo: no perfil completo são 20 segundos, e essa espera acontece ANTES do loop, fora do timeout. Recomendado: 2.">?</button>
         <input type="number" step="0.5" min="0.5" max="30" name="rapido_espera_frame_seg">
       </label>
     </div>
@@ -335,10 +356,10 @@
   <div class="card">
     <h2 style="margin-top:0;">Filtros e Validação</h2>
     <div class="grid-form">
-      <label>Frames consenso <span class="help" data-tip="Leituras idênticas consecutivas necessárias para registrar uma placa. Aumentar reduz falsos positivos mas atrasa o registro. Recomendado: 3.">?</span>
+      <label>Frames consenso <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Leituras idênticas consecutivas necessárias para registrar uma placa. Aumentar reduz falsos positivos mas atrasa o registro. Recomendado: 3.">?</button>
         <input type="number" name="frames_consenso" min="1" max="20">
       </label>
-      <label>Cooldown (segundos) <span class="help" data-tip="Tempo mínimo entre dois registros da mesma placa. Evita registros repetidos de uma placa parada. Recomendado: 30 segundos.">?</span>
+      <label>Cooldown (segundos) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Tempo mínimo entre dois registros da mesma placa. Evita registros repetidos de uma placa parada. Recomendado: 30 segundos.">?</button>
         <input type="number" name="cooldown_seg" min="0" max="3600">
       </label>
     </div>
@@ -346,46 +367,46 @@
 
   <div class="card">
     <h2 style="margin-top:0;">Ajuste de Imagem por Ambiente</h2>
-    <p style="margin-top:0;color:#64748b;font-size:.85rem">
+    <p class="t-suave" style="margin-top:0;font-size:.85rem">
       Analisa cada frame, detecta a condição da cena (noite, baixa luz, nublado/chuva,
       sol forte) e corrige brilho, contraste e saturação antes da detecção — melhora a
       captura em condições ruins. Perfil atual aparece no Dashboard.
     </p>
     <div class="grid-form">
-      <label>Ativar ajuste adaptativo <span class="help" data-tip="Sim = corrige a imagem automaticamente conforme a luz/contraste do ambiente. Não = usa o frame da câmera sem alteração.">?</span>
+      <label>Ativar ajuste adaptativo <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Sim = corrige a imagem automaticamente conforme a luz/contraste do ambiente. Não = usa o frame da câmera sem alteração.">?</button>
         <select name="ajuste_ambiente">
           <option value="sim">Sim — corrige por ambiente</option>
           <option value="nao">Não — imagem original</option>
         </select>
       </label>
-      <label>Intensidade (0–1) <span class="help" data-tip="Mistura entre imagem original e corrigida. 0 = sem efeito, 1 = correção total. Recomendado: 0.8.">?</span>
+      <label>Intensidade (0–1) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Mistura entre imagem original e corrigida. 0 = sem efeito, 1 = correção total. Recomendado: 0.8.">?</button>
         <input type="number" name="ajuste_forca" min="0" max="1" step="0.05">
       </label>
-      <label>Brilho alvo (0–255) <span class="help" data-tip="Luminância média que o gamma automático tenta atingir. Maior = imagem mais clara. Recomendado: 120.">?</span>
+      <label>Brilho alvo (0–255) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Luminância média que o gamma automático tenta atingir. Maior = imagem mais clara. Recomendado: 120.">?</button>
         <input type="number" name="ajuste_brilho_alvo" min="60" max="220">
       </label>
-      <label>Reclassificar a cada N frames <span class="help" data-tip="A cada quantos frames (de detecção — ver FPS máx de detecção, aba Detecção) a cena é reanalisada. Menor = adapta mais rápido, custa mais CPU. Recomendado: 3.">?</span>
+      <label>Reclassificar a cada N frames <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="A cada quantos frames (de detecção — ver FPS máx de detecção, aba Detecção) a cena é reanalisada. Menor = adapta mais rápido, custa mais CPU. Recomendado: 3.">?</button>
         <input type="number" name="ajuste_recalc_frames" min="1" max="60">
       </label>
-      <label>Contraste local (CLAHE) <span class="help" data-tip="Realça detalhe local — ótimo em neblina/chuva/baixo contraste. Recomendado: Sim.">?</span>
+      <label>Contraste local (CLAHE) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Realça detalhe local — ótimo em neblina/chuva/baixo contraste. Recomendado: Sim.">?</button>
         <select name="ajuste_clahe">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
         </select>
       </label>
-      <label>Balanço de branco <span class="help" data-tip="Remove dominante de cor (ex.: azulado à noite) via gray-world. Recomendado: Sim.">?</span>
+      <label>Balanço de branco <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Remove dominante de cor (ex.: azulado à noite) via gray-world. Recomendado: Sim.">?</button>
         <select name="ajuste_wb">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
         </select>
       </label>
-      <label>Ajuste de saturação <span class="help" data-tip="Compensa a saturação conforme a cena (reforça em pouca luz, segura no sol forte). Recomendado: Sim.">?</span>
+      <label>Ajuste de saturação <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Compensa a saturação conforme a cena (reforça em pouca luz, segura no sol forte). Recomendado: Sim.">?</button>
         <select name="ajuste_saturacao">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
         </select>
       </label>
-      <label>Redução de ruído à noite <span class="help" data-tip="Filtro leve que reduz o ruído típico de pouca luz. Custa um pouco de CPU. Recomendado: Sim.">?</span>
+      <label>Redução de ruído à noite <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Filtro leve que reduz o ruído típico de pouca luz. Custa um pouco de CPU. Recomendado: Sim.">?</button>
         <select name="ajuste_denoise_noite">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
@@ -398,12 +419,12 @@
 
 
 <!-- ═══════════════════════════════════════════════════════ ABA OCR -->
-<div class="tab-pane" id="tab-ocr">
+<div class="tab-pane" id="tab-ocr" role="tabpanel" aria-labelledby="aba-ocr" tabindex="0">
 
   <div class="card">
     <h2 style="margin-top:0;">Engine de Leitura</h2>
     <div class="grid-form">
-      <label>Engine principal <span class="help" data-tip="Motor de leitura de texto. Auto = detecta o formato pela faixa colorida e usa fast-plate-ocr para Mercosul ou EasyOCR para placa antiga (recomendado). Engines não instalados são baixados automaticamente.">?</span>
+      <label>Engine principal <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Motor de leitura de texto. Auto = detecta o formato pela faixa colorida e usa fast-plate-ocr para Mercosul ou EasyOCR para placa antiga (recomendado). Engines não instalados são baixados automaticamente.">?</button>
         <select name="ocr_engine">
           <option value="auto">Auto (Mercosul → fast-plate-ocr · Antigo → EasyOCR)</option>
           <option value="tesseract">Tesseract (leve)</option>
@@ -413,7 +434,7 @@
           <option value="doctr">docTR (transformers)</option>
         </select>
       </label>
-      <label>Tesseract PSM <span class="help" data-tip="Page Segmentation Mode do Tesseract. 6 = bloco uniforme (recomendado). 7 = linha única. 11 = texto esparso. O sistema tenta PSM 6 e 11 automaticamente como fallback.">?</span>
+      <label>Tesseract PSM <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Page Segmentation Mode do Tesseract. 6 = bloco uniforme (recomendado). 7 = linha única. 11 = texto esparso. O sistema tenta PSM 6 e 11 automaticamente como fallback.">?</button>
         <input type="number" name="tesseract_psm" min="0" max="13">
       </label>
     </div>
@@ -422,12 +443,20 @@
   <div class="card">
     <h2 style="margin-top:0;">Validação por Múltiplos Engines</h2>
     <div class="grid-form">
-      <label>Engines extras <span class="help" data-tip="Engines adicionais para confirmar a leitura por votação. Vazio = usa somente o engine principal. Engines não instalados são baixados automaticamente.">?</span>
+      {# NAO pode ser <label>: o <label> externo envolvia os <label> dos checkboxes
+         (HTML invalido) e, como input[type=hidden] nao e "labelable", o controle
+         rotulado virava o PRIMEIRO checkbox de dentro — clicar no texto
+         "Engines extras" ou no "?" ligava/desligava esse engine sem o
+         usuario perceber. Virou <div> com um <span> de rotulo. #}
+      <div class="campo-composto">
+        <span class="rotulo-campo" id="rot-engines">Engines extras <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Engines adicionais para confirmar a leitura por votação. Vazio = usa somente o engine principal. Engines não instalados são baixados automaticamente.">?</button></span>
         <input type="hidden" name="ocr_engines_extra" id="engines-extra-value">
-        <div id="engines-dropdown" class="engines-dropdown" onclick="toggleEnginesDropdown(event)">
+        <button type="button" id="engines-dropdown" class="engines-dropdown"
+                aria-expanded="false" aria-controls="engines-panel" aria-labelledby="rot-engines"
+                onclick="toggleEnginesDropdown(event)">
           <span id="engines-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Nenhum (só engine principal)</span>
-          <span style="flex-shrink:0;margin-left:6px">▾</span>
-        </div>
+          <span style="flex-shrink:0;margin-left:6px" aria-hidden="true">▾</span>
+        </button>
         <div id="engines-panel">
           <label class="engine-check"><input type="checkbox" value="tesseract"      onchange="syncEnginesExtra()"> Tesseract <small>(leve)</small></label>
           <label class="engine-check"><input type="checkbox" value="easyocr"        onchange="syncEnginesExtra()"> EasyOCR <small>(preciso)</small></label>
@@ -435,8 +464,8 @@
           <label class="engine-check"><input type="checkbox" value="paddleocr"      onchange="syncEnginesExtra()"> PaddleOCR <small>(ARM64)</small></label>
           <label class="engine-check"><input type="checkbox" value="doctr"          onchange="syncEnginesExtra()"> docTR <small>(transformers)</small></label>
         </div>
-      </label>
-      <label>Votos mínimos <span class="help" data-tip="Número mínimo de engines que precisam concordar para aceitar a leitura. 1 = aceita qualquer resultado. 2 = exige ≥2 engines concordando.">?</span>
+      </div>
+      <label>Votos mínimos <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Número mínimo de engines que precisam concordar para aceitar a leitura. 1 = aceita qualquer resultado. 2 = exige ≥2 engines concordando.">?</button>
         <select name="ocr_votos_minimos">
           <option value="1">1 — aceita qualquer engine (padrão)</option>
           <option value="2">2 — exige ≥ 2 engines concordando</option>
@@ -450,34 +479,34 @@
 
 
 <!-- ═══════════════════════════════════════════════════════ ABA SAÍDAS -->
-<div class="tab-pane" id="tab-saidas">
+<div class="tab-pane" id="tab-saidas" role="tabpanel" aria-labelledby="aba-saidas" tabindex="0">
 
   <div class="card">
     <h2 style="margin-top:0;">Snapshot e retenção de imagens</h2>
     <div class="grid-form">
-      <label>Salvar snapshot <span class="help" data-tip="Grava uma imagem JPEG do recorte da placa a cada detecção confirmada. Arquivos salvos em static/snapshots/ com nome TIMESTAMP_PLACA.jpg. Custa cerca de 2,6 KB por leitura.">?</span>
+      <label>Salvar snapshot <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Grava uma imagem JPEG do recorte da placa a cada detecção confirmada. Arquivos salvos em static/snapshots/ com nome TIMESTAMP_PLACA.jpg. Custa cerca de 2,6 KB por leitura.">?</button>
         <select name="salvar_snapshot">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
         </select>
       </label>
-      <label>Salvar quadro inteiro <span class="help" data-tip="Guarda também a foto do quadro inteiro da câmera, com a placa marcada — permite conferir depois se pegou o veículo certo e se a área do bico está bem posicionada. É o MAIOR consumidor de disco do sistema: cerca de 376 KB por leitura, 145x o recorte da placa. Desligue em produção se o espaço importar mais que a conferência visual.">?</span>
+      <label>Salvar quadro inteiro <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Guarda também a foto do quadro inteiro da câmera, com a placa marcada — permite conferir depois se pegou o veículo certo e se a área do bico está bem posicionada. É o MAIOR consumidor de disco do sistema: cerca de 376 KB por leitura, 145x o recorte da placa. Desligue em produção se o espaço importar mais que a conferência visual.">?</button>
         <select name="salvar_frame_deteccao">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
         </select>
       </label>
-      <label>Qualidade JPEG <span class="help" data-tip="Qualidade da imagem snapshot (10 = mínima, 100 = máxima). Valores entre 75 e 85 oferecem boa legibilidade com arquivo menor.">?</span>
+      <label>Qualidade JPEG <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Qualidade da imagem snapshot (10 = mínima, 100 = máxima). Valores entre 75 e 85 oferecem boa legibilidade com arquivo menor.">?</button>
         <input type="number" name="snapshot_qualidade" min="10" max="100">
       </label>
-      <label>Leituras com foto <span class="help" data-tip="Quantas leituras recentes continuam guardando imagem. Ao passar do teto, a mais antiga perde as fotos e a LINHA CONTINUA no histórico — placa, hora, bico e confiança seguem disponíveis, só a coluna de imagem fica vazia. Fotos já classificadas em Testes nunca são apagadas. 0 = sem teto. Referência: 2000 leituras ocupam ~760 MB com o quadro inteiro ligado, ~5 MB sem ele.">?</span>
+      <label>Leituras com foto <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Quantas leituras recentes continuam guardando imagem. Ao passar do teto, a mais antiga perde as fotos e a LINHA CONTINUA no histórico — placa, hora, bico e confiança seguem disponíveis, só a coluna de imagem fica vazia. Fotos já classificadas em Testes nunca são apagadas. 0 = sem teto. Referência: 2000 leituras ocupam ~760 MB com o quadro inteiro ligado, ~5 MB sem ele.">?</button>
         <input type="number" name="retencao_max_imagens" min="0" step="100">
       </label>
-      <label>Dias de retenção <span class="help" data-tip="Dias que uma leitura e uma chamada do roteador ficam guardadas antes de serem apagadas POR INTEIRO (linha e imagens). É a política de privacidade — cada posto pode ter prazo próprio em Empresas. 0 = nunca apaga.">?</span>
+      <label>Dias de retenção <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Dias que uma leitura e uma chamada do roteador ficam guardadas antes de serem apagadas POR INTEIRO (linha e imagens). É a política de privacidade — cada posto pode ter prazo próprio em Empresas. 0 = nunca apaga.">?</button>
         <input type="number" name="retencao_dias" min="0">
       </label>
     </div>
-    <p style="margin:10px 0 0;color:#64748b;font-size:.85rem">
+    <p style="margin:10px 0 0;color:var(--texto-2);font-size:.85rem">
       São duas políticas diferentes: <strong>dias de retenção</strong> apaga a leitura inteira
       (privacidade); <strong>leituras com foto</strong> apaga só a imagem e preserva o
       histórico (disco). A imagem é quase todo o custo — a linha ocupa ~200 bytes.
@@ -487,19 +516,19 @@
   <div class="card">
     <h2 style="margin-top:0;">Webhook e Alertas</h2>
     <div class="grid-form">
-      <label>Alertar lista negra <span class="help" data-tip="Envia HTTP POST para a URL do webhook sempre que uma placa cadastrada na lista negra for detectada.">?</span>
+      <label>Alertar lista negra <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Envia HTTP POST para a URL do webhook sempre que uma placa cadastrada na lista negra for detectada.">?</button>
         <select name="alerta_lista_negra">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
         </select>
       </label>
-      <label>Webhook toda detecção <span class="help" data-tip="Envia HTTP POST para a URL do webhook a cada placa detectada (não só lista negra). Payload JSON: {placa, padrao, confianca, snapshot, evento}.">?</span>
+      <label>Webhook toda detecção <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Envia HTTP POST para a URL do webhook a cada placa detectada (não só lista negra). Payload JSON: {placa, padrao, confianca, snapshot, evento}.">?</button>
         <select name="webhook_todas">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
         </select>
       </label>
-      <label style="grid-column: 1 / -1;">URL do webhook <span class="help" data-tip="Endereço HTTP/HTTPS que receberá os alertas via POST com corpo JSON. Deve responder em menos de 5 segundos. Exemplo: https://meuservidor.com/alpr/webhook">?</span>
+      <label style="grid-column: 1 / -1;">URL do webhook <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Endereço HTTP/HTTPS que receberá os alertas via POST com corpo JSON. Deve responder em menos de 5 segundos. Exemplo: https://meuservidor.com/alpr/webhook">?</button>
         <input type="text" name="webhook_url" placeholder="https://exemplo.com/alpr">
       </label>
     </div>
@@ -509,15 +538,15 @@
 
 
 <!-- ═══════════════════════════════════════════════════════ ABA SISTEMA -->
-<div class="tab-pane" id="tab-sistema">
+<div class="tab-pane" id="tab-sistema" role="tabpanel" aria-labelledby="aba-sistema" tabindex="0">
 
   <div class="card">
     <h2 style="margin-top:0;">Servidor</h2>
     <div class="grid-form">
-      <label>Porta HTTP <span class="help" data-tip="Porta TCP em que o servidor web escuta. Padrão: 14000. Mudanças aqui exigem reiniciar o processo Python completamente.">?</span>
+      <label>Porta HTTP <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Porta TCP em que o servidor web escuta. Padrão: 14000. Mudanças aqui exigem reiniciar o processo Python completamente.">?</button>
         <input type="number" name="porta" min="1" max="65535">
       </label>
-      <label>Nível de log <span class="help" data-tip="Verbosidade do log. 'debug' exibe tudo (útil para diagnóstico). 'info' é o normal em produção. 'warning' e 'error' mostram apenas problemas.">?</span>
+      <label>Nível de log <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Verbosidade do log. 'debug' exibe tudo (útil para diagnóstico). 'info' é o normal em produção. 'warning' e 'error' mostram apenas problemas.">?</button>
         <select name="log_level">
           <option value="debug">debug</option>
           <option value="info">info</option>
@@ -530,17 +559,17 @@
 
   <div class="card">
     <h2 style="margin-top:0;">Chave de integração</h2>
-    <p style="margin-top:0;color:#64748b;font-size:14px">
+    <p class="t-suave" style="margin-top:0;font-size:14px">
       É com esta chave que o roteador do posto chama <code>GET /api/leitura</code> — envie
       como header <code>X-API-Key</code> ou como parâmetro <code>?api_key=</code>. Ela é
       gerada sozinha no primeiro boot. Trocar a chave aqui derruba a integração até o
       roteador ser atualizado com o novo valor.
     </p>
     <div class="grid-form">
-      <label style="grid-column: 1 / -1;">Chave da API <span class="help" data-tip="Credencial das integrações sem navegador (o sidecar Java do posto). Vale como acesso de administrador — trate como senha.">?</span>
+      <label style="grid-column: 1 / -1;">Chave da API <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Credencial das integrações sem navegador (o sidecar Java do posto). Vale como acesso de administrador — trate como senha.">?</button>
         <div style="display:flex;gap:8px;align-items:center">
           <input type="text" name="api_key" readonly
-                 style="flex:1;font-family:ui-monospace,monospace;background:#f8fafc">
+                 style="flex:1;font-family:ui-monospace,monospace;background:var(--superficie-2)">
           <button type="button" onclick="copiarApiKey(this)"
                   style="white-space:nowrap">Copiar</button>
         </div>
@@ -551,7 +580,7 @@
   <div class="card">
     <h2 style="margin-top:0;">Segurança</h2>
     <div class="grid-form">
-      <label>Cookie só em HTTPS <span class="help" data-tip="Marca o cookie de sessão como 'Secure' — só é enviado em conexões HTTPS. Ligue quando o servidor estiver atrás de um proxy reverso com TLS; deixe desligado para acesso local (http://localhost) ou o login para de funcionar.">?</span>
+      <label>Cookie só em HTTPS <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Marca o cookie de sessão como 'Secure' — só é enviado em conexões HTTPS. Ligue quando o servidor estiver atrás de um proxy reverso com TLS; deixe desligado para acesso local (http://localhost) ou o login para de funcionar.">?</button>
         <select name="cookie_secure">
           <option value="nao">Não — acesso local/sem TLS</option>
           <option value="sim">Sim — servidor atrás de HTTPS</option>
@@ -562,33 +591,33 @@
 
   <div class="card">
     <h2 style="margin-top:0;">E-mail (SMTP)</h2>
-    <p style="margin-top:0;color:#64748b;font-size:14px">
+    <p class="t-suave" style="margin-top:0;font-size:14px">
       Opcional — sem isto configurado, "esqueci minha senha" e "convidar por e-mail"
       (em Usuários) ficam desligados e mostram um aviso em vez de quebrar.
     </p>
     <div class="grid-form">
-      <label>Servidor SMTP <span class="help" data-tip="Host do servidor de e-mail, ex.: smtp.gmail.com. Vazio = recurso de e-mail desligado.">?</span>
+      <label>Servidor SMTP <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Host do servidor de e-mail, ex.: smtp.gmail.com. Vazio = recurso de e-mail desligado.">?</button>
         <input type="text" name="smtp_host" placeholder="smtp.suaempresa.com">
       </label>
-      <label>Porta <span class="help" data-tip="Porta do SMTP. 587 (STARTTLS) é o padrão mais comum.">?</span>
+      <label>Porta <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Porta do SMTP. 587 (STARTTLS) é o padrão mais comum.">?</button>
         <input type="number" name="smtp_porta" min="1" max="65535">
       </label>
-      <label>Usuário SMTP <span class="help" data-tip="Usuário de autenticação no servidor de e-mail. Vazio = envia sem autenticação (raro, só servidores internos).">?</span>
+      <label>Usuário SMTP <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Usuário de autenticação no servidor de e-mail. Vazio = envia sem autenticação (raro, só servidores internos).">?</button>
         <input type="text" name="smtp_usuario" autocomplete="off">
       </label>
-      <label>Senha SMTP <span class="help" data-tip="Senha (ou senha de app) do usuário SMTP acima. Fica mascarada depois de salva.">?</span>
+      <label>Senha SMTP <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Senha (ou senha de app) do usuário SMTP acima. Fica mascarada depois de salva.">?</button>
         <input type="password" name="smtp_senha" autocomplete="new-password" placeholder="(sem alteração)">
       </label>
-      <label>Remetente <span class="help" data-tip="Endereço que aparece como remetente dos e-mails. Vazio = usa o usuário SMTP.">?</span>
+      <label>Remetente <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Endereço que aparece como remetente dos e-mails. Vazio = usa o usuário SMTP.">?</button>
         <input type="email" name="smtp_remetente" placeholder="alpr@suaempresa.com">
       </label>
-      <label>TLS <span class="help" data-tip="Criptografia STARTTLS na conexão com o servidor de e-mail. Deixe 'Sim' salvo instrução em contrário do seu provedor de e-mail.">?</span>
+      <label>TLS <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Criptografia STARTTLS na conexão com o servidor de e-mail. Deixe 'Sim' salvo instrução em contrário do seu provedor de e-mail.">?</button>
         <select name="smtp_tls">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
         </select>
       </label>
-      <label style="grid-column: 1 / -1;">URL pública do servidor <span class="help" data-tip="Usada para montar os links nos e-mails (ex.: https://alpr.suaempresa.com). Vazio = usa o endereço da própria requisição — funciona na maioria dos casos, mas atrás de proxy reverso o link pode sair com o host interno errado.">?</span>
+      <label style="grid-column: 1 / -1;">URL pública do servidor <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Usada para montar os links nos e-mails (ex.: https://alpr.suaempresa.com). Vazio = usa o endereço da própria requisição — funciona na maioria dos casos, mas atrás de proxy reverso o link pode sair com o host interno errado.">?</button>
         <input type="text" name="url_base" placeholder="https://alpr.suaempresa.com">
       </label>
     </div>
@@ -597,61 +626,61 @@
 
   <div class="card">
     <h2 style="margin-top:0;">Dados do veículo (API Placas)</h2>
-    <p style="margin-top:0;color:#64748b;font-size:14px">
+    <p class="t-suave" style="margin-top:0;font-size:14px">
       Acrescenta à resposta do roteador o <strong>tipo de combustível</strong> e os dados do
       veículo da placa lida, consultados na apiplacas.com.br. <strong>Cada consulta custa
       crédito pré-pago</strong> — por isso a resposta é guardada no banco e a mesma placa só
       é paga uma vez, valendo para todos os postos deste servidor. Desligado, o payload do
       roteador fica exatamente como era antes.
     </p>
-    <p id="apiplacas-estado" style="margin:0 0 12px;font-size:14px;font-weight:600;color:#64748b"></p>
+    <p id="apiplacas-estado" style="margin:0 0 12px;font-size:14px;font-weight:600;color:var(--texto-2)"></p>
     <div class="grid-form">
-      <label>Consultar dados do veículo <span class="help" data-tip="Liga o enriquecimento. Desligado, a resposta de /api/leitura não ganha nenhum campo novo — nada muda para quem já integra.">?</span>
+      <label>Consultar dados do veículo <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Liga o enriquecimento. Desligado, a resposta de /api/leitura não ganha nenhum campo novo — nada muda para quem já integra.">?</button>
         <select name="apiplacas_ativo">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
         </select>
       </label>
-      <label>Token da apiplacas <span class="help" data-tip="Token da sua conta na apiplacas.com.br (menu Painel do Usuário, no site deles). Fica mascarado depois de salvo. Vazio = recurso inerte, mesmo com a opção acima em Sim.">?</span>
+      <label>Token da apiplacas <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Token da sua conta na apiplacas.com.br (menu Painel do Usuário, no site deles). Fica mascarado depois de salvo. Vazio = recurso inerte, mesmo com a opção acima em Sim.">?</button>
         <input type="password" name="apiplacas_token" autocomplete="new-password" placeholder="(sem alteração)">
       </label>
-      <label>Quem dispara a consulta <span class="help" data-tip="Manual: nada consulta sozinho — o abastecimento entrega só o que já está em cache, e você gasta pelo botão no Histórico. Automático: a primeira leitura de cada placa consulta (1 crédito) e as seguintes vêm do cache. Use manual enquanto a cota for curta.">?</span>
+      <label>Quem dispara a consulta <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Manual: nada consulta sozinho — o abastecimento entrega só o que já está em cache, e você gasta pelo botão no Histórico. Automático: a primeira leitura de cada placa consulta (1 crédito) e as seguintes vêm do cache. Use manual enquanto a cota for curta.">?</button>
         <select name="apiplacas_modo">
           <option value="manual">Manual — só quando eu pedir</option>
           <option value="automatico">Automático — no abastecimento</option>
         </select>
       </label>
-      <label>Reconsultar após (dias) <span class="help" data-tip="Depois deste prazo a placa é consultada de novo, para atualizar situação e município. Combustível, marca e modelo não mudam nunca. 180 dias = cerca de 2 consultas por veículo por ano. 0 = nunca reconsultar.">?</span>
+      <label>Reconsultar após (dias) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Depois deste prazo a placa é consultada de novo, para atualizar situação e município. Combustível, marca e modelo não mudam nunca. 180 dias = cerca de 2 consultas por veículo por ano. 0 = nunca reconsultar.">?</button>
         <input type="number" name="apiplacas_ttl_dias" min="0">
       </label>
-      <label>Reconsultar placa inexistente após (dias) <span class="help" data-tip="Prazo para placas que a apiplacas não encontrou. A causa mais comum não é veículo novo, é leitura de OCR errada — uma placa que nunca vai existir e que seria recomprada a cada vencimento. 0 = nunca reconsultar.">?</span>
+      <label>Reconsultar placa inexistente após (dias) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Prazo para placas que a apiplacas não encontrou. A causa mais comum não é veículo novo, é leitura de OCR errada — uma placa que nunca vai existir e que seria recomprada a cada vencimento. 0 = nunca reconsultar.">?</button>
         <input type="number" name="apiplacas_ttl_negativo_dias" min="0">
       </label>
-      <label>Só consultar leitura confirmada <span class="help" data-tip="Sim = não gasta consulta em leitura sem consenso, que pode ser a placa errada (ou nenhuma placa). Ponha Não se o atendente usa marca/modelo/cor para conferir placas duvidosas — mesmo com Sim, a leitura duvidosa ainda mostra o dado se ele já estiver em cache.">?</span>
+      <label>Só consultar leitura confirmada <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Sim = não gasta consulta em leitura sem consenso, que pode ser a placa errada (ou nenhuma placa). Ponha Não se o atendente usa marca/modelo/cor para conferir placas duvidosas — mesmo com Sim, a leitura duvidosa ainda mostra o dado se ele já estiver em cache.">?</button>
         <select name="apiplacas_exigir_confirmada">
           <option value="sim">Sim</option>
           <option value="nao">Não</option>
         </select>
       </label>
-      <label>Tempo máximo da consulta (s) <span class="help" data-tip="Quanto esperar pela apiplacas antes de desistir e responder sem os dados do veículo. Só a primeira leitura de cada placa espera isso; as seguintes vêm do banco, instantâneas.">?</span>
+      <label>Tempo máximo da consulta (s) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Quanto esperar pela apiplacas antes de desistir e responder sem os dados do veículo. Só a primeira leitura de cada placa espera isso; as seguintes vêm do banco, instantâneas.">?</button>
         <input type="text" name="apiplacas_timeout_seg">
       </label>
-      <label>Máx. consultas por minuto <span class="help" data-tip="Freio de rajada, somando todos os postos. Existe para limitar o dano de um laço ou retry mal configurado no roteador. 0 = sem limite.">?</span>
+      <label>Máx. consultas por minuto <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Freio de rajada, somando todos os postos. Existe para limitar o dano de um laço ou retry mal configurado no roteador. 0 = sem limite.">?</button>
         <input type="number" name="apiplacas_max_por_minuto" min="0">
       </label>
-      <label>Máx. consultas por dia <span class="help" data-tip="Teto de gasto diário, contado no banco (sobrevive a reinício do servidor). 0 = sem limite.">?</span>
+      <label>Máx. consultas por dia <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Teto de gasto diário, contado no banco (sobrevive a reinício do servidor). 0 = sem limite.">?</button>
         <input type="number" name="apiplacas_max_por_dia" min="0">
       </label>
-      <label>Pausa após erro de saldo/token (s) <span class="help" data-tip="Quando a apiplacas responde 'sem saldo' ou 'token inválido', insistir não pode dar certo — só atrasa cada abastecimento. O sistema para de tentar por este tempo. Salvar um token novo aqui libera a pausa na hora.">?</span>
+      <label>Pausa após erro de saldo/token (s) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Quando a apiplacas responde 'sem saldo' ou 'token inválido', insistir não pode dar certo — só atrasa cada abastecimento. O sistema para de tentar por este tempo. Salvar um token novo aqui libera a pausa na hora.">?</button>
         <input type="number" name="apiplacas_pausa_erro_seg" min="0">
       </label>
-      <label>Custo por consulta (R$) <span class="help" data-tip="Usado só para estimar o gasto mostrado abaixo. Ajuste se o seu contrato com a apiplacas tiver outro preço.">?</span>
+      <label>Custo por consulta (R$) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Usado só para estimar o gasto mostrado abaixo. Ajuste se o seu contrato com a apiplacas tiver outro preço.">?</button>
         <input type="text" name="apiplacas_custo_consulta">
       </label>
       <div style="grid-column: 1 / -1;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button type="button" onclick="verSaldoApiPlacas(this)">Consultar saldo</button>
-        <span id="apiplacas-saldo" style="color:#64748b;font-size:14px"></span>
-        <span id="apiplacas-uso" style="color:#64748b;font-size:14px;margin-left:auto"></span>
+        <span id="apiplacas-saldo" style="color:var(--texto-2);font-size:14px"></span>
+        <span id="apiplacas-uso" style="color:var(--texto-2);font-size:14px;margin-left:auto"></span>
       </div>
     </div>
   </div>
@@ -672,17 +701,17 @@
     <!-- Posto de demonstração: a árvore que a leitura reativa exige, montada de uma vez.
          Fica ACIMA das chaves do mock de propósito — sem posto, o mock está desarmado
          (`feira_empresa_id` vazio), então preencher placas antes seria preencher no vácuo. -->
-    <div style="background:#fff; border:1px solid #fde68a; border-radius:8px; padding:14px; margin-bottom:16px;">
+    <div style="background:var(--superficie); border:1px solid #fde68a; border-radius:8px; padding:14px; margin-bottom:16px;">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
         <strong style="color:#78350f;">Posto de demonstração</strong>
         <span id="feira-estado" style="font-size:13px; color:#92400e;">carregando…</span>
       </div>
-      <div id="feira-detalhe" style="font-size:13px; color:#374151; margin-top:8px;"></div>
+      <div id="feira-detalhe" style="font-size:13px; color:var(--texto-2); margin-top:8px;"></div>
       <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
         <button type="button" id="btn-feira-criar" onclick="abrirDialogoFeira()"
                 style="background:#b45309;">Criar posto de demonstração</button>
         <button type="button" id="btn-feira-remover" onclick="removerPostoFeira()" hidden
-                style="background:#fff; color:#b91c1c; border:1px solid #fecaca;">Remover</button>
+                style="background:var(--superficie); color:#b91c1c; border:1px solid #fecaca;">Remover</button>
       </div>
 
       <!-- Apontar para um posto que JA EXISTE. Sem isto, quem ja tinha cadastrado posto,
@@ -733,7 +762,7 @@
             </label>
             <button type="button" onclick="escanearRedeFeira()">Procurar câmeras</button>
           </div>
-          <div id="feira-scan" style="font-size:13px; color:#64748b; margin-top:8px;"></div>
+          <div id="feira-scan" style="font-size:13px; color:var(--texto-2); margin-top:8px;"></div>
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px;">
             <label>Host / IP
               <input type="text" id="feira-host" placeholder="192.168.1.108" style="width:100%;">
@@ -755,9 +784,9 @@
         <img id="feira-snapshot" alt="" hidden style="margin-top:8px; max-width:100%; border-radius:6px;">
 
         <div style="display:flex; gap:8px; margin-top:14px;">
-          <button type="button" onclick="criarPostoFeira()" style="background:#16a34a;">Criar</button>
+          <button type="button" onclick="criarPostoFeira()" style="background:var(--marca-btn);">Criar</button>
           <button type="button" onclick="document.getElementById('feira-dialogo').hidden = true;"
-                  style="background:#fff; color:#374151; border:1px solid #e2e8f0;">Cancelar</button>
+                  style="background:var(--superficie); color:var(--texto-2); border:1px solid var(--borda);">Cancelar</button>
         </div>
       </div>
     </div>
@@ -783,22 +812,25 @@
       <small>Separadas por vírgula. Hífen e minúsculas são aceitos (<code>MOK-3H92</code>).</small>
     </label>
 
-    <!-- Fichas da vitrine: o que a tela /feira mostra no card "Bem-vindo!" de cada
-         carrinho. Dado SÓ de exibição (não há internet na feira; combustível real vem
-         da apiplacas) — guardado à parte, em feira_fichas.json. -->
-    <div style="margin-top:16px; background:#fff; border:1px solid #fde68a; border-radius:8px; padding:14px;">
+    <!-- Fichas da demonstração: o card "Bem-vindo!" da tela /feira E o bloco `veiculo`
+         do payload do roteador. Como não há internet na feira, a apiplacas nunca
+         responderia — a ficha é a fonte offline dos dois. Dado sintético, guardado à
+         parte em feira_fichas.json e nunca no cache real de veículos. -->
+    <div style="margin-top:16px; background:var(--superficie); border:1px solid #fde68a; border-radius:8px; padding:14px;">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
         <strong style="color:#78350f;">Fichas da vitrine (tela da feira)</strong>
         <button type="button" onclick="addFichaFeira()"
-                style="background:#fff; color:#374151; border:1px solid #e2e8f0;">+ placa</button>
+                style="background:var(--superficie); color:var(--texto-2); border:1px solid var(--borda);">+ placa</button>
       </div>
       <p style="color:#92400e; font-size:12px; margin:8px 0 12px;">
-        O que a tela <a href="/feira" style="color:#b45309;">Feira</a> exibe no card
-        de cada carrinho. Só exibição — não vem do OCR nem da apiplacas.
+        O que a tela <a href="/feira" style="color:#b45309;">Feira</a> exibe no card de
+        cada carrinho <strong>e</strong> o que o bloco <code>veiculo</code> do payload do
+        roteador entrega quando a leitura é mockada. Não vem do OCR nem da apiplacas —
+        é o que faz a demo funcionar sem internet.
       </p>
       <div id="feira-fichas"></div>
       <div style="margin-top:10px;">
-        <button type="button" onclick="salvarFichasFeira()" style="background:#16a34a;">Salvar fichas</button>
+        <button type="button" onclick="salvarFichasFeira()" style="background:var(--marca-btn);">Salvar fichas</button>
         <span id="feira-fichas-msg" style="font-size:13px; margin-left:10px;"></span>
       </div>
     </div>
@@ -817,18 +849,18 @@
   <div style="display:flex; align-items:center; gap:12px;">
     <div>
       <div style="color:#15803d; font-weight:600; font-size:14px;">Instalando dependência via pip…</div>
-      <div id="banner-pacote" style="color:#374151; font-size:13px; margin-top:2px;"></div>
-      <div style="color:#64748b; font-size:12px; margin-top:4px;">O pipeline será reiniciado automaticamente quando concluir. Aguarde.</div>
+      <div id="banner-pacote" style="color:var(--texto-2); font-size:13px; margin-top:2px;"></div>
+      <div style="color:var(--texto-2); font-size:12px; margin-top:4px;">O pipeline será reiniciado automaticamente quando concluir. Aguarde.</div>
     </div>
   </div>
   <div style="margin-top:10px; height:4px; background:#dcfce7; border-radius:2px; overflow:hidden;">
-    <div id="banner-barra" style="height:100%; width:30%; background:#16a34a; border-radius:2px; animation: slide 1.2s ease-in-out infinite;"></div>
+    <div id="banner-barra" style="height:100%; width:30%; background:var(--marca-btn); border-radius:2px; animation: slide 1.2s ease-in-out infinite;"></div>
   </div>
 </div>
 
 <!-- ═══════════════════════ Rodapé (sempre visível) -->
 <div class="card" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-  <span id="status-msg" style="color:#94a3b8;"></span>
+  <span id="status-msg" class="t-suave t-13" role="status" aria-live="polite"></span>
   <div style="display:flex; gap:8px;">
     <button type="button" onclick="carregar()">Recarregar</button>
     <button type="submit" id="btn-salvar">Salvar e reiniciar pipeline</button>
@@ -839,17 +871,26 @@
 
 <style>
 .feira-aba {
-  background:#fff; color:#78350f; border:1px solid #fde68a; border-radius:6px;
+  background:var(--superficie); color:#78350f; border:1px solid #fde68a; border-radius:6px;
   padding:5px 12px; font-size:13px; cursor:pointer;
 }
-.feira-aba.active { background:#b45309; color:#fff; border-color:#b45309; }
+/* Mesma armadilha: sem uma regra :hover propria, `button:hover:not(:disabled)`
+   pintava as duas abas de verde e o texto marrom (#78350f) sobrava a 1,81:1 —
+   deixando de dar para saber qual das duas estava selecionada. */
+.feira-aba:hover:not(:disabled) {
+  background:#fffbeb; color:#78350f; border-color:#fcd34d; box-shadow:none;
+}
+.feira-aba.active,
+.feira-aba.active:hover:not(:disabled) {
+  background:#b45309; color:#fff; border-color:#b45309; box-shadow:none;
+}
 
 /* ─── Abas ───────────────────────────────────────────────────────── */
 .cfg-tabs {
   display: flex;
   gap: 2px;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
+  background:var(--superficie-3);
+  border:1px solid var(--borda);
   border-radius: 10px;
   padding: 4px;
   margin-bottom: 20px;
@@ -860,7 +901,7 @@
   background: transparent;
   border: none;
   padding: 9px 14px;
-  color: #64748b;
+  color:var(--texto-2);
   cursor: pointer;
   border-radius: 7px;
   font-size: 13px;
@@ -869,43 +910,91 @@
   min-width: 80px;
   white-space: nowrap;
 }
-.cfg-tab:hover { background: #f0fdf4; color: #16a34a; }
-.cfg-tab.active { background: #fff; color: #16a34a; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+/* `:not(:disabled)` NAO e enfeite: sem ele este seletor tem especificidade
+   (0,2,0) e perde para `button:hover:not(:disabled)` do base.css, que e (0,2,1).
+   O resultado era a aba ficando com o FUNDO VERDE do botao primario e o texto
+   em #16a34a por cima = 1,52:1 — o rotulo da aba desaparecia sob o cursor (e no
+   tablet o :hover fica preso depois do toque). base.css documenta a mesma
+   armadilha em .thumb. */
+.cfg-tab:hover:not(:disabled) {
+  background: var(--marca-hover); color: var(--marca-escura); box-shadow: none;
+}
+.cfg-tab.active,
+.cfg-tab.active:hover:not(:disabled) {
+  background: var(--superficie); color: var(--marca-texto); font-weight: 600;
+  box-shadow: var(--sombra-1);
+}
 .tab-pane { display: none; }
 .tab-pane.active { display: block; }
 
 /* ─── Form ───────────────────────────────────────────────────────── */
 .grid-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-.grid-form label { display: flex; flex-direction: column; font-size: 13px; color: #64748b; gap: 4px; font-weight: 500; }
-fieldset { border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; margin-top: 12px; background: #fafbfc; }
-fieldset legend { color: #16a34a; padding: 0 6px; font-weight: 600; font-size: 13px; }
+/* `row wrap`, nao `column`: os filhos de cada label sao [texto do rotulo,
+   botao "?", campo]. Em column os tres empilhavam e o "?" aparecia numa linha
+   solta embaixo do rotulo. Aqui rotulo e "?" ficam lado a lado, e o campo tem
+   flex-basis 100% para quebrar sozinho e ocupar a largura toda. */
+.grid-form label {
+  display: flex; flex-flow: row wrap; align-items: center;
+  font-size: 13px; color: var(--texto-2); gap: 4px; font-weight: 500;
+}
+.grid-form label > input:not([type="checkbox"]):not([type="radio"]),
+.grid-form label > select,
+.grid-form label > textarea { flex: 1 0 100%; margin-top: 0; }
+/* O <small> de ajuda tambem toma a linha inteira, abaixo do campo. */
+.grid-form label > small { flex: 1 0 100%; color: var(--texto-3); font-weight: 400; }
+fieldset { border:1px solid var(--borda); border-radius: 8px; padding: 14px; margin-top: 12px; background: #fafbfc; }
+fieldset legend { color:var(--marca-texto); padding: 0 6px; font-weight: 600; font-size: 13px; }
 .proto-secao { display: none; }
 .proto-secao.ativo { display: block; }
 
+/* Campo composto: mesma aparencia do <label> do .grid-form, mas sem SER um
+   label (ver o comentario na marcacao). `position:relative` ancora o painel. */
+/* Estados do #status-msg. Substituem `statusEl.style.color = '#...'`, que
+   escrevia cor inline (vencendo qualquer classe) usando a paleta de PAINEL
+   ESCURO sobre um card branco: #f87171 dava 2,77:1, #93c5fd 1,80:1 e #fbbf24
+   1,67:1 — o retorno de "Salvo"/"Erro"/"Instalando" era o texto menos legivel
+   da tela. `.st-*` usa os tokens semanticos claros. */
+.st-neutro  { color: var(--texto-2); }
+.st-ok      { color: var(--ok); }
+.st-erro    { color: var(--erro); }
+.st-info    { color: var(--info); }
+.st-atencao { color: var(--atencao); }
+
+.campo-composto { display: flex; flex-direction: column; gap: 4px; position: relative; }
+.rotulo-campo { font-size: 13px; color: var(--texto-2); font-weight: 500; }
+
 /* ─── Dropdown de engines ────────────────────────────────────────── */
 .engines-dropdown {
-  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 7px;
-  padding: 7px 10px; cursor: pointer; color: #1e293b; font-size: 13px;
+  background:var(--superficie-2); border:1px solid var(--borda); border-radius: 7px;
+  padding: 7px 10px; cursor: pointer; color:var(--texto); font-size: 13px;
   display: flex; justify-content: space-between; align-items: center;
   user-select: none; min-height: 36px; transition: border-color .15s;
 }
-.engines-dropdown:hover { border-color: #16a34a; }
+.engines-dropdown:hover { border-color:var(--marca-texto); }
+/* Sobreposto, nao em fluxo. Sem `position` o painel era layout normal: abrir
+   os 5 engines esticava a celula do grid e empurrava "Votos minimos" e todas as
+   linhas seguintes para baixo. A box-shadow ja denunciava a intencao de flutuar. */
 #engines-panel, #modelos-panel {
-  display: none; background: #fff; border: 1px solid #e2e8f0;
-  border-radius: 7px; padding: 6px 4px; margin-top: 2px;
-  box-shadow: 0 4px 12px rgba(0,0,0,.08);
+  display: none;
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--superficie); border: 1px solid var(--borda);
+  border-radius: var(--r-2); padding: 6px 4px; margin-top: 2px;
+  box-shadow: var(--sombra-3);
 }
+/* Os cinco !important daqui existiam so para vencer `.grid-form label`, que
+   pegava estes labels por estarem aninhados dentro de outro label. Com o
+   wrapper agora sendo <div class="campo-composto">, a regra nao alcanca mais. */
 .engine-check {
-  display: flex !important; flex-direction: row !important;
+  display: flex; flex-direction: row;
   align-items: center; gap: 8px; padding: 7px 10px;
-  border-radius: 5px; cursor: pointer; color: #374151 !important;
-  font-size: 13px !important; font-weight: normal !important;
+  border-radius: var(--r-1); cursor: pointer; color: var(--texto-2);
+  font-size: 13px; font-weight: normal;
 }
-.engine-check:hover { background: #f8fafc; }
-.engine-check small { color: #94a3b8; }
+.engine-check:hover { background:var(--superficie-2); }
+.engine-check small { color:var(--texto-3); }
 .engine-check input[type=checkbox] {
   width: 15px; height: 15px; cursor: pointer;
-  accent-color: #16a34a; flex-shrink: 0;
+  accent-color:var(--marca-texto); flex-shrink: 0;
 }
 
 @keyframes slide {
@@ -914,27 +1003,51 @@ fieldset legend { color: #16a34a; padding: 0 6px; font-weight: 600; font-size: 1
 }
 
 /* ─── Tooltip de ajuda ───────────────────────────────────────────── */
+/* Sao 88 destes na pagina, e sao a UNICA documentacao de campos como
+   `tiles_sobreposicao` ou `apiplacas_ttl_negativo_dias`. So apareciam em
+   :hover — que nao existe no tablet, o dispositivo de campo declarado em
+   tokens.css. Viraram <button> (foco por teclado + toque) e o texto passou a
+   aparecer tambem em :focus-visible e com [aria-expanded="true"], que e o que
+   o toque liga. 24px e o minimo da WCAG 2.5.8; os 15px originais nem de perto. */
 .help {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 15px; height: 15px; border-radius: 50%; background: #dcfce7;
-  color: #15803d; font-size: 10px; font-weight: bold; cursor: default;
-  position: relative; margin-left: 4px; flex-shrink: 0;
-  vertical-align: middle; border: 1px solid #bbf7d0; user-select: none;
+  /* 24px, nao 22: WCAG 2.5.8 (AA) pede 24 na menor dimensao, e sao 88 destes
+     na tela — o botao de ajuda nao pode ser o alvo mais difícil da pagina. */
+  width: 24px; height: 24px; min-width: 24px; border-radius: 50%;
+  background: var(--ok-bg); color: var(--marca-texto);
+  font-size: 11px; font-weight: bold; font-family: inherit; cursor: pointer;
+  position: relative; margin-left: 4px; flex-shrink: 0; padding: 0;
+  vertical-align: middle; border: 1px solid var(--marca-borda); user-select: none;
+  box-shadow: none; line-height: 1;
 }
+.help:hover:not(:disabled) {
+  background: var(--marca-borda); color: var(--marca-escura); box-shadow: none;
+}
+/* `width: 280px` fixo + translateX(-50%) fazia o balao da ULTIMA coluna do
+   .grid-form pedir 140px alem da borda da janela: rolagem horizontal no
+   documento e metade do texto de ajuda cortada. */
 .help::after {
   content: attr(data-tip); display: none; position: absolute;
   bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
-  background: #1e293b; color: #e2e8f0; font-size: 12px; font-weight: normal;
-  line-height: 1.5; padding: 8px 12px; border-radius: 6px;
-  border: 1px solid #334155; width: 280px; white-space: normal; z-index: 100;
-  box-shadow: 0 4px 16px rgba(0,0,0,.25); pointer-events: none;
+  background: var(--painel-3); color: var(--painel-texto);
+  font-size: 12px; font-weight: normal; text-align: left;
+  line-height: 1.5; padding: 8px 12px; border-radius: var(--r-1);
+  border: 1px solid var(--painel-borda);
+  width: max-content; max-width: min(280px, calc(100vw - 32px));
+  white-space: normal; z-index: 100;
+  box-shadow: var(--sombra-3); pointer-events: none;
 }
 .help::before {
   content: ''; display: none; position: absolute;
   bottom: calc(100% + 2px); left: 50%; transform: translateX(-50%);
-  border: 6px solid transparent; border-top-color: #334155; z-index: 101; pointer-events: none;
+  border: 6px solid transparent; border-top-color: var(--painel-3); z-index: 101; pointer-events: none;
 }
-.help:hover::after, .help:hover::before { display: block; }
+/* Tres gatilhos, nao um: mouse (:hover), teclado (:focus-visible) e toque
+   (aria-expanded, alternado no clique pelo JS). */
+.help:hover::after,          .help:hover::before,
+.help:focus-visible::after,  .help:focus-visible::before,
+.help[aria-expanded="true"]::after,
+.help[aria-expanded="true"]::before { display: block; }
 </style>
 {% endblock %}
 
@@ -944,11 +1057,56 @@ const form = document.getElementById('form-config');
 const statusEl = document.getElementById('status-msg');
 
 /* ─── Abas ─────────────────────────────────────────────────────────────── */
+/* Ajuda por TOQUE. No tablet nao existe :hover, entao o balao precisa de um
+   estado real. Delegado no document para valer tambem para "?" criados por JS. */
+document.addEventListener('click', e => {
+  const alvo = e.target.closest('.help');
+  document.querySelectorAll('.help[aria-expanded="true"]').forEach(h => {
+    if (h !== alvo) h.setAttribute('aria-expanded', 'false');
+  });
+  if (!alvo) return;
+  e.preventDefault();
+  e.stopPropagation();
+  alvo.setAttribute('aria-expanded', String(alvo.getAttribute('aria-expanded') !== 'true'));
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  document.querySelectorAll('.help[aria-expanded="true"]')
+          .forEach(h => h.setAttribute('aria-expanded', 'false'));
+});
+
 function trocarTab(btn) {
-  document.querySelectorAll('.cfg-tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.cfg-tab').forEach(b => {
+    b.classList.remove('active');
+    b.setAttribute('aria-selected', 'false');
+  });
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
   btn.classList.add('active');
+  btn.setAttribute('aria-selected', 'true');
   document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+}
+
+/* Validação antes de salvar.
+   O formulário cobre as CINCO abas de uma vez e as abas inativas são
+   `display:none`. Quando um campo escondido ficava inválido, o browser abortava
+   o submit inteiro sem conseguir nem focar o campo para reclamar: o botão
+   "Salvar e reiniciar pipeline" simplesmente não fazia nada, e a única pista
+   ficava no console ("An invalid form control ... is not focusable").
+   Aqui a aba do campo é aberta ANTES do reportValidity(), então o operador vê
+   qual campo barrou o salvamento. */
+function validarAntesDeSalvar() {
+  const ruim = form.querySelector(':invalid');
+  if (!ruim) return true;
+
+  const pane = ruim.closest('.tab-pane');
+  if (pane) {
+    const aba = document.querySelector(`.cfg-tab[data-tab="${pane.id.replace(/^tab-/, '')}"]`);
+    if (aba) trocarTab(aba);
+  }
+  ruim.focus();
+  ruim.reportValidity();
+  avisar('Corrija o campo destacado antes de salvar.', 'err');
+  return false;
 }
 
 /* ─── Câmera ────────────────────────────────────────────────────────────── */
@@ -991,7 +1149,13 @@ const _ENGINES_LABEL = {
 function toggleEnginesDropdown(e) {
   e.stopPropagation();
   const panel = document.getElementById('engines-panel');
-  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  // getComputedStyle, nao .style.display: o painel nasce escondido pela FOLHA
+  // DE ESTILO (#engines-panel { display:none }), entao .style.display lia ''
+  // e nunca era igual a 'none'. O primeiro clique escrevia display:none num
+  // painel ja fechado — ou seja, nao acontecia nada — e so o segundo abria.
+  const aberto = getComputedStyle(panel).display !== 'none';
+  panel.style.display = aberto ? 'none' : 'block';
+  document.getElementById('engines-dropdown').setAttribute('aria-expanded', String(!aberto));
 }
 
 function syncEnginesExtra() {
@@ -1021,8 +1185,12 @@ let _modelosCarregados = false;
 function toggleModelosDropdown(e) {
   e.stopPropagation();
   const panel = document.getElementById('modelos-panel');
-  const aberto = panel.style.display !== 'none';
+  // Mesmo defeito do dropdown de engines, com um agravante: como `aberto`
+  // saia true na primeira vez, a condicao abaixo tambem nao rodava e a lista
+  // de modelos nunca era buscada.
+  const aberto = getComputedStyle(panel).display !== 'none';
   panel.style.display = aberto ? 'none' : 'block';
+  document.getElementById('modelos-dropdown').setAttribute('aria-expanded', String(!aberto));
   if (!aberto && !_modelosCarregados) carregarListaModelos();
 }
 
@@ -1178,10 +1346,10 @@ async function carregar() {
     mostrarSecaoProtocolo();
     sincronizarPresetComCampos();
     statusEl.textContent = 'Configuração carregada.';
-    statusEl.style.color = '#94a3b8';
+    statusEl.className = 't-13 st-neutro';
   } catch (e) {
     statusEl.textContent = 'Erro ao carregar configuração: ' + e;
-    statusEl.style.color = '#f87171';
+    statusEl.className = 't-13 st-erro';
   }
 }
 
@@ -1257,7 +1425,7 @@ async function apontarPostoFeira() {
   });
   if (!r.ok) return avisarResposta(r);
   const d = await r.json();
-  avisar(d.armado ? `Modo feira apontado para "${d.nome}".` : 'Modo feira desarmado.', 'ok');
+  avisar(d.armado ? `Modo feira apontado para "${esc(d.nome)}".` : 'Modo feira desarmado.', 'ok');
   await carregarEstadoFeira();
 }
 
@@ -1364,7 +1532,7 @@ async function criarPostoFeira() {
     }
     document.getElementById('feira-dialogo').hidden = true;
     // O aviso da câmera NÃO é erro: o cadastro está montado, só a imagem não veio.
-    if (d.aviso) avisar('Posto de demonstração criado — ' + d.aviso, 'err');
+    if (d.aviso) avisar('Posto de demonstração criado — ' + esc(d.aviso), 'err');
     else avisar('Posto de demonstração pronto.', 'ok');
     await carregarEstadoFeira();
   } catch (e) {
@@ -1412,7 +1580,7 @@ async function carregarFichasFeira() {
 
 function _campoFicha(k, ph, val) {
   return `<input data-k="${k}" placeholder="${ph}" value="${esc(val || '')}"
-            style="width:100%; padding:6px 8px; border:1px solid #e2e8f0; border-radius:6px; font-size:13px;">`;
+            style="width:100%; padding:6px 8px; border:1px solid var(--borda); border-radius:6px; font-size:13px;">`;
 }
 
 function _linhaFicha(placa, f) {
@@ -1420,9 +1588,9 @@ function _linhaFicha(placa, f) {
   return `<div class="ficha-linha" data-placa="${esc(placa)}"
             style="border:1px solid #f1f5f9; border-radius:8px; padding:10px; margin-bottom:8px;">
     <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-      <strong style="font-family:'JetBrains Mono',monospace; letter-spacing:1px; color:#0f172a;">${esc(placa)}</strong>
+      <strong style="font-family:'JetBrains Mono',monospace; letter-spacing:1px; color:var(--texto);">${esc(placa)}</strong>
       <button type="button" onclick="removerFichaFeira(this)"
-              style="margin-left:auto; background:#fff; color:#b91c1c; border:1px solid #fecaca; font-size:12px; padding:3px 10px;">remover</button>
+              style="margin-left:auto; background:var(--superficie); color:#b91c1c; border:1px solid #fecaca; font-size:12px; padding:3px 10px;">remover</button>
     </div>
     <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:8px;">
       ${_campoFicha('apelido', 'Apelido (ex.: Carro de demonstração)', f.apelido)}
@@ -1432,6 +1600,31 @@ function _linhaFicha(placa, f) {
       ${_campoFicha('ano', 'Ano', f.ano)}
       ${_campoFicha('mensagem', 'Mensagem de boas-vindas', f.mensagem)}
     </div>
+    <!-- Campos do REGISTRO: nao aparecem no card da vitrine. Sao o que o bloco
+         "veiculo" do payload do roteador entrega offline (ver app/visao/feira_fichas.py).
+         Em bloco separado e recolhido porque quem esta so ajustando a tela nao precisa
+         ver oito campos de DETRAN, mas quem vai demonstrar a integracao precisa.
+         SEM CRASE aqui: este comentario mora DENTRO da template string desta funcao, e
+         uma crase encerraria a string e derrubaria o script inteiro da pagina. -->
+    <details style="margin-top:8px;">
+      <summary style="cursor:pointer; font-size:12px; color:var(--texto-2);">
+        Registro do veículo (bloco <code>veiculo</code> do payload)
+      </summary>
+      <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:8px; margin-top:8px;">
+        ${_campoFicha('marca', 'Marca (ex.: VW)', f.marca)}
+        ${_campoFicha('ano_modelo', 'Ano do modelo', f.ano_modelo)}
+        ${_campoFicha('combustivel_sigla', 'Sigla do combustível (G, A, D…)', f.combustivel_sigla)}
+        ${_campoFicha('especie', 'Espécie (ex.: Passageiro)', f.especie)}
+        ${_campoFicha('tipo_veiculo', 'Tipo (ex.: Automovel)', f.tipo_veiculo)}
+        ${_campoFicha('situacao', 'Situação (ex.: Sem restrição)', f.situacao)}
+        ${_campoFicha('municipio', 'Município', f.municipio)}
+        ${_campoFicha('uf', 'UF', f.uf)}
+      </div>
+      <small style="color:var(--texto-2);">
+        Campo em branco sai como <code>null</code> no payload — igual a um registro que
+        não informa o dado. <code>Ano</code> e <code>Ano do modelo</code> saem como número.
+      </small>
+    </details>
   </div>`;
 }
 
@@ -1441,7 +1634,7 @@ function renderFichasFeira() {
   const placas = Object.keys(_fichasFeira);
   box.innerHTML = placas.length
     ? placas.map(p => _linhaFicha(p, _fichasFeira[p])).join('')
-    : '<span style="color:#64748b; font-size:13px;">Nenhuma ficha cadastrada. Use "+ placa".</span>';
+    : '<span style="color:var(--texto-2); font-size:13px;">Nenhuma ficha cadastrada. Use "+ placa".</span>';
 }
 
 function addFichaFeira() {
@@ -1534,16 +1727,16 @@ function _iniciarPollingInstalacao() {
       if (st.instalando_pacote) {
         _mostrarBannerInstalacao(st.instalando_pacote);
         statusEl.textContent = 'Instalando ' + st.instalando_pacote + '…';
-        statusEl.style.color = '#93c5fd';
+        statusEl.className = 't-13 st-info';
       } else {
         _esconderBannerInstalacao();
         clearInterval(_pollingTimer); _pollingTimer = null;
         if (st.pipeline) {
           statusEl.textContent = 'Instalação concluída — pipeline reiniciado com sucesso.';
-          statusEl.style.color = '#16a34a';
+          statusEl.className = 't-13 st-ok';
         } else {
           statusEl.textContent = 'Instalação concluída — aguardando pipeline iniciar…';
-          statusEl.style.color = '#fbbf24';
+          statusEl.className = 't-13 st-atencao';
         }
       }
     } catch { /* ignora erros de rede durante instalação */ }
@@ -1578,7 +1771,7 @@ async function salvar() {
   payload['camera_tipo'] = proto;
 
   statusEl.textContent = 'Salvando…';
-  statusEl.style.color = '#94a3b8';
+  statusEl.className = 't-13 st-neutro';
   document.getElementById('btn-salvar').disabled = true;
   try {
     const r = await fetch('/api/config', {
@@ -1588,7 +1781,7 @@ async function salvar() {
     const json = await r.json();
     if (!r.ok) {
       statusEl.textContent = 'Erro: ' + (json.detail || r.status);
-      statusEl.style.color = '#f87171';
+      statusEl.className = 't-13 st-erro';
       document.getElementById('btn-salvar').disabled = false;
       return;
     }
@@ -1605,15 +1798,15 @@ async function salvar() {
     carregarUsoApiPlacas();
     if (json.pipeline_reiniciado) {
       statusEl.textContent = 'Salvo e pipeline reiniciado com sucesso.';
-      statusEl.style.color = '#16a34a';
+      statusEl.className = 't-13 st-ok';
       document.getElementById('btn-salvar').disabled = false;
     } else {
       statusEl.textContent = 'Configuração salva — verificando instalação de dependências…';
-      statusEl.style.color = '#93c5fd';
+      statusEl.className = 't-13 st-info';
     }
   } catch (e) {
     statusEl.textContent = 'Erro de rede: ' + e;
-    statusEl.style.color = '#f87171';
+    statusEl.className = 't-13 st-erro';
     document.getElementById('btn-salvar').disabled = false;
   }
 }
