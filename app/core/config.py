@@ -220,6 +220,29 @@ PADROES: dict[str, str] = {
     # sim = detecta placas continuamente no stream
     # nao = stream ativo mas detecção só pelo botão "Ler Placa"
     "deteccao_automatica": "sim",
+    # Recorta o quadro pela ÁREA DOS BICOS (a união dos ROIs desta câmera) antes de
+    # detectar, no monitoramento contínuo.
+    #
+    # O ROI já existe por bico e a leitura reativa o respeita (`leitura._detectar`); o
+    # contínuo NÃO. `Pipeline._processar_frame` tem o recorte escrito, mas lê `cfg["roi"]`,
+    # que `_cfg_para_camera` só preenche a partir de uma coluna `roi` em `cameras` — coluna
+    # que deixou de existir quando bomba/lado/roi passaram para `bicos` (ver
+    # `app/core/banco/_esquema.py`). O ramo está dormente desde então: o detector do
+    # contínuo sempre olhou o quadro INTEIRO, área desenhada ou não.
+    #
+    # O que isso custa em campo (log de 04/09/2026, cam1): a palavra ENTRADA pintada na
+    # cena está fora de qualquer bico, virou track fixo e rodou o ensemble em recortes de
+    # 70x17 px indefinidamente. Dentro da área dos bicos ela não existe — e o detector
+    # ainda passa a rodar num quadro menor, o que é mais barato, não mais caro.
+    #
+    # DESLIGADO por padrão: uma instalação que só atualizou o código não muda o que o
+    # detector vê. Ligue quando os bicos desta câmera tiverem área desenhada — o valor é
+    # lido na SUBIDA do pipeline, então reinicie a câmera depois de desenhar.
+    #
+    # FAIL-OPEN por construção (ver `pipeline._roi_dos_bicos`): se qualquer bico da câmera
+    # estiver sem área, o recorte não é aplicado. Meio configurado cegaria justamente o
+    # bico que falta desenhar, e isso é pior do que olhar o quadro inteiro.
+    "roi_bicos_no_continuo": "nao",
     "salvar_snapshot": "sim",
     # Guarda também o QUADRO INTEIRO de cada detecção (com a marcação da placa), além do
     # recorte. É o que permite conferir depois se pegou o veículo certo e se a área do
@@ -415,6 +438,25 @@ PADROES: dict[str, str] = {
     # IDs de track — cada um vota do zero e pode emitir uma placa levemente diferente
     # pro mesmo carro, duplicando a linha no histórico.
     "tracker_paciencia_frames": "40",
+    # Tentativas de OCR que um track pode gastar sem produzir UMA leitura válida antes de
+    # o OCR dele ser suspenso (0 = sem teto).
+    #
+    # Existe contra TEXTO DE CENA, não contra veículo difícil, e a condição "nenhuma
+    # leitura válida" é o que separa os dois: a primeira leitura que passa pelo validador
+    # desarma o teto naquele track para sempre, então carro parado na bomba que já leu uma
+    # vez nunca é abandonado por ficar ocluso.
+    #
+    # O caso medido (log de 04/09/2026, cam1): a palavra ENTRADA pintada na cena virou o
+    # trk16, caixa fixa de 70x17 px que o tracker mantém indefinidamente, e rodou o
+    # ensemble com os três modelos convergindo em `ENTRR6DA`/`ENNTFADA`/`ENTTRADA` hora
+    # após hora. Nada disso chega ao banco (`MAX_CORRECOES=2` do validador barra todas),
+    # então o prejuízo é CPU e log — mas é CPU e log sem teto nenhum.
+    #
+    # 60 e não 10: um track que não valida é reexaminado a cada frame de detecção (ver
+    # `_EstadoTrack.contar_tentativa`), então 60 tentativas são ~15-25 s de veículo em
+    # quadro sem uma única leitura. Baixar para 10 arriscaria abandonar placa suja/molhada
+    # que ainda ia sair; subir só atrasa a suspensão do letreiro.
+    "tracker_max_ocr_sem_leitura": "60",
     # ── Ajuste adaptativo de imagem (brilho/contraste/saturação por ambiente) ──
     # Analisa cada frame, classifica a cena (noite/baixa_luz/nublado/sol_forte/normal)
     # e corrige a imagem antes da detecção — melhora a captura em condições ruins.

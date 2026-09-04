@@ -145,6 +145,74 @@ class TestRoiPorCamera:
         assert self._roi2(posto_2cam["bico_id"]) is None
 
 
+class TestRoiDoContinuo:
+    """`pipeline._roi_dos_bicos` — a área que o monitoramento CONTÍNUO passa a respeitar.
+
+    O ROI sempre foi respeitado só pela leitura reativa. `Pipeline._processar_frame` tem o
+    recorte escrito, mas lia `cfg["roi"]`, que vinha de uma coluna `roi` em `cameras` —
+    removida quando bomba/lado/roi passaram para `bicos`. Consequência em campo (log de
+    04/09/2026, cam1): a palavra ENTRADA pintada na cena, fora de qualquer bico, virou track
+    fixo e rodou o ensemble indefinidamente.
+
+    O que estes testes protegem é o FAIL-OPEN. Recortar pela área de alguns bicos cegaria o
+    bico que falta desenhar, e cegar um bico é pior que analisar o quadro inteiro: o
+    quadro inteiro só custa CPU e falso positivo, o bico cego não lê placa nenhuma.
+    """
+
+    def _bico(self, camera_id, roi=None, camera2_id=None, roi2=None, codigo="1"):
+        return {"id": 1, "codigo": codigo, "camera_id": camera_id,
+                "roi": json.dumps(roi) if roi else None,
+                "camera2_id": camera2_id,
+                "roi2": json.dumps(roi2) if roi2 else None}
+
+    def _uniao(self, monkeypatch, bicos, camera_id=7):
+        from app.visao import pipeline
+        monkeypatch.setattr(banco, "bicos_listar", lambda camera_id=None: bicos)
+        return pipeline._roi_dos_bicos(camera_id)
+
+    def test_uniao_cobre_todos_os_bicos_da_camera(self, monkeypatch):
+        """Um retângulo só, e não um por bico: o pipeline faz UMA passada de detecção por
+        tick, e recortar por bico multiplicaria a inferência pelo número de bicos."""
+        assert self._uniao(monkeypatch, [
+            self._bico(7, {"x": 100, "y": 50, "w": 200, "h": 100}, codigo="1"),
+            self._bico(7, {"x": 400, "y": 30, "w": 100, "h": 200}, codigo="2"),
+        ]) == {"x": 100, "y": 30, "w": 400, "h": 200}
+
+    def test_bico_sem_area_desliga_o_recorte(self, monkeypatch):
+        assert self._uniao(monkeypatch, [
+            self._bico(7, {"x": 100, "y": 50, "w": 200, "h": 100}, codigo="1"),
+            self._bico(7, None, codigo="2"),
+        ]) is None
+
+    def test_ignora_o_slot_que_e_de_outra_camera(self, monkeypatch):
+        """`roi` e `roi2` estão em coordenadas de câmeras DIFERENTES. Misturar os dois
+        recortaria o pedaço errado da imagem sem erro nenhum — o mesmo modo de falha do
+        ROI herdado ao trocar a câmera do bico, testado acima."""
+        assert self._uniao(monkeypatch, [
+            self._bico(7, {"x": 10, "y": 10, "w": 100, "h": 100},
+                       camera2_id=9, roi2={"x": 900, "y": 900, "w": 50, "h": 50}),
+        ]) == {"x": 10, "y": 10, "w": 100, "h": 100}
+
+    def test_camera_sem_bico_nao_recorta(self, monkeypatch):
+        assert self._uniao(monkeypatch, []) is None
+
+    def test_area_ilegivel_nao_derruba_a_subida_da_camera(self, monkeypatch):
+        """Subir sem recorte é degradação; subir sem detecção é queda."""
+        from app.visao import pipeline
+        monkeypatch.setattr(banco, "bicos_listar", lambda camera_id=None: [
+            {"id": 1, "codigo": "1", "camera_id": 7, "roi": "{isto nao e json"}])
+        assert pipeline._roi_dos_bicos(7) is None
+
+    def test_falha_de_banco_nao_derruba_a_subida_da_camera(self, monkeypatch):
+        from app.visao import pipeline
+
+        def explode(camera_id=None):
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(banco, "bicos_listar", explode)
+        assert pipeline._roi_dos_bicos(7) is None
+
+
 class TestPreviewPorCamera:
     def test_camera_de_outro_bico_e_recusada(self, admin, posto_2cam):
         """Sem esta checagem o parâmetro viraria seletor de arquivo dentro de

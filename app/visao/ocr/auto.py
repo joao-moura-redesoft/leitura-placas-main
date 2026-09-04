@@ -121,6 +121,21 @@ def _fmt(engine: str, bruto: str, validado) -> str:
 CROP_MIN_LARGURA = 24
 CROP_MIN_ALTURA = 10
 
+# Altura abaixo da qual o recorte está na cauda ruim da distribuição de quem LÊ DE VERDADE.
+# Da mesma medição acima: entre os 526 recortes que produziram leitura válida, a mediana é
+# 58x26 e o p10 é 51x18. Um recorte com menos de 18 px de altura não é descartado (ele às
+# vezes lê), mas está no percentil 10 do que funciona, e a causa disso quase nunca é o OCR:
+# é resolução de origem.
+#
+# Serve para o log dizer QUAL problema olhar. No log de 04/09/2026, cam1, as duas falhas do
+# mesmo instante — `crop=70x18` e `crop=70x17`, com os três modelos discordando entre
+# `EMT1BOA`/`EN5TFADA`/`ENTTRDD` — são recortes largos e RASOS: ~10 px por caractere na
+# horizontal e 17 na vertical, que é a faixa em que A/4, D/0 e T/7 deixam de ser
+# distinguíveis. Trocar de engine, afrouxar validador ou mexer em consenso não recupera
+# pixel que a câmera não entregou; o que recupera é `intelbras_subtype=0` (main stream,
+# 1920x1080 em vez dos 704x576 do sub), que multiplica a altura do recorte por ~2,7.
+CROP_ALTURA_P10 = 18
+
 
 def _sem_leitura() -> dict:
     """Resultado de "não li nada", na forma que `ler`/`ler_detalhado` prometem.
@@ -297,7 +312,12 @@ class AutoOCR:
         # porque com pool plano nao ha escolha a fazer - todos os membros leem sempre e a
         # fusao decide. Foi essa escolha que, ao errar, matava a leitura boa.
         layout = ("moto-mercosul" if e_moto else ("mercosul-carro" if e_mercosul_header else "antigo"))
-        cabecalho = "crop=%dx%dpx aspect=%.2f layout=%s" % (w0, h0, aspect, layout)
+        # `altura-critica` no cabeçalho, e não numa linha própria: a pergunta que ele
+        # responde ("o OCR errou ou a câmera não entregou pixel?") só se responde JUNTO das
+        # leituras cruas que vêm nesta mesma linha. Ver `CROP_ALTURA_P10`.
+        cabecalho = "crop=%dx%dpx aspect=%.2f layout=%s%s" % (
+            w0, h0, aspect, layout,
+            " altura-critica(<%dpx)" % CROP_ALTURA_P10 if h0 < CROP_ALTURA_P10 else "")
 
         brutas = []
         for nome, eng in self._engines():

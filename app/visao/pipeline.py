@@ -112,6 +112,73 @@ def _vale_como_negativo(crop) -> bool:
     return crop_legivel(w, h)
 
 
+def _roi_dos_bicos(camera_db_id: int) -> dict | None:
+    """Retângulo que cobre a área de TODOS os bicos desta câmera, ou None.
+
+    A UNIÃO, e não uma área por bico: o pipeline é um só por câmera e faz uma passada de
+    detecção por tick. Recortar por bico multiplicaria a inferência pelo número de bicos —
+    o oposto do que este recorte existe para fazer. Fora da união não há bico nenhum, e é
+    por definição a parte do quadro que a operação não usa (pista, letreiro, posto vizinho).
+
+    FAIL-OPEN em três casos, todos devolvendo None (= detecta no quadro inteiro, o
+    comportamento de sempre):
+
+      - câmera sem bico: não há área a respeitar;
+      - QUALQUER bico da câmera sem área desenhada: recortar pela área dos outros cegaria
+        justamente o bico que falta configurar, e isso é pior que olhar o quadro todo — é a
+        mesma razão pela qual `cadastro.rois_faltando` considera o posto incompleto;
+      - erro lendo o banco: subir sem recorte é degradação, subir sem detecção é queda.
+
+    Slot importa: um bico com duas câmeras guarda o retângulo da primeira em `roi` e o da
+    segunda em `roi2`, cada um em coordenadas do frame da SUA câmera (ver
+    `banco.slots_do_bico`). Misturar os dois recortaria o pedaço errado da imagem sem erro
+    nenhum — o modo de falha que `testes/unitarios/test_roi_bico.py` documenta.
+    """
+    import json
+
+    try:
+        bicos = banco.bicos_listar(camera_id=camera_db_id)
+    except Exception as e:
+        log.error("Câmera %d: falha ao ler a área dos bicos (%s) — detecção segue no "
+                  "quadro inteiro", camera_db_id, e)
+        return None
+    if not bicos:
+        return None
+
+    caixas: list[dict] = []
+    for b in bicos:
+        for _slot, cam_id, roi_bruto, _papel in banco.slots_do_bico(b):
+            if cam_id != camera_db_id:
+                continue        # o outro slot deste bico, que é de outra câmera
+            if not roi_bruto:
+                log.info("Câmera %d: bico %s sem área desenhada — detecção no quadro "
+                         "inteiro (roi_bicos_no_continuo exige TODOS os bicos com área)",
+                         camera_db_id, b.get("codigo") or b.get("id"))
+                return None
+            try:
+                # Os quatro campos são extraídos um a um, e não usados como vieram: o que
+                # entra aqui virou índice de fatia de numpy (`frame[y:y+h, x:x+w]`), e um
+                # `w` que seja `None` ou string não estoura na hora — recorta errado, ou
+                # nada, e o sintoma aparece como "essa câmera parou de ler".
+                bruto = json.loads(roi_bruto)
+                caixas.append({k: int(bruto[k]) for k in ("x", "y", "w", "h")})
+            except (ValueError, TypeError, KeyError) as e:
+                log.error("Câmera %d: área do bico %s ilegível (%s) — detecção no quadro "
+                          "inteiro", camera_db_id, b.get("codigo") or b.get("id"), e)
+                return None
+
+    if not caixas:
+        return None
+    x0 = min(r["x"] for r in caixas)
+    y0 = min(r["y"] for r in caixas)
+    x1 = max(r["x"] + r["w"] for r in caixas)
+    y1 = max(r["y"] + r["h"] for r in caixas)
+    uniao = {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
+    log.info("Câmera %d: detecção contínua restrita à área dos bicos — %dx%d em (%d,%d), "
+             "união de %d área(s)", camera_db_id, uniao["w"], uniao["h"], x0, y0, len(caixas))
+    return uniao
+
+
 def _maxlen_historico(frames_consenso: int) -> int:
     """Tamanho mínimo do deque `_historico` para que `frames_consenso` sempre caiba.
 
@@ -245,6 +312,12 @@ class Pipeline:
         import json as _json
         roi_raw = cfg.get("roi")
         self.roi: dict | None = _json.loads(roi_raw) if roi_raw else None
+        # Sem `roi` na config (o caso de sempre — ver `roi_bicos_no_continuo`), a área dos
+        # bicos desta câmera é a única definição de "onde a operação acontece" que existe
+        # no cadastro. Só quando explicitamente ligado.
+        if self.roi is None and cfg.get("roi_bicos_no_continuo", "nao").lower() in (
+                "sim", "true", "1"):
+            self.roi = _roi_dos_bicos(camera_db_id)
 
         self._historico: deque = deque(maxlen=_maxlen_historico(self.frames_consenso))
         self._parar = threading.Event()
@@ -263,6 +336,7 @@ class Pipeline:
                 ocr_a_cada_n_frames=int(cfg.get("tracker_ocr_intervalo", "5")),
                 votos_emitir=int(cfg.get("tracker_votos_emitir", "2")),
                 paciencia_frames=int(cfg.get("tracker_paciencia_frames", "40")),
+                max_ocr_sem_leitura=int(cfg.get("tracker_max_ocr_sem_leitura", "60")),
             )
         else:
             self.tracker = None
@@ -513,9 +587,14 @@ class Pipeline:
                 return
             bboxes_roi = self.detector.detectar(frame_det)
             # `deslocar` e não uma comprehension crua: remontar a tupla descartaria o
-            # `tipo_veiculo` que o 2 estágios anexou. Ramo dormente hoje (a tabela
-            # `cameras` não tem coluna `roi`, então `_cfg_para_camera` deixa self.roi
-            # None), mas o dia em que uma ROI de câmera existir o tipo sumiria calado.
+            # `tipo_veiculo` que o 2 estágios anexou.
+            #
+            # Este ramo ficou DORMENTE de 2026 até aqui: `_cfg_para_camera` só preenche
+            # `roi` a partir de uma coluna `roi` em `cameras`, que deixou de existir quando
+            # bomba/lado/roi passaram para `bicos`. Ele volta a ter dono com
+            # `roi_bicos_no_continuo=sim`, que traz a união das áreas dos bicos desta
+            # câmera (ver `_roi_dos_bicos`). As coordenadas do ROI são do frame CHEIO, e é
+            # por isso que a bbox precisa ser deslocada de volta antes de sair daqui.
             bboxes = [deslocar(b, rx, ry) for b in bboxes_roi]
         else:
             bboxes = self.detector.detectar(frame)

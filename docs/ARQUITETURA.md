@@ -355,8 +355,8 @@ Tracker.update(bboxes_xywh, frame)
    └─ fallback para IoU interno (zero dependências externas)
         ↓
 para cada track_id:
-   Tracker.precisa_ocr(track_id)
-   ├─ False → pula OCR (veículo já identificado)
+   Tracker.precisa_ocr(track_id)          ← CONTA a tentativa (ver teto abaixo)
+   ├─ False → pula OCR (já identificado, ou OCR suspenso neste track)
    └─ True  → OCR + Tracker.registrar_ocr(track_id, placa, ...)
                    ↓
               Tracker.placa_pronta(track_id)
@@ -366,7 +366,15 @@ para cada track_id:
 
 **Impacto medido (benchmark):** redução de OCR de 80–99% dependendo de cooldown e FPS.
 
-**Configuração:** `tracker_ativo = sim`, `tracker_ocr_intervalo = 5`, `tracker_votos_emitir = 2`
+**Teto de tentativas sem leitura:** um track que gasta `tracker_max_ocr_sem_leitura`
+tentativas sem produzir UMA leitura válida tem o OCR suspenso. É o perfil de texto de cena
+— letreiro, adesivo, texto de piso —, que é caixa fixa no quadro e não sai dele: em
+04/09/2026 a palavra ENTRADA rodou o ensemble hora após hora numa cam de posto. A primeira
+leitura válida desarma o teto naquele track para sempre, e é isso que impede abandonar
+carro parado na bomba com a placa momentaneamente ocluída.
+
+**Configuração:** `tracker_ativo = sim`, `tracker_ocr_intervalo = 5`,
+`tracker_votos_emitir = 2`, `tracker_max_ocr_sem_leitura = 60`
 
 ---
 

@@ -165,3 +165,66 @@ class TestFusaoPorPosicao:
         pronto = tracker.placa_pronta(tid)
         assert pronto is not None
         assert pronto[0] == "OSL2G55", "o grupo majoritário tem de sobreviver intacto"
+
+
+class TestOcrSuspensoSemLeitura:
+    """Teto de tentativas para o track que nunca produz leitura válida.
+
+    O caso real (log de 04/09/2026, cam1): a palavra ENTRADA pintada na cena entrou como
+    track e o tracker a manteve indefinidamente — caixa fixa, nunca sai do quadro. Cada
+    tentativa rodava o ensemble inteiro para devolver `ENTRR6DA`/`ENNTFADA`/`ENTTRADA`, que
+    o validador recusa. Nada chegava ao banco; o custo era CPU e log, sem teto.
+
+    O contrapeso, e o motivo de o teto olhar `resultados` em vez de contar tentativas
+    seguidas: veículo com placa difícil LÊ de vez em quando, e a primeira leitura válida tem
+    de desarmar o teto para sempre naquele track.
+    """
+
+    def _tracker(self, teto: int):
+        t = Tracker(ocr_a_cada_n_frames=1, votos_emitir=2, paciencia_frames=5,
+                    max_ocr_sem_leitura=teto)
+        t.carregar()
+        return t
+
+    def test_para_de_gastar_ocr_depois_do_teto(self):
+        t = self._tracker(3)
+        tid = _ver_veiculo(t)
+
+        assert t.precisa_ocr(tid)          # tentativa 1
+        assert t.precisa_ocr(tid)          # tentativa 2
+        assert not t.precisa_ocr(tid), "a 3ª tentativa esgota o teto e suspende o OCR"
+
+        for _ in range(5):                 # e não volta em frame nenhum
+            t.update(BBOX, FRAME)
+            assert not t.precisa_ocr(tid)
+
+    def test_uma_leitura_valida_desarma_o_teto(self):
+        """Sem isto, um carro parado na bomba com a placa ocluída por uma pessoa seria
+        abandonado no meio do abastecimento — o oposto do que `paciencia_frames` existe
+        para garantir."""
+        t = self._tracker(3)
+        tid = _ver_veiculo(t)
+
+        assert t.precisa_ocr(tid)
+        t.registrar_ocr(tid, "ABC1D23", "mercosul", 0.9)
+
+        for _ in range(20):
+            t.update(BBOX, FRAME)
+            assert t.precisa_ocr(tid), "track que já leu não pode ser abandonado"
+
+    def test_teto_zero_desliga_a_regra(self):
+        """`tracker_max_ocr_sem_leitura=0` restaura o comportamento anterior à regra."""
+        t = self._tracker(0)
+        tid = _ver_veiculo(t)
+        for _ in range(30):
+            assert t.precisa_ocr(tid)
+
+    def test_emitido_continua_valendo_mais_que_o_teto(self):
+        """A ordem dos dois cortes importa: um track já emitido não pode voltar a gastar
+        tentativa só porque o teto ainda não foi alcançado."""
+        t = self._tracker(0)
+        tid = _ver_veiculo(t)
+        for _ in range(2):
+            t.registrar_ocr(tid, "ABC1D23", "mercosul", 0.9)
+        t.marcar_emitido(tid)
+        assert not t.precisa_ocr(tid)
