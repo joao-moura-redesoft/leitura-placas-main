@@ -330,9 +330,10 @@ com tudo em `null`, mas pedem reações opostas.
 > falha: nada é consultado automaticamente, e o bloco só vem preenchido para placas que
 > alguém já mandou consultar pelo painel.
 
-`origem` diz de onde veio o dado: `"cache"` (nosso banco, instantâneo) ou `"api"`
-(consultado na hora); `null` quando `consulta` é `"indisponivel"`. `motivo` é texto livre
-para diagnóstico humano.
+`origem` diz de onde veio o dado: `"cache"` (nosso banco, instantâneo), `"api"`
+(consultado na hora) ou `"feira"` (ficha local de demonstração — só em servidor em modo
+feira, ver docs/INTEGRACAO_ROTEADOR.md); `null` quando `consulta` é `"indisponivel"` fora
+da demonstração. `motivo` é texto livre para diagnóstico humano.
 
 ### Cuidados
 
@@ -390,7 +391,9 @@ Atenção a duas particularidades desta rota (é a projeção direta do banco):
 - **`confirmada` vem como `0`/`1`**, não `true`/`false`.
 - **`bbox` vem como *string* JSON**, não objeto — precisa de um segundo parse.
 - `origem` diz de onde veio a leitura: `"roteador"` (chamada de abastecimento),
-  `"pipeline"` (monitoramento contínuo) ou `"teste"` (disparada do painel).
+  `"pipeline"` (monitoramento contínuo), `"teste"` (disparada do painel) ou `"feira"`
+  (demonstração — fica FORA do filtro `producao` de propósito, para dado sintético não
+  entrar na taxa de acerto).
 - Leituras anteriores ao multi-tenant, e as do modo contínuo, vêm com `bico_id: null`.
 
 ### `GET /api/placa/{placa}` — resumo consolidado de uma placa

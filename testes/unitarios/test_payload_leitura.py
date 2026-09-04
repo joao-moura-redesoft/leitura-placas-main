@@ -41,6 +41,10 @@ CHAVES_COM_PLACA = {
     # ausente: um campo que só existisse no perfil novo obrigaria o sidecar Java a tratar
     # ausência como um terceiro estado.
     "modo",
+    # `mockada` entrou em 04/09/2026, também nos dois desfechos. Existe porque o modo
+    # feira pode devolver uma placa que NÃO veio do OCR, e até aqui o único sinal disso
+    # era uma frase em `avisos` — texto livre que nenhum consumidor tipado lê.
+    "mockada",
 }
 
 # Chaves do retorno sem placa. Conjunto DIFERENTE de propósito: sem leitura não há
@@ -48,6 +52,7 @@ CHAVES_COM_PLACA = {
 CHAVES_SEM_PLACA = {
     "placa", "mensagem", "frame_url", "camera_id", "bico_id", "bboxes_detectadas",
     "snapshots_analisados", "tentativas", "parada_motivo", "fontes", "avisos", "modo",
+    "mockada",
 }
 
 BICO_ID, CAMERA_ID = 1, 7

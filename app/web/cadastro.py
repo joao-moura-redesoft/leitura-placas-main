@@ -682,6 +682,16 @@ def bicos_ler_placa_teste(id_: int, request: Request, rapido: bool = False):
     if aviso_perfil:
         resultado.setdefault("avisos", []).append(aviso_perfil)
 
+    # Modo feira: mesmo bloco que o GET do roteador vai devolver, montado da ficha local.
+    # Este botão é o ÚNICO jeito de conferir a demo antes do evento sem um roteador na mão
+    # — se ele mostrasse um `veiculo` diferente do que o posto recebe, a conferência
+    # deixaria de valer justamente para o payload novo. Mesmo princípio já aplicado ao
+    # `rapido` e ao `empresa_id` acima: aqui não pode existir caminho próprio.
+    demo = feira_fichas.bloco_de_leitura(resultado)
+    if demo is not None:
+        resultado["veiculo"] = demo
+        return resultado
+
     # Dados do veículo em modo CACHE-ONLY: este fluxo é o botão "Testar como o roteador" e
     # o editor de ROI, clicados em rajada enquanto se ajusta o enquadramento. Cada consulta
     # à apiplacas custa crédito pré-pago, então ajustar câmera não pode gastar dinheiro.
@@ -1042,8 +1052,16 @@ def feira_scan(request: Request, forcar: bool = False):
     return {
         "placa": placa,
         "confianca": resultado.get("confianca"),
-        "origem": resultado.get("origem"),
+        # O mock casou a placa? É o que o kiosk usa para decidir se revela o card de
+        # veículo de demonstração. Antes ele olhava `origem === 'feira'`, que aqui vale
+        # SEMPRE (este endpoint pede `origem="feira"` para a leitura ficar fora de
+        # 'producao') — a placa do celular de um visitante seria saudada como carrinho.
+        "mockada": bool(resultado.get("mockada")),
         "confirmada": resultado.get("confirmada"),
         "tipo_veiculo": resultado.get("tipo_veiculo"),
         "ficha": feira_fichas.ficha_de(placa) if placa else None,
+        # O MESMO bloco que o GET do roteador devolve. O kiosk mostra a `ficha` (rótulos
+        # humanos, `apelido`/`mensagem`); isto aqui existe para a demo poder exibir, na
+        # própria tela, o JSON que o posto vai receber — que é o que se está vendendo.
+        "veiculo": feira_fichas.bloco_de_leitura(resultado),
     }

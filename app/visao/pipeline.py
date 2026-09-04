@@ -729,7 +729,7 @@ class Pipeline:
             _v_demo = validar(placa_demo)
             placa, padrao = _v_demo if _v_demo else (placa_demo, padrao)
             conf, acordo, confirmada = 1.0, 1.0, True
-            origem_deteccao = "feira"
+            origem_deteccao = feira_mod.ORIGEM
 
         # Cooldown por SIMILARIDADE, não string exata: ruído de OCR de 1-2 caracteres
         # (0/O/D/Q, I/1/J...) fazia o mesmo veículo escapar do cooldown e virar uma

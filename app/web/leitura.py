@@ -20,6 +20,7 @@ from app.core import config
 from app.core import estado
 from app.seguranca import limitador
 from app.integracoes import apiplacas
+from app.visao import feira_fichas
 from app.visao import leitura
 from app.visao import pipeline
 
@@ -266,9 +267,28 @@ def bloco_veiculo(resultado: dict, cfg: dict, decorrido: float,
     Devolve None quando o recurso está desligado ou não há placa — nesses casos o payload
     sai byte a byte igual ao de antes desta feature.
 
+    A ÚNICA exceção é leitura MOCKADA (modo feira): aí o bloco vem da ficha local e sai
+    independente da flag, porque a máquina do evento não tem rede nem token. Ver
+    `feira_fichas.bloco_de_leitura` e o comentário no começo do corpo.
+
     `except Exception` amplo: a leitura NUNCA pode quebrar por causa da API externa. Mesmo
     espírito do `_registrar` desta rota e do `_enviar_webhook` do pipeline.
     """
+    # ── Modo feira (MOCK) ─────────────────────────────────────────────────────
+    # ANTES do portão de `apiplacas_ativo`, e isso é o ponto: na máquina da feira não há
+    # rede nem token, então o recurso está desligado e a consulta real só saberia devolver
+    # `indisponivel`. Amarrar a demo à flag deixaria o payload sem `veiculo` exatamente no
+    # cenário para o qual isto existe. Quem restringe o escopo aqui não é a flag e sim o
+    # próprio mock: `bloco_de_leitura` só responde a leitura já mockada, e mock só acontece
+    # no posto de demonstração (`app/visao/feira.py`).
+    #
+    # Devolve o bloco de demonstração mesmo com a apiplacas LIGADA: se a leitura foi
+    # mockada, consultar a placa do carrinho seria gastar crédito para receber dados de
+    # outro veículo (ou nada) e servi-los como se fossem do carro do estande.
+    demo = feira_fichas.bloco_de_leitura(resultado)
+    if demo is not None:
+        return demo
+
     if not config.get_bool(cfg, "apiplacas_ativo") or not resultado.get("placa"):
         return None
     try:

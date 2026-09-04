@@ -22,7 +22,8 @@ from __future__ import annotations
 import json
 import logging
 
-from app.core import config
+from app.core import banco, config
+from app.integracoes import apiplacas
 from app.visao import feira
 
 log = logging.getLogger(__name__)
@@ -40,10 +41,24 @@ def _arquivo():
     """
     return config.CONFIG_PATH.parent / NOME_ARQUIVO
 
-# Campos de uma ficha. Ordem = ordem de exibição no editor. Tudo string livre: o card só
-# mostra o texto, e combustível é rótulo ("Flex", "Gasolina", "Elétrico") cujo ícone o
-# frontend escolhe. `ano` fica string por consistência (config inteiro é do backend real).
-CAMPOS = ("apelido", "modelo", "combustivel", "cor", "ano", "mensagem")
+# Campos de uma ficha, em dois grupos. Ordem = ordem de exibição no editor. Tudo string
+# livre: o card só mostra o texto, e combustível é rótulo ("Flex", "Gasolina", "Elétrico")
+# cujo ícone o frontend escolhe. `ano` fica string por consistência (config inteiro é do
+# backend real) e é convertido na fronteira, em `_curados`.
+
+# O que o card "Bem-vindo!" da vitrine mostra. `apelido` e `mensagem` existem SÓ para a
+# tela: não são campos de registro de veículo e nunca entram no bloco `veiculo` do payload.
+CAMPOS_KIOSK = ("apelido", "modelo", "combustivel", "cor", "ano", "mensagem")
+
+# O resto do registro, para o bloco `veiculo` do payload sair COMPLETO offline (ver
+# `bloco_de_leitura`). Os nomes são exatamente as chaves curadas da apiplacas
+# (`banco.CAMPOS_CURADOS`) de propósito: o mapeamento vira uma cópia por nome, e um campo
+# novo na integração aparece aqui como campo faltando em vez de virar tradução silenciosa.
+# `modelo`/`combustivel`/`cor`/`ano` já vieram do grupo de cima e servem aos dois usos.
+CAMPOS_REGISTRO = ("marca", "ano_modelo", "combustivel_sigla", "especie",
+                   "tipo_veiculo", "situacao", "municipio", "uf")
+
+CAMPOS = (*CAMPOS_KIOSK, *CAMPOS_REGISTRO)
 
 # Ficha embutida do carrinho canônico (ver memória carro-demo-feira-placa). Existe para a
 # tela NUNCA aparecer vazia numa instalação recém-criada: sem isto, reconhecer MOK-3H92
@@ -55,7 +70,24 @@ PADROES: dict[str, dict[str, str]] = {
         "combustivel": "Flex",
         "cor": "Cinza",
         "ano": "2024",
-        "mensagem": "Bem-vindo! Leitura reconhecida com sucesso.",
+        # Sem repetir "Bem-vindo!": esse é o <h1> do card, e a mensagem aparece LOGO
+        # ABAIXO dele na vitrine. A linha aqui serve para dizer o que a demo prova.
+        "mensagem": "Leitura feita pela câmera — sem etiqueta, sem antena e sem parar o veículo.",
+        # Registro: o que dá ao payload da demo a mesma cara de uma consulta real. São
+        # fatos do veículo (um Nivus 2024), não do cadastro do DETRAN.
+        "marca": "VW",
+        "ano_modelo": "2024",
+        "especie": "Passageiro",
+        "tipo_veiculo": "Automovel",
+        "situacao": "Sem restrição",
+        # Deliberadamente EM BRANCO: município/UF de licenciamento e sigla de combustível
+        # da FIPE são dados do registro que ninguém aqui conhece, e a consulta real também
+        # os devolve nulos quando o registro não informa — inventar seria o único jeito de
+        # o payload da demo mentir sobre algo que o posto poderia conferir. O operador
+        # preenche no editor de fichas se a demo pedir.
+        "combustivel_sigla": "",
+        "municipio": "",
+        "uf": "",
     },
 }
 
@@ -121,3 +153,81 @@ def ficha_de(placa: str | None) -> dict[str, str] | None:
     if not norm:
         return None
     return carregar_fichas().get(norm)
+
+
+# ─── Ficha → bloco `veiculo` do payload ──────────────────────────────────────
+# Por que isto existe: no estande NÃO HÁ INTERNET. Sem rede, sem token e com o cache
+# vazio, `apiplacas.consultar` só sabe devolver `indisponivel`, e o payload da demo sairia
+# sem combustível — o campo que a integração existe para entregar e o que o posto quer ver
+# funcionando. A ficha local, que já alimenta o card da vitrine, passa a alimentar também
+# o bloco `veiculo`, com a MESMA forma da consulta real.
+#
+# O que NÃO muda por causa disto: nada escreve na tabela `veiculos` (o cache real segue
+# limpo de dado sintético), e o bloco sai marcado com `origem="feira"` + `motivo`
+# preenchido. É a mesma disciplina do cabeçalho deste arquivo e de `feira.py` — a demo
+# pode parecer produção para o consumidor, mas nunca pode ser CONFUNDIDA com produção por
+# quem mede.
+
+def _inteiro(txt: str | None) -> int | None:
+    """Texto da ficha → int, ou None quando não é número.
+
+    `ano`/`ano_modelo` são INTEIROS no bloco real (`apiplacas.normalizar` usa `_inteiro`),
+    e a ficha guarda tudo como string. Sem esta conversão a demo entregaria `"2024"` onde
+    produção entrega `2024` — divergência de TIPO, que é a que quebra sidecar tipado e a
+    que um teste de forma por chaves não pega.
+    """
+    try:
+        return int(str(txt).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _curados(ficha: dict) -> dict:
+    """Ficha → as chaves de `banco.CAMPOS_CURADOS`, com os tipos do bloco real.
+
+    Cópia por nome (os campos da ficha se chamam igual às chaves curadas), com string
+    vazia virando None: no bloco real, campo ausente é `null`, e mandar `""` faria o
+    consumidor tratar "não informado" como valor.
+    """
+    campos = {k: ((ficha.get(k) or "").strip() or None) for k in banco.CAMPOS_CURADOS}
+    campos["ano"] = _inteiro(ficha.get("ano"))
+    campos["ano_modelo"] = _inteiro(ficha.get("ano_modelo"))
+    return campos
+
+
+def bloco_de_leitura(resultado: dict) -> dict | None:
+    """O bloco `veiculo` desta leitura SE ela foi mockada; None se não foi.
+
+    None significa "siga o caminho normal da apiplacas" — é o desfecho de toda leitura
+    real, inclusive a do celular do visitante, e é o que mantém o resto do payload
+    idêntico ao de antes desta feature.
+
+    O gancho é `resultado["mockada"]`, que só `app/visao/leitura.py` preenche, e só depois
+    de `feira.casar` ter aprovado a placa E o posto. Reconhecer o mock por aqui, em vez de
+    reexecutar `casar`, é o que impede as duas camadas de discordarem sobre o que é leitura
+    de demonstração — uma decidindo pela placa e a outra pela tolerância configurada no
+    meio de um evento.
+
+    E é `mockada`, não `origem == feira.ORIGEM`: a origem também vale "feira" quando quem
+    chama é a própria vitrine, e aí a placa de um visitante ganharia a ficha do carrinho.
+
+    Não olha `apiplacas_ativo` de propósito. O recurso está desligado justamente na
+    máquina da feira (não há token nem rede para justificá-lo ligado), e amarrar a demo a
+    ele deixaria o payload sem `veiculo` exatamente no cenário para o qual isto foi
+    escrito. O escopo continua estreito por outro caminho, mais forte que a flag: só
+    chega aqui leitura já mockada, e mock só existe no posto de demonstração.
+    """
+    if not resultado.get("mockada") or not resultado.get("placa"):
+        return None
+    placa = resultado["placa"]
+    ficha = ficha_de(placa)
+    if ficha is None:
+        log.warning("MODO FEIRA: placa mockada %s sem ficha cadastrada — bloco 'veiculo' "
+                    "sai indisponivel. Cadastre a ficha em /configuracao.", placa)
+        return apiplacas.bloco_sem_ficha(
+            f"veiculo de demonstracao '{placa}' sem ficha cadastrada")
+    log.warning("MODO FEIRA: bloco 'veiculo' de %s montado da ficha LOCAL (MOCK) — "
+                "nao houve consulta a apiplacas.", placa)
+    return apiplacas.bloco_demonstracao(
+        _curados(ficha),
+        motivo=f"dados de demonstracao da ficha local de '{placa}' (modo feira, MOCK)")
