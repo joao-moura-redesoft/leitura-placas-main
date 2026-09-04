@@ -73,6 +73,12 @@ testes/descartados.json
 # Continuam gitignored: são placa e veículo de cliente real, mesma política dos snapshots.
 testes/reais/
 
+# Prints da auditoria de UI/UX (scripts/prints_ui.py). Sao 12 MB de PNG regeneravel:
+# rodar o script de novo produz os prints atualizados, e binario no historico do git nunca
+# mais sai — mesmo argumento do ALPR.exe abaixo. O que fica versionado e a FONTE
+# (scripts/prints_ui.py), que e o que permite reproduzir.
+prints-revisao/
+
 # Executavel do lancador (PyInstaller). NAO versionado de proposito: sao 7 MB de binario,
 # e binario no historico do git nunca mais sai. Ele e ARTEFATO DE RELEASE — anexado ao
 # release do GitHub, junto do ALPR-feira.zip. O que fica versionado e a FONTE dele
