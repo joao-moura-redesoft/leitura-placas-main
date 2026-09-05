@@ -213,8 +213,18 @@ nav a[aria-current="page"]::after {
   padding: 6px 10px; border-radius: var(--r-1); white-space: nowrap; cursor: pointer;
   font-family: inherit; transition: color var(--t-rapida), background var(--t-rapida);
 }
-.nav-menu-trigger:hover { color: var(--marca-escura); background: var(--marca-hover); }
-.nav-menu-trigger[aria-expanded="true"] { color: var(--marca-escura); background: var(--marca-hover); }
+/* `:not(:disabled)` nos DOIS: `.nav-menu-trigger` é um <button> (ver base.html), então
+   caía na armadilha documentada em `button:hover:not(:disabled)` mais abaixo neste
+   arquivo — (0,2,0) contra (0,2,1). O fundo `--marca-hover` nunca era aplicado: vencia
+   `--marca-btn-hover` (#126b35) e o texto `--marca-escura` (#14532d) ficava verde-escuro
+   sobre verde-escuro, a 1,38:1 em vez dos 7,91:1 pretendidos — o rótulo do menu "Mais"
+   sumia ao passar o mouse, em TODAS as telas do painel.
+   O `[aria-expanded="true"]` tem o mesmo peso e o mesmo problema: com o menu ABERTO o
+   rótulo também desaparecia. É a 4ª reincidência desta armadilha (.cfg-tab, .feira-aba,
+   .doc-tab foram as outras) — se você está estilizando o hover de um <button>, leia o
+   comentário da regra `button:hover` antes. */
+.nav-menu-trigger:hover:not(:disabled) { color: var(--marca-escura); background: var(--marca-hover); }
+.nav-menu-trigger[aria-expanded="true"]:not(:disabled) { color: var(--marca-escura); background: var(--marca-hover); }
 
 .nav-menu-itens {
   display: none; position: absolute; top: calc(100% + 4px); left: 0; min-width: 216px;

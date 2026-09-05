@@ -182,6 +182,22 @@
   --t-saida:  260ms cubic-bezier(.16, 1, .3, 1);
 }
 
+/* O atributo `hidden` vale para QUALQUER elemento, inclusive <button>.
+   Sem esta linha ele não funcionava em botão nenhum do sistema: o `[hidden] { display:
+   none }` que esconde o elemento vem da folha do NAVEGADOR (user-agent), e a folha do
+   AUTOR sempre vence a do user-agent — então o `display: inline-flex` de
+   `button, .btn` (base.css) mantinha o botão visível com o atributo posto.
+   Sintoma real: em Configuração, o botão "Remover" do posto de demonstração aparecia
+   antes de existir posto para remover, e `btnRemover.hidden = true` não o escondia —
+   clicar chamava `removerPostoFeira()` sobre um posto inexistente.
+   Aqui e não em base.css porque `tokens.css` é a única folha que as DUAS bases carregam
+   (base.html e auth_base.html), então a regra vale para as telas de login também.
+   `!important` para não perder de nenhum `display` de componente — é o mesmo remédio que
+   `feira.css` já aplicava, mas lá escopado em `.feira-kiosk`, fora do alcance do painel.
+   Vale para <div hidden> por acidente feliz (display:block perde do UA por ordem), mas
+   depender disso é o que criou o bug: agora é explícito para todo elemento. */
+[hidden] { display: none !important; }
+
 /* Respeita quem desativou animação no sistema operacional. Sem isto, as
    entradas de modal e toast viram um problema real de acessibilidade. */
 @media (prefers-reduced-motion: reduce) {
