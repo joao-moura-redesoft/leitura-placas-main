@@ -720,6 +720,10 @@ class _EstaticosPorPosto(_EstaticosApp):
     É o mesmo remendo que `_HlsPorPosto` já aplicava aos segmentos de vídeo (auditoria
     27/08, achado A4); o histórico de leitura tinha ficado de fora. CSS/JS/fonte/favicon
     seguem sem checagem -- não são dado de cliente, e são o volume do site.
+
+    ESCOPO, não autenticação: quem exige login é o `_AuthMiddleware`, antes daqui. Esta
+    classe só decide QUAL posto pode ver o quê, e por isso "sem dono no banco" não é o
+    mesmo que "negado" -- ver o comentário em `get_response`.
     """
 
     _PREFIXO = "snapshots/"
@@ -736,9 +740,23 @@ class _EstaticosPorPosto(_EstaticosApp):
             log.error("Erro ao resolver dono do snapshot %s: %s", rel, e)
             return JSONResponse({"detail": "Erro interno."}, status_code=500)
         if empresa_id is None:
-            # Arquivo órfão (detecção já apagada pela retenção) ou sem posto resolvível.
-            # 404 e não 200: sem dono conhecido não há como afirmar que o pedinte pode ver.
-            return JSONResponse({"detail": "Não encontrado."}, status_code=404)
+            # SEM dono resolvível pelo banco. Três coisas caem aqui, e negar as três
+            # quebrava uma feature inteira:
+            #
+            #  - amostras do `captura_dataset`, que grava em `static/snapshots/` e NÃO
+            #    cria linha em `deteccoes`. São o insumo da fila de classificação de
+            #    `/testes` — com 404 aqui, a fila inteira aparece com as imagens quebradas
+            #    (medido: ~429 amostras esperando rótulo);
+            #  - arquivo órfão, cuja detecção a retenção já apagou;
+            #  - detecção do contínuo em câmera sem posto.
+            #
+            # Nenhuma delas tem posto, então nenhuma pertence ao escopo de um `cliente`:
+            # ele continua levando 404. Quem passa é só quem NÃO tem escopo (admin e
+            # operador), que é exatamente quem classifica o dataset. A checagem de LOGIN
+            # não é afrouxada por isto — ela acontece antes, no `_AuthMiddleware`.
+            if web_deps.empresa_do_usuario(Request(scope)) is not None:
+                return JSONResponse({"detail": "Não encontrado."}, status_code=404)
+            return await super().get_response(path, scope)
         try:
             web_deps.checar_acesso_empresa(Request(scope), empresa_id)
         except HTTPException as e:

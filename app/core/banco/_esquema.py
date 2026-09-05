@@ -230,6 +230,17 @@ def _migrar(c: sqlite3.Connection) -> None:
     # Fica em `_migrar` (não no CREATE TABLE inicial) porque só depois daqui a
     # coluna `bico_id` está garantidamente presente, inclusive em bancos antigos.
     c.execute("CREATE INDEX IF NOT EXISTS idx_deteccoes_bico ON deteccoes(bico_id)")
+    # `empresa_da_imagem` resolve o dono de um snapshot por `snapshot = ? OR frame = ?`
+    # para escopar `/static/snapshots/` por posto (ver `_EstaticosPorPosto`). Sem estes
+    # dois, é table scan com três LEFT JOINs A CADA IMAGEM — e a página de histórico pede
+    # uma por miniatura. Medido em 200 mil linhas: 12,0ms → 0,01ms por consulta, ou seja
+    # ~600ms de scan por carregamento de página com 50 miniaturas.
+    #
+    # DOIS índices e não um composto: a cláusula é um OR entre colunas distintas, que o
+    # SQLite resolve por OR-optimization (uma busca indexada por ramo) — um índice
+    # `(snapshot, frame)` só serviria ao primeiro termo.
+    c.execute("CREATE INDEX IF NOT EXISTS idx_deteccoes_snapshot ON deteccoes(snapshot)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_deteccoes_frame ON deteccoes(frame)")
 
     # Chave de API própria por cliente (opt-in): vazia = /api/leitura continua público
     # para esse posto (comportamento de sempre); preenchida = passa a exigir a chave
