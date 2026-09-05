@@ -30,7 +30,7 @@ def enviar(destinatario: str, assunto: str, corpo_texto: str, cfg: dict | None =
     cfg = cfg if cfg is not None else config.carregar()
     host = cfg.get("smtp_host", "").strip()
     if not host:
-        log.warning("E-mail '%s' para %s NÃO enviado — smtp_host não configurado (/configuracao)",
+        log.warning("E-mail '%s' para %s NÃO enviado: smtp_host não configurado (/configuracao)",
                     assunto, destinatario)
         return False
 

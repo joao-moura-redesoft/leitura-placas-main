@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Automações — ALPR{% endblock %}
+{% block title %}Automações | ALPR{% endblock %}
 {% block conteudo %}
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
   <h1 style="margin:0">Automações</h1>
@@ -10,7 +10,7 @@
 
 <p style="color:var(--texto-2);margin:-10px 0 20px;font-size:14px">
   Cada posto pode ter até 2 automações rodando em paralelo. O código é o valor que o
-  roteador (sidecar do posto) envia no GET reativo — precisa bater exatamente.
+  roteador (sidecar do posto) envia no GET reativo. Precisa bater exatamente.
 </p>
 
 <div class="card" style="margin-bottom:16px">
@@ -37,7 +37,7 @@
         <select id="f-empresa" required style="width:100%;margin-top:4px"></select>
       </label>
       <label style="display:block;margin-bottom:12px">Código
-        <small style="color:var(--texto-3);font-weight:normal"> — valor enviado pelo roteador no GET</small>
+        <small style="color:var(--texto-3);font-weight:normal">: valor enviado pelo roteador no GET</small>
         <input id="f-codigo" type="text" required style="width:100%;box-sizing:border-box;margin-top:4px">
       </label>
       <label style="display:block;margin-bottom:12px">Nome / descrição

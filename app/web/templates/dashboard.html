@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — ALPR{% endblock %}
+{% block title %}Dashboard | ALPR{% endblock %}
 {% block conteudo %}
 <div class="pagina-topo">
   <h1>Integração</h1>
@@ -201,7 +201,7 @@ async function carregarChamadas() {
     .then(r => r.ok ? r.json() : null).catch(() => null);
   if (r === null) {
     if (primeiraCarga) corpo.innerHTML = '';
-    avisar('Não foi possível carregar as chamadas — verifique a conexão.', 'err');
+    avisar('Não foi possível carregar as chamadas. Verifique a conexão.', 'err');
     return;
   }
   mostrar('sem-chamadas', !r.length);
@@ -238,7 +238,7 @@ async function carregarLogs() {
   // null = a chamada FALHOU; [] = respondeu e não há log. Antes os dois caíam no
   // mesmo `catch(() => [])` e a tela dizia "sem logs" quando a rede tinha caído.
   if (logs === null) {
-    avisar('Não foi possível carregar os logs — verifique a conexão.', 'err');
+    avisar('Não foi possível carregar os logs. Verifique a conexão.', 'err');
     return;
   }
 
@@ -257,7 +257,7 @@ async function carregarLogs() {
 // confirmação, sem checar r.ok e sem confirmar o sucesso.
 async function limparLogs(btn) {
   if (!confirm('Apagar todos os logs do servidor?\n\n'
-             + 'Este é o único log do processo — não há como recuperar depois.')) return;
+             + 'Este é o único log do processo: não há como recuperar depois.')) return;
   await comCarregamento(btn, async () => {
     const r = await fetch('/api/logs', { method: 'DELETE' });
     if (!r.ok) return avisarResposta(r, 'Falha ao limpar os logs');

@@ -320,14 +320,14 @@ class Tracker:
             )
             self._usando_bytetrack = True
             log.info(
-                "ByteTrack (boxmot) ativo — OCR a cada %d frames, %d voto(s) para emitir, "
+                "ByteTrack (boxmot) ativo: OCR a cada %d frames, %d voto(s) para emitir, "
                 "paciência %d frames, teto de %s tentativa(s) sem leitura",
                 self._ocr_intervalo, self._votos, self._paciencia,
                 self._max_sem_leitura or "∞",
             )
         except Exception as e:
             log.info(
-                "boxmot indisponível (%s) — usando tracker IoU interno "
+                "boxmot indisponível (%s), usando tracker IoU interno "
                 "(OCR a cada %d frames, %d voto(s) para emitir, paciência %d frames, "
                 "teto de %s tentativa(s) sem leitura)",
                 e, self._ocr_intervalo, self._votos, self._paciencia,
@@ -422,11 +422,11 @@ class Tracker:
             return False
         if st.contar_tentativa(self._max_sem_leitura):
             log.info(
-                "trk%d: OCR SUSPENSO — %d tentativas sem UMA leitura válida "
+                "trk%d: OCR SUSPENSO após %d tentativas sem UMA leitura válida "
                 "(tracker_max_ocr_sem_leitura=%d). Caixa fixa de texto de cena "
                 "(letreiro, adesivo, texto de piso) fica exatamente assim, e cada "
                 "tentativa custa as passadas do ensemble inteiro. A primeira leitura "
-                "válida desarmaria o teto — não houve nenhuma.",
+                "válida desarmaria o teto, mas não houve nenhuma.",
                 track_id, st.tentativas_ocr, self._max_sem_leitura,
             )
             return False
@@ -443,7 +443,7 @@ class Tracker:
             # rumo ao consenso. Aqui vai a contagem da placa líder, que é a que conta.
             votos_lider, total = st.consenso()
             log.info(
-                "Leitura %d de trk%d: %s conf=%.2f — líder %d/%d (emite com %d)",
+                "Leitura %d de trk%d: %s conf=%.2f, líder %d/%d (emite com %d)",
                 total, track_id, placa, conf, votos_lider, total, self._votos,
             )
 
@@ -580,7 +580,7 @@ class Tracker:
                     # leitura(s), melhor BZB8141 com 1 voto(s)". Três leituras acumuladas,
                     # um veículo perdido, e a linha não permitia distinguir as duas coisas.
                     log.info(
-                        "trk%d SAIU sem emitir — %d leitura(s) %s, melhor %s com %d "
+                        "trk%d SAIU sem emitir: %d leitura(s) %s, melhor %s com %d "
                         "voto(s) (emite com %d)",
                         tid, total, [p for p, _, _ in st.resultados], melhor[0],
                         votos_lider, self._votos,
@@ -593,5 +593,5 @@ class Tracker:
                 # As tentativas vão na linha porque são o CUSTO desse track: é o número
                 # que separa "passou pelo quadro e não deu tempo" (2, 3 tentativas) de
                 # "caixa fixa consumindo o ensemble" (dezenas, e aí `desistiu` já entrou).
-                log.info("trk%d SAIU sem nenhuma leitura válida — %d tentativa(s) de OCR%s",
+                log.info("trk%d SAIU sem nenhuma leitura válida: %d tentativa(s) de OCR%s",
                          tid, st.tentativas_ocr, " (OCR suspenso antes de sair)" if st.desistiu else "")

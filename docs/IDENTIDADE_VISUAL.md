@@ -1,4 +1,4 @@
-# Identidade Visual — ALPR Redesoft
+# Identidade Visual do ALPR Redesoft
 
 Sistema de leitura de placas desenvolvido pela Redesoft Sistemas.
 Este documento define a paleta de cores, tipografia e padrões de UI a serem aplicados no sistema ALPR, alinhados com a identidade da Redesoft.
@@ -10,7 +10,7 @@ Este documento define a paleta de cores, tipografia e padrões de UI a serem apl
 | Atributo | Valor |
 |----------|-------|
 | **Empresa** | Redesoft Sistemas |
-| **Produto** | ALPR — Sistema de Leitura de Placas |
+| **Produto** | ALPR, o Sistema de Leitura de Placas |
 | **Tagline Redesoft** | SIMPLICIDADE · SEGURANÇA · AGILIDADE |
 | **Personalidade** | Confiante, moderno, acessível, orientado a resultados |
 | **Público-alvo** | Operadores de posto, técnicos, gestores e sistemas ERP/PDV |
@@ -114,8 +114,8 @@ A família Redesoft usa **Chalet** (House Industries), uma sans-serif geométric
 
 | Papel | Fonte | Peso | Uso |
 |-------|-------|------|-----|
-| Títulos / Brand | Chalet New York Nineteen Seventy | 700–800 | H1, nome do sistema, headings de seção |
-| UI / Corpo | Chalet Paris Nineteen Seventy | 400–600 | Labels, botões, textos de interface |
+| Títulos / Brand | Chalet New York Nineteen Seventy | 700 a 800 | H1, nome do sistema, headings de seção |
+| UI / Corpo | Chalet Paris Nineteen Seventy | 400 a 600 | Labels, botões, textos de interface |
 | Fallback | `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif` | — | Quando Chalet não estiver disponível |
 | Código / Placas | `'Consolas', 'SFMono-Regular', monospace` | 700 | Exibição de placas detectadas, coordenadas, JSON |
 
@@ -123,12 +123,12 @@ A família Redesoft usa **Chalet** (House Industries), uma sans-serif geométric
 
 | Elemento | Tamanho | Peso | Letra |
 |----------|---------|------|-------|
-| Nome do sistema (hero) | 2.5–4rem | 800 | normal |
+| Nome do sistema (hero) | 2.5rem a 4rem | 800 | normal |
 | Título de seção | 1.75rem | 700 | normal |
 | Card title | 1.125rem | 600 | normal |
 | Body | 0.9375rem | 400 | normal |
 | Label / badge | 0.75rem | 600 | `0.05em` (tracking) |
-| **Placa detectada** | 1.75–2rem | 700 | `5px` (monospace) |
+| **Placa detectada** | 1.75rem a 2rem | 700 | `5px` (monospace) |
 | Coordenadas / código | 0.75rem | 400 | monospace |
 
 ---
@@ -360,7 +360,7 @@ A família Redesoft usa **Chalet** (House Industries), uma sans-serif geométric
 
 ### Escurecimento natural para interfaces de câmera
 
-O ALPR exibe feeds de vídeo 24 h — interfaces escuras (fundo `#071f10`) são preferidas para não causar fadiga visual e manter contraste dos bounding boxes verdes. Seções de configuração e histórico podem usar fundo claro (`#ffffff`) seguindo o padrão das páginas informativas do site.
+O ALPR exibe feeds de vídeo 24 h, e interfaces escuras (fundo `#071f10`) são preferidas para não causar fadiga visual e manter contraste dos bounding boxes verdes. Seções de configuração e histórico podem usar fundo claro (`#ffffff`) seguindo o padrão das páginas informativas do site.
 
 ### Mapa de cores por contexto
 
@@ -369,15 +369,15 @@ O ALPR exibe feeds de vídeo 24 h — interfaces escuras (fundo `#071f10`) são 
 | Dashboard / feeds ao vivo | `#071f10` | `#16a34a` | `#ffffff` / `#86efac` |
 | Telas de configuração | `#ffffff` / `#f0fdf4` | `#16a34a` | `#071f10` |
 | Painel de saúde | `#ffffff` cards | status-ok/warn/error | `#071f10` |
-| Placa detectada — sucesso | fundo claro | `#16a34a` | `#071f10` (monospace) |
-| Placa — lista negra | fundo `#fee2e2` | `#dc2626` | `#b91c1c` |
-| Placa — lista branca | fundo `#dcfce7` | `#16a34a` | `#15803d` |
+| Placa detectada com sucesso | fundo claro | `#16a34a` | `#071f10` (monospace) |
+| Placa em lista negra | fundo `#fee2e2` | `#dc2626` | `#b91c1c` |
+| Placa em lista branca | fundo `#dcfce7` | `#16a34a` | `#15803d` |
 | Histórico / tabela | `#ffffff` | zebra `#f9fafb` | `#374151` |
 | Login page | `#071f10` (full) | `#16a34a` | `#ffffff` |
 
 ---
 
-## 8. Exemplo de Aplicação — Card de Câmera
+## 8. Exemplo de Aplicação: Card de Câmera
 
 ```html
 <div class="card-camera active">
@@ -403,5 +403,5 @@ O ALPR exibe feeds de vídeo 24 h — interfaces escuras (fundo `#071f10`) são 
 ## Referências
 
 - Site da Redesoft: [https://siteteste.b2click.com/](https://siteteste.b2click.com/) (test build)
-- Tipografia: [Chalet — House Industries](https://houseind.com/hi/chalet)
+- Tipografia: [Chalet, da House Industries](https://houseind.com/hi/chalet)
 - Framework base: Tailwind CSS v3 (paleta customizada no site de origem)

@@ -85,7 +85,7 @@
      Agora o nome e texto legivel com peso e o "Sair" fica subordinado. #}
   <div class="nav-conta">
     <a href="/minha-conta" class="nav-logout nav-usuario"
-       title="{{ usuario.nome if usuario else 'Minha conta' }} — abrir minha conta">
+       title="{{ usuario.nome if usuario else 'Minha conta' }}: abrir minha conta">
       {{ usuario.nome if usuario else 'Minha conta' }}
     </a>
     <a href="/logout" class="nav-logout">Sair</a>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Postos — ALPR{% endblock %}
+{% block title %}Postos | ALPR{% endblock %}
 {% block conteudo %}
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
   <h1 style="margin:0">Postos</h1>
@@ -197,7 +197,7 @@ function abrirModalSeguranca(id) {
   const it = _itens.find(x => x.id === id);
   if (!it) return;
   _segEmpresaId = id;
-  document.getElementById('seg-titulo').textContent = `API / LGPD — ${it.nome}`;
+  document.getElementById('seg-titulo').textContent = `API / LGPD: ${it.nome}`;
   renderChaveAtual(it.api_key || '');
   document.getElementById('seg-retencao').value = it.retencao_dias_override ?? '';
   document.getElementById('modal-seg-overlay').classList.add('aberto');
@@ -214,13 +214,13 @@ const MASCARA_CHAVE = '********';
 function renderChaveAtual(chave) {
   const el = document.getElementById('seg-chave-atual');
   if (!chave) {
-    el.innerHTML = '<span class="badge badge-antigo">Sem chave — endpoint público para este posto</span>';
+    el.innerHTML = '<span class="badge badge-antigo">Sem chave: endpoint público para este posto</span>';
     return;
   }
   if (chave === MASCARA_CHAVE) {
     el.innerHTML = '<span class="badge badge-ok">Chave ativa</span> '
       + '<span style="font-size:12px;color:var(--texto-2)">'
-      + 'A chave só aparece no momento em que é gerada. Perdeu? Gere outra — '
+      + 'A chave só aparece no momento em que é gerada. Perdeu? Gere outra: '
       + 'a anterior deixa de valer na hora.</span>';
     return;
   }
@@ -234,7 +234,7 @@ async function gerarApiKey() {
   renderChaveAtual(d.api_key);
   const it = _itens.find(x => x.id === _segEmpresaId);
   if (it) it.api_key = d.api_key;
-  avisar('Chave gerada — copie agora e repasse ao responsável pelo roteador deste posto. Ela não será mostrada de novo aqui.', 'ok');
+  avisar('Chave gerada. Copie agora e repasse ao responsável pelo roteador deste posto. Ela não será mostrada de novo aqui.', 'ok');
 }
 
 async function revogarApiKey() {
@@ -243,7 +243,7 @@ async function revogarApiKey() {
   renderChaveAtual('');
   const it = _itens.find(x => x.id === _segEmpresaId);
   if (it) it.api_key = '';
-  avisar('Chave revogada — o endpoint voltou a ser público para este posto.', 'ok');
+  avisar('Chave revogada. O endpoint voltou a ser público para este posto.', 'ok');
 }
 
 async function salvarRetencao() {

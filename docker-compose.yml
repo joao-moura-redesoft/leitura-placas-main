@@ -51,9 +51,63 @@ services:
       OMP_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
       KMP_DUPLICATE_LIB_OK: "TRUE"
+      # O onnxruntime NAO obedece OMP_NUM_THREADS: tem pool proprio e, sem isto,
+      # dimensiona pelo total de nucleos do HOST -- inclusive os que o `cpus:` abaixo nao
+      # deixa usar, e ai o cgroup so throttla. Medido aqui (4 nucleos, YOLOX-s):
+      #   1 sessao  sem isto 470ms/infer 2,19 nucleos | com 428ms 0,87 nucleo
+      #   2 cameras sem isto 2,31 infer/s 2,84 nucleos | com 3,66 infer/s 1,53 nucleo
+      # Com as 2 cameras do posto e 58% MAIS RAPIDO gastando METADE da CPU. Ver
+      # app/visao/hardware.py:onnx_session_options. Suba para 2 so em host com nucleo
+      # sobrando, medindo. 0 = deixa o ORT decidir (comportamento antigo).
+      ONNX_INTRA_THREADS: "${ONNX_INTRA_THREADS:-1}"
       # Credenciais e api_key NÃO ficam aqui (o compose é versionado no git) — vão no
       # config.txt dentro de ./dados, que está no .gitignore. Se preferir env, use um
       # arquivo .env (também ignorado) com `env_file: .env`.
+    # ── Teto de CPU/memoria (HOST COMPARTILHADO) ──────────────────────────────
+    # Este servidor divide a maquina com PDV, backend Java e front React. A regra aqui e
+    # "o ALPR cede primeiro": uma leitura de placa pode demorar 200 ms a mais, o PDV
+    # travando na frente do caixa e problema de negocio.
+    #
+    # Memoria -- os valores saem de medicao neste projeto (RSS com os modelos carregados):
+    #
+    #   python + cv2 + onnxruntime ............  55 MB
+    #   + YOLOX veiculo (2 estagios) .......... 146 MB
+    #   + detector de placa 608 ............... 178 MB
+    #   + PaddleOCR (ocr_leitura_paddle=sim) .. 594 MB  <- 383 MB e so o Paddle
+    #
+    # 594 MB e o pico com TODOS os modelos no mesmo processo, que e o que o
+    # `_aquecer_modelos_bg` faz no boot. `2g` da folga para esse pico e para o buffer de
+    # frame 1920x1080. Nao adianta subir mais: das 32 GB do host o ALPR usa ~0,6 GB de
+    # fato, e limite alto nao reserva nada -- so permite vazamento crescer mais antes de
+    # o Docker cortar. Abaixo de ~1g o container morre com OOMKill no BOOT, antes da
+    # primeira leitura, e o `restart: unless-stopped` vira laco de reinicio.
+    #
+    # ATENCAO: `ocr_leitura_easyocr=sim` soma o torch (+~700 MB) -- suba para 3g ANTES de
+    # ligar, senao o OOM aparece so na 1a leitura.
+    #
+    # CPU -- `2.0` e teto, nao reserva: o container so usa isso quando precisa, e o
+    # pipeline mede ~1,5 nucleo com as 2 cameras. Num host de 8 nucleos sao 25% do total.
+    # A conta e `nucleos - 2` (deixando 2 para SO/ffmpeg/painel), com o teto de 2.0
+    # valendo como padrao conservador ate alguem medir o host real. NAO suba junto com
+    # ONNX_INTRA_THREADS sem medir: mais teto com mais thread por sessao foi justamente o
+    # que mediu 2,84 nucleos e MENOS vazao (ver o comentario da variavel acima).
+    #
+    # Sem `reservations`: reserva nao garante nada em Docker puro (so em Swarm/K8s), e
+    # deixa-la aqui daria falsa sensacao de piso garantido.
+    deploy:
+      resources:
+        limits:
+          cpus: "${ALPR_CPUS:-2.0}"
+          memory: ${ALPR_MEM:-2g}
+    # Peso na DISPUTA por CPU -- e isto, nao o `cpus:`, que faz o ALPR ceder para o PDV.
+    # O `cpus:` e um teto que vale sempre, inclusive com a maquina ociosa (limitar ali
+    # deixaria a leitura lenta de graca de madrugada). `cpu_shares` so entra em acao
+    # quando ha disputa real: o default e 1024, entao 512 = metade do peso de um
+    # container/processo normal. Com a maquina livre o ALPR usa os 2.0 inteiros; com o
+    # PDV pedindo CPU ao mesmo tempo, quem perde a fatia primeiro e o ALPR.
+    # Suba para 1024 (empate) ou 2048 (ALPR prioritario) se a leitura de placa passar a
+    # ser o gargalo do negocio.
+    cpu_shares: ${ALPR_CPU_SHARES:-512}
     restart: unless-stopped
     # PID 1 que encaminha sinais e recolhe processos zumbis. O app abre subprocessos
     # ffmpeg (encoder HLS) — sem isto eles viram zumbi a cada reinício de encoder, e um

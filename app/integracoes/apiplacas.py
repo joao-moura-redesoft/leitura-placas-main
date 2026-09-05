@@ -140,7 +140,7 @@ def _pausar(segundos: float, motivo: str) -> None:
     # Log só na transição: 402/429 a cada leitura de cada posto encheria o log em minutos,
     # e é justamente o alerta que precisa ser visível para não passar batido.
     if not ja_pausado:
-        log.error("apiplacas: pausando consultas por %ds — %s", segundos, motivo)
+        log.error("apiplacas: pausando consultas por %ds. %s", segundos, motivo)
 
 
 def _contar_falha(motivo: str) -> None:
@@ -546,7 +546,7 @@ def _tratar_resposta(placa: str, http: int | None, corpo: dict | None,
             # registro não informou" — e ficaria assim pelos próximos 180 dias, sem
             # nenhum sintoma além do combustível que nunca vem.
             msg = _texto(corpo.get("message")) or "resposta vazia"
-            log.error("apiplacas: 200 sem dados úteis para %s (%s) — não cacheado", placa, msg)
+            log.error("apiplacas: 200 sem dados úteis para %s (%s), não cacheado", placa, msg)
             return _bloco(CONSULTA_INDISPONIVEL, "consulta devolveu resposta sem dados")
         try:
             banco.veiculos_salvar(placa, status="ok", campos=campos,
@@ -559,7 +559,7 @@ def _tratar_resposta(placa: str, http: int | None, corpo: dict | None,
             # descartá-lo. A próxima leitura reconsulta (e repaga) — e o log diz por quê.
             log.error("apiplacas: consulta paga de %s não pôde ser gravada: %s", placa, e)
             quando = None
-        log.info("apiplacas: %s consultada — combustivel=%r", placa, campos["combustivel"])
+        log.info("apiplacas: %s consultada, combustivel=%r", placa, campos["combustivel"])
         return _bloco(CONSULTA_OK, "", origem="api", consultado_em=quando, campos=campos)
 
     if http == 406:

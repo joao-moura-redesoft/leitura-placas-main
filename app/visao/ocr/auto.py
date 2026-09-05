@@ -519,7 +519,7 @@ class AutoOCRPaddle(AutoOCR):
             self._paddle.carregar()
         except Exception as e:
             log.warning(
-                "PaddleOCR indisponivel (%s) — seguindo SEM ele. A leitura continua com "
+                "PaddleOCR indisponivel (%s), seguindo SEM ele. A leitura continua com "
                 "os demais engines; espere queda so em placa antiga borrada. Causa comum "
                 "no Windows: Visual C++ Redistributable recem-instalado exigindo reboot.",
                 e)

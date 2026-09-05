@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Listas — ALPR{% endblock %}
+{% block title %}Listas | ALPR{% endblock %}
 {% block conteudo %}
 <h1>Listas de Placas</h1>
 <div class="card">
@@ -45,7 +45,7 @@ async function carregar() {
   // a tabela em branco, indistinguivel de "nenhuma placa cadastrada".
   const r = await fetch('/api/listas').then(r => r.ok ? r.json() : null).catch(() => null);
   if (r === null) {
-    avisar('Nao foi possivel carregar as listas — verifique a conexao.', 'err');
+    avisar('Nao foi possivel carregar as listas. Verifique a conexao.', 'err');
     return;
   }
   document.getElementById('vazio').hidden = r.length > 0;

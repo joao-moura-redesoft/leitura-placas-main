@@ -425,7 +425,7 @@ def rodar_testes(payload: dict = {}):
         # A mensagem interna da exceção (texto do SQLite, caminho de arquivo) fica no
         # LOG, não na resposta ao cliente. (Auditoria 27/08/2026.)
         log.error("Falha em a execução dos testes: %s" % e, exc_info=True)
-        raise HTTPException(500, "Operação falhou — veja o log do servidor.")
+        raise HTTPException(500, "Operação falhou. Veja o log do servidor.")
     finally:
         sys.path[:] = _sys_path_backup
 

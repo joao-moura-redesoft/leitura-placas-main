@@ -224,7 +224,7 @@ class DNSServer:
             )
             return
         except OSError as exc:
-            log.error("DNS: falha ao iniciar — %s", exc)
+            log.error("DNS: falha ao iniciar. %s", exc)
             return
 
         log.info("DNS local ativo: %s → %s", self._hostname, self._ip)
@@ -263,7 +263,7 @@ class DNSServer:
                         sock.sendto(resp, addr)
                     elif resp:
                         log.warning(
-                            "DNS: resposta do upstream com transaction ID divergente — descartada")
+                            "DNS: resposta do upstream com transaction ID divergente, descartada")
                         sock.sendto(_build_nxdomain(data), addr)
                     else:
                         sock.sendto(_build_nxdomain(data), addr)

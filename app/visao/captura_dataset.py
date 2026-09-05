@@ -347,7 +347,7 @@ def _coletar_de_camera(cam_id: int, intervalo: float) -> None:
             thread = getattr(pinst, "_thread", None) if pinst is not None else None
             if (pinst is not None and getattr(pinst, "deteccao_automatica", False)
                     and thread is not None and thread.is_alive()):
-                log.debug("Camera %d: coleta pulada — pipeline contínuo já amostra "
+                log.debug("Camera %d: coleta pulada, pipeline contínuo já amostra "
                           "de dentro do laço e detém a conexão", cam_id)
                 continue
             # O mesmo lock da leitura reativa: uma câmera, uma conexão RTSP por vez.
@@ -428,6 +428,6 @@ def parar_coletor(timeout: float = 5.0) -> None:
             # Não é fatal: as threads são daemon e o próximo `_parar.clear()` não as revive
             # (elas já saíram do laço ou vão sair na próxima volta). Mas registra, porque uma
             # coletora presa está segurando `lock_camera`.
-            log.warning("Coletor: %d thread(s) não encerraram em %.0fs — provavelmente presas "
+            log.warning("Coletor: %d thread(s) não encerraram em %.0fs, provavelmente presas "
                         "numa captura; o lock da câmera pode demorar a liberar",
                         len(restantes), timeout)

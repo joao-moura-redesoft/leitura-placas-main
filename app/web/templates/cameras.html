@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Câmeras — ALPR{% endblock %}
+{% block title %}Câmeras | ALPR{% endblock %}
 {% block conteudo %}
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap">
   <h1 style="margin:0">Câmeras</h1>
@@ -10,7 +10,7 @@
 <p style="color:var(--texto-2);margin:0 0 20px;font-size:14px">
   Cada câmera pertence a um posto (empresa) e o campo <strong>Local</strong> diz onde ela
   está instalada. Bomba/lado e área de captura pertencem ao bico, cadastrado na
-  <a href="/postos" style="color:var(--marca-texto)">tela do posto</a> — uma câmera pode servir
+  <a href="/postos" style="color:var(--marca-texto)">tela do posto</a>. Uma câmera pode servir
   vários bicos, e um bico pode usar duas câmeras (traseira + frente).
 </p>
 
@@ -111,8 +111,8 @@
           </label>
           <label>Subtype
             <select id="cam-subtype" style="width:100%;margin-top:4px">
-              <option value="1">1 — Sub (leve)</option>
-              <option value="0">0 — Main (HD)</option>
+              <option value="1">1 (Sub, leve)</option>
+              <option value="0">0 (Main, HD)</option>
             </select>
           </label>
           <label>Formato URL
@@ -128,7 +128,7 @@
       <!-- URL personalizada (opcional — substitui host/canal se preenchida) -->
       <div id="secao-url-custom">
         <label style="display:block;margin-bottom:12px">URL RTSP personalizada
-          <small style="color:var(--texto-3);font-weight:normal"> — preencha para substituir os campos acima</small>
+          <small style="color:var(--texto-3);font-weight:normal">: preencha para substituir os campos acima</small>
           <input id="cam-rtsp-url" type="text" placeholder="rtsp://admin:senha@10.0.200.15:554/stream1"
                  style="width:100%;box-sizing:border-box;margin-top:4px">
         </label>
@@ -162,7 +162,7 @@
   <div style="background:var(--superficie);border-radius:12px;padding:28px;width:1060px;max-width:98vw;box-shadow:0 20px 60px rgba(0,0,0,.18)">
     <h2 style="margin-top:0">Adicionar Câmeras em Lote</h2>
 
-    <label style="display:block;margin-bottom:16px;max-width:420px">Posto — aplica a todas as linhas
+    <label style="display:block;margin-bottom:16px;max-width:420px">Posto (aplica a todas as linhas)
       <select id="lote-empresa" required style="width:100%;margin-top:4px"></select>
     </label>
 
@@ -170,7 +170,7 @@
     <details style="margin-bottom:16px">
       <summary style="cursor:pointer;font-size:13px;color:var(--texto-2);padding:10px 14px;background:var(--superficie-2);border-radius:8px;user-select:none;border:1px solid var(--borda)">
         &#9998; Valores padrão para novas linhas
-        <small style="color:var(--texto-3);margin-left:8px">— preenche automaticamente ao gerar ou adicionar linha</small>
+        <small style="color:var(--texto-3);margin-left:8px">Preenche automaticamente ao gerar ou adicionar linha</small>
       </summary>
       <div style="background:var(--superficie-2);border-radius:0 0 8px 8px;padding:14px;border:1px solid var(--borda);border-top:none">
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px;margin-bottom:12px">
@@ -193,8 +193,8 @@
           </label>
           <label>Subtype
             <select id="lote-subtype" style="width:100%;margin-top:4px">
-              <option value="1">1 — Sub (leve)</option>
-              <option value="0">0 — Main (HD)</option>
+              <option value="1">1 (Sub, leve)</option>
+              <option value="0">0 (Main, HD)</option>
             </select>
           </label>
           <label>Formato URL
@@ -275,7 +275,7 @@ let _empresas = [];
 let _editandoId = null;
 
 function nomeEmpresa(id) {
-  if (!id) return '— sem posto —';
+  if (!id) return 'sem posto';
   const e = _empresas.find(x => x.id === id);
   return e ? e.nome : `#${id}`;
 }
@@ -284,7 +284,7 @@ async function carregarEmpresas() {
   _empresas = await fetch('/api/empresas').then(r => r.json()).catch(() => []);
   document.getElementById('cam-empresa').innerHTML =
     _empresas.map(e => `<option value="${e.id}">${esc(e.nome)} (${esc(e.cnpj)})</option>`).join('')
-    || '<option value="">— cadastre uma empresa primeiro —</option>';
+    || '<option value="">cadastre uma empresa primeiro</option>';
 }
 
 // Quem depende de cada câmera. Uma câmera pode ser a única de um bico ou o SEGUNDO ângulo
@@ -380,7 +380,7 @@ function abrirModal(cam = null) {
   const temUrl = cam && cam.rtsp_url_custom === '********';
   urlRtsp.value = (cam && !temUrl) ? (cam.rtsp_url_custom || '') : '';
   urlRtsp.placeholder = temUrl
-    ? 'URL já configurada — deixe em branco para manter, ou digite uma nova'
+    ? 'URL já configurada. Deixe em branco para manter, ou digite uma nova'
     : 'rtsp://admin:senha@10.0.200.15:554/stream1';
   document.getElementById('cam-ativo').checked = cam ? !!cam.ativo : true;
   document.getElementById('teste-resultado').textContent = '';

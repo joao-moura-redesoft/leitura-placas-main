@@ -7,12 +7,12 @@
 > operação ALVO hoje é outro: servidor central **reativo multi-tenant** (`GET
 > /api/leitura` por entidade→posto/CNPJ→automação→bico, ver [README.md](../README.md)
 > e [INTEGRACAO_ROTEADOR.md](INTEGRACAO_ROTEADOR.md)), detector padrão
-> `open_image_models` (não YOLO26n — ver `docs/`/memória do projeto sobre
+> `open_image_models` (não YOLO26n, ver `docs/`/memória do projeto sobre
 > incompatibilidade do YOLO26 com a versão atual do ultralytics), e cadastro com 7
 > tabelas (`entidades`, `empresas`, `automacoes`, `bicos`, `cameras`, `deteccoes`,
 > `chamadas`), não as 5 listadas na seção 19. O pipeline contínuo descrito abaixo
-> (seções 1–18) continua existindo e correto tecnicamente — é o modo "diagnóstico
-> visual", opcional e inerte por padrão — só não é mais o caminho principal. A seção
+> (seções 1-18) continua existindo e correto tecnicamente: é o modo "diagnóstico
+> visual", opcional e inerte por padrão, e só não é mais o caminho principal. A seção
 > 20, abaixo, cobre o que este documento ainda não tinha: capacidade e escala do modo
 > multi-tenant.
 
@@ -73,26 +73,26 @@ O código de produção mora em `app/` (execução: `python -m app.main`, a part
 
 | Arquivo | Responsabilidade |
 |---------|-----------------|
-| `app/main.py` | Ponto de entrada — argparse (`--reload`), suprime warnings PyTorch, delega para `app.servidor.iniciar()` |
+| `app/main.py` | Ponto de entrada: argparse (`--reload`), suprime warnings PyTorch, delega para `app.servidor.iniciar()` |
 | `app/servidor.py` | Cria app FastAPI, lifespan, monta rotas, monta `/hls` como static, registra MIME types, verifica porta antes de subir, exibe banner |
 | `app/core/config.py` | Lê/grava `config.txt` (chave=valor) + override via env vars; padrão `intelbras` |
 | `app/core/estado.py` | Estado global compartilhado entre threads (lock único); ring buffer de logs; `frames_cameras: dict[int, frame]` |
-| `app/core/banco.py` | Camada SQLite — detecções, listas, câmeras, usuários, sessões; WAL mode; migração incremental |
-| `app/core/broadcaster.py` | Hub WebSocket — eventos do pipeline (thread síncrona) → clientes conectados (loop asyncio) |
+| `app/core/banco.py` | Camada SQLite: detecções, listas, câmeras, usuários, sessões; WAL mode; migração incremental |
+| `app/core/broadcaster.py` | Hub WebSocket: eventos do pipeline (thread síncrona) → clientes conectados (loop asyncio) |
 | `app/seguranca/sessao.py` | Hash de senhas (bcrypt) e sessões em memória com TTL |
 | `app/visao/camera.py` | OpenCV VideoCapture: USB (CAP_DSHOW/CAP_V4L2), CSI, RTSP, Intelbras; auto-detecção backend no Windows |
 | `app/visao/detector.py` | YOLO/open-image-models ONNX Runtime; auto-detecta formato de saída; fallback por contornos Canny |
-| `app/visao/hardware.py` | Detecção de GPU/CUDA — providers ONNX Runtime e `torch_cuda_disponivel()` |
+| `app/visao/hardware.py` | Detecção de GPU/CUDA: providers ONNX Runtime e `torch_cuda_disponivel()` |
 | `app/visao/ambiente.py` | Ajuste adaptativo de imagem por condição de ambiente (no-op se desativado) |
-| `app/visao/ocr/engines.py` | Classe `OCR` — Tesseract, EasyOCR, PaddleOCR, docTR, fast-plate-ocr; pré-processamento multicamada |
+| `app/visao/ocr/engines.py` | Classe `OCR` com Tesseract, EasyOCR, PaddleOCR, docTR, fast-plate-ocr; pré-processamento multicamada |
 | `app/visao/ocr/auto.py` | `AutoOCR`, `AutoOCRPaddle` (seleção automática) e `MultiOCR` (votação); `obter_ocr_leitura()` |
-| `app/visao/ocr/__init__.py` | Fachada do pacote — reexporta `OCR`, `AutoOCR`, `AutoOCRPaddle`, `MultiOCR`, `obter_ocr_leitura` |
+| `app/visao/ocr/__init__.py` | Fachada do pacote, reexporta `OCR`, `AutoOCR`, `AutoOCRPaddle`, `MultiOCR`, `obter_ocr_leitura` |
 | `app/visao/validador.py` | Regex + correções posicionais (O↔0, I↔1, T↔7, B↔8…); janela deslizante; `formato_hint` |
 | `app/visao/pipeline.py` | Loop principal por câmera; ROI crop; rate-limit; detecção; tracker; consenso; cooldown |
-| `app/visao/tracker.py` | IoU Tracker interno + wrapper ByteTrack (boxmot); voto por track; reduz OCR em ~80–99% |
-| `app/operacao/supervisor.py` | WorkerSupervisor — monitora liveness de threads e frescor de frame; reinicia com backoff exponencial |
-| `app/operacao/dns_server.py` | Servidor DNS local embutido (stdlib) — resolve hostname configurado para o IP da LAN |
-| `app/streaming/hls_encoder.py` | HLSManager — subprocess FFmpeg por câmera; codifica uma vez para N viewers; segmentos `.ts` + `.m3u8` |
+| `app/visao/tracker.py` | IoU Tracker interno + wrapper ByteTrack (boxmot); voto por track; reduz OCR em ~80-99% |
+| `app/operacao/supervisor.py` | WorkerSupervisor: monitora liveness de threads e frescor de frame; reinicia com backoff exponencial |
+| `app/operacao/dns_server.py` | Servidor DNS local embutido (stdlib) que resolve hostname configurado para o IP da LAN |
+| `app/streaming/hls_encoder.py` | HLSManager: subprocess FFmpeg por câmera; codifica uma vez para N viewers; segmentos `.ts` + `.m3u8` |
 | `app/streaming/stream.py` | Gerador MJPEG global e por câmera; snapshot JPEG |
 | `app/web/api.py` | API REST completa: detecções, stats, health, listas, config, câmeras, ROI, debug crop |
 | `app/web/auth.py` | Rotas de autenticação: login, logout, criar-admin; sessão via cookie HttpOnly 7 dias |
@@ -100,7 +100,7 @@ O código de produção mora em `app/` (execução: `python -m app.main`, a part
 | `app/web/stream.py` | Endpoints `/stream.mjpg`, `/stream/{id}.mjpg`, `/snapshot.jpg` |
 | `app/web/testes.py` | Avaliação de acurácia OCR e capturador de fotos de teste via UI |
 | `app/web/templates/` | Templates Jinja2 (movido de `templates/` na raiz) |
-| `app/web/static/` | Estáticos servidos em `/static` — inclui `snapshots/` (movido de `static/` na raiz) |
+| `app/web/static/` | Estáticos servidos em `/static`, inclui `snapshots/` (movido de `static/` na raiz) |
 
 ---
 
@@ -125,7 +125,7 @@ O código de produção mora em `app/` (execução: `python -m app.main`, a part
    [Tracker.update(bboxes, frame)] — IoU / ByteTrack
      ├─ atribui track_id por IoU
      ├─ Tracker.precisa_ocr(track_id) → False se OCR já feito recentemente
-     └─ pula OCR se não precisar → reduz chamadas em ~80–99%
+     └─ pula OCR se não precisar → reduz chamadas em ~80-99%
         ▼  (apenas quando precisa_ocr=True)
    [_expandir_bbox]
      ├─ +5% esquerda, direita e base (BBOX_PADDING=0.05)
@@ -180,7 +180,7 @@ if restante > 0.001:
 | `id` | INTEGER PK | Auto-increment |
 | `placa` | TEXT | Texto normalizado (7 chars, sem hífen) |
 | `padrao` | TEXT | `mercosul` / `antigo` |
-| `confianca` | REAL | 0.0–1.0 |
+| `confianca` | REAL | 0.0-1.0 |
 | `snapshot` | TEXT | `/static/snapshots/TIMESTAMP_PLACA.jpg` |
 | `criado_em` | TEXT | ISO 8601 UTC |
 | `camera_id` | TEXT | Tipo da câmera |
@@ -216,7 +216,7 @@ if restante > 0.001:
 | `intelbras_subtype` | TEXT | `0` = main, `1` = sub |
 | `intelbras_formato` | TEXT | `padrao` ou `legado` |
 | `rtsp_url_custom` | TEXT | URL RTSP completa (sobrepõe campos acima) |
-| `roi` | TEXT | JSON `{x, y, w, h}` em pixels do frame — NULL = frame completo |
+| `roi` | TEXT | JSON `{x, y, w, h}` em pixels do frame; NULL = frame completo |
 | `ativo` | INTEGER | 0/1 |
 | `criado_em` | TEXT | ISO 8601 UTC |
 
@@ -310,7 +310,7 @@ WAL mode ativo em todas as tabelas.
 
 ---
 
-## 6. AutoOCR — Seleção Automática de Engine
+## 6. AutoOCR: Seleção Automática de Engine
 
 O modo `auto` (padrão) usa dois engines em paralelo e escolhe o melhor resultado:
 
@@ -364,11 +364,11 @@ para cada track_id:
               └─ (placa, padrao, conf) → _tentar_emitir
 ```
 
-**Impacto medido (benchmark):** redução de OCR de 80–99% dependendo de cooldown e FPS.
+**Impacto medido (benchmark):** redução de OCR de 80-99% dependendo de cooldown e FPS.
 
 **Teto de tentativas sem leitura:** um track que gasta `tracker_max_ocr_sem_leitura`
 tentativas sem produzir UMA leitura válida tem o OCR suspenso. É o perfil de texto de cena
-— letreiro, adesivo, texto de piso —, que é caixa fixa no quadro e não sai dele: em
+(letreiro, adesivo, texto de piso), que é caixa fixa no quadro e não sai dele: em
 04/09/2026 a palavra ENTRADA rodou o ensemble hora após hora numa cam de posto. A primeira
 leitura válida desarma o teto naquele track para sempre, e é isso que impede abandonar
 carro parado na bomba com a placa momentaneamente ocluída.
@@ -472,7 +472,7 @@ O ROI é aplicado sem reiniciar o pipeline: `PUT /api/cameras/{id}/roi` atualiza
 
 ---
 
-## 13. Detecção RTSP — Restrição Intelbras
+## 13. Detecção RTSP: Restrição Intelbras
 
 Câmeras Intelbras aceitam **uma única conexão RTSP simultânea**. Por isso:
 - `POST /api/cameras/{id}/teste`: reutiliza o frame em `estado.frames_cameras[id]` se pipeline ativo.
@@ -498,25 +498,25 @@ hls_encoder._Encoder._alimentar()
 
 **Requisito:** FFmpeg instalado e no PATH. Detectado via `shutil.which("ffmpeg")`.  
 **Fallback:** se FFmpeg ausente, lifespan registra aviso e continua em modo MJPEG.  
-**Vantagem:** O(cameras) encodes — não O(cameras × viewers) como no MJPEG.
+**Vantagem:** O(cameras) encodes, e não O(cameras × viewers) como no MJPEG.
 
 ---
 
 ## 15. Pontos Fortes
 
-- **Autenticação completa** — bcrypt + sessão via cookie; rota de criação bloqueada após primeiro admin.
-- **ROI por câmera** — crop antes do YOLO, aplicado sem restart, configurável por interface visual.
-- **Tracker com votação** — reduz OCR em 80–99%; ByteTrack ou IoU interno como fallback.
-- **WorkerSupervisor** — reinicia pipelines mortos com backoff; health panel no dashboard.
-- **HLS opcional** — encoda uma vez por câmera; N viewers sem custo extra.
-- **Arquitetura multi-câmera real** — pipeline, thread e stream independentes por câmera.
-- **Pré-processamento OCR em cadeia** — deskew → perspectiva → header removal → mascaramento QR/BR → foco nos caracteres.
-- **Validador com janela deslizante** — recupera placa válida de texto > 7 chars.
-- **Rate-limit duplo** — loop travado em `camera_fps`; detecção limitada por `deteccao_fps_max`.
-- **Sem expansão para cima no bbox** — evita capturar faixa do cabeçalho Mercosul.
-- **Verificação de porta antes de subir** — previne crash silencioso.
-- **WAL mode SQLite** — leituras concorrentes sem bloquear pipeline.
-- **Debug OCR crop ao vivo** — `/api/debug/ocr_crop` exibe exatamente o que o engine recebe.
+- **Autenticação completa**: bcrypt + sessão via cookie; rota de criação bloqueada após primeiro admin.
+- **ROI por câmera**: crop antes do YOLO, aplicado sem restart, configurável por interface visual.
+- **Tracker com votação**: reduz OCR em 80-99%; ByteTrack ou IoU interno como fallback.
+- **WorkerSupervisor**: reinicia pipelines mortos com backoff; health panel no dashboard.
+- **HLS opcional**: encoda uma vez por câmera; N viewers sem custo extra.
+- **Arquitetura multi-câmera real**: pipeline, thread e stream independentes por câmera.
+- **Pré-processamento OCR em cadeia**: deskew → perspectiva → header removal → mascaramento QR/BR → foco nos caracteres.
+- **Validador com janela deslizante**: recupera placa válida de texto > 7 chars.
+- **Rate-limit duplo**: loop travado em `camera_fps`; detecção limitada por `deteccao_fps_max`.
+- **Sem expansão para cima no bbox**: evita capturar faixa do cabeçalho Mercosul.
+- **Verificação de porta antes de subir**: previne crash silencioso.
+- **WAL mode SQLite**: leituras concorrentes sem bloquear pipeline.
+- **Debug OCR crop ao vivo**: `/api/debug/ocr_crop` exibe exatamente o que o engine recebe.
 
 ---
 
@@ -530,7 +530,7 @@ hls_encoder._Encoder._alimentar()
 **Solução proposta:** fila `queue.Queue` + thread worker dedicada.
 
 #### Snapshot em disco no hot path
-`cv2.imwrite(...)` é chamado dentro de `_tentar_emitir` — I/O bloqueante.
+`cv2.imwrite(...)` é chamado dentro de `_tentar_emitir`, e é I/O bloqueante.
 
 **Solução proposta:** fila + worker de escrita assíncrona.
 
@@ -625,11 +625,11 @@ rtsp://HOST:554/user=USUARIO&password=SENHA&channel=N&stream=S.sdp?
 | Endpoints de stream | 5 (MJPEG ×2, snapshot, HLS playlist, HLS segments) |
 | Engines OCR suportadas | 5 |
 | Tipos de câmera | 4 (USB, CSI, RTSP, Intelbras) |
-| Formatos de placa reconhecidos | 2 (Mercosul, Antigo) — carro e moto |
+| Formatos de placa reconhecidos | 2 (Mercosul, Antigo), carro e moto |
 | Tabelas no banco | 5 (deteccoes, listas_placas, cameras, usuarios, sessoes) |
-| CPU em operação (estimativa) | 8–15% (era ~60% antes do rate-limit) |
+| CPU em operação (estimativa) | 8-15% (era ~60% antes do rate-limit) |
 | Precisão OCR (engine `auto`) | **92.9%** (39/42) no dataset de testes |
-| Redução de chamadas OCR (tracker) | **80–99%** dependendo de FPS e cooldown |
+| Redução de chamadas OCR (tracker) | **80-99%** dependendo de FPS e cooldown |
 
 ---
 
@@ -637,20 +637,20 @@ rtsp://HOST:554/user=USUARIO&password=SENHA&channel=N&stream=S.sdp?
 
 O modo alvo (seção "Visão Geral" acima) é **um processo Python só atendendo todos os
 postos de todos os clientes** via `GET /api/leitura`. Isso tem uma implicação de
-capacidade que as seções 1–19 (escritas para o modo diagnóstico single-camera) não
+capacidade que as seções 1-19 (escritas para o modo diagnóstico single-camera) não
 cobrem.
 
 ### O gargalo: lock global de detector/OCR
 
 `app/visao/detector.py:detector_leitura_lock` e `app/visao/ocr/auto.py:ocr_leitura_lock`
-serializam TODA leitura reativa do processo — não por câmera, por **todo o servidor**.
+serializam TODA leitura reativa do processo, não por câmera e sim por **todo o servidor**.
 Isso não é um bug a corrigir: em `CUDAExecutionProvider` (GPU), chamadas concorrentes
 `Run()` na mesma sessão onnxruntime podem travar/crashar (handles cuDNN compartilhados
-entre threads) — o lock é o que torna isso seguro. A consequência é que duas leituras
+entre threads), e o lock é o que torna isso seguro. A consequência é que duas leituras
 de **clientes diferentes**, acionadas ao mesmo tempo, competem pelo mesmo recurso.
 
 O loop de leitura (`app/visao/leitura.py:ler_placa`) é limitado por TEMPO
-(`leitura_timeout_seg`), não por número fixo de fotos — então sob disputa, cada
+(`leitura_timeout_seg`), não por número fixo de fotos, então sob disputa cada
 chamada simplesmente consegue menos tentativas dentro do mesmo orçamento. A latência
 quase não muda (por isso não aparece "no relógio"); quem cai é a taxa de acerto, e só
 sob carga.
@@ -659,83 +659,83 @@ sob carga.
 
 `testes/medir_concorrencia.py` mede exatamente isso (dispara N leituras simultâneas
 via `POST /api/bicos/{id}/ler-placa-teste` e compara tentativas/duração por nível de
-concorrência) — mas **precisa rodar no servidor de produção real (GPU)** para dar uma
+concorrência), mas **precisa rodar no servidor de produção real (GPU)** para dar uma
 resposta que valha alguma coisa; medir em CPU de desenvolvimento não representa a
-capacidade real. Enquanto esse número não existe, tratar como desconhecido — não
+capacidade real. Enquanto esse número não existe, tratar como desconhecido e não
 assumir que o servidor aguenta qualquer volume de clientes simultâneos.
 
 ### Quando esse teto aparecer, opções de escala (nenhuma implementada ainda)
 
-- **Vertical primeiro**: GPU mais forte, mais VRAM — adia o problema, não resolve para
+- **Vertical primeiro**: GPU mais forte, mais VRAM. Adia o problema, não resolve para
   sempre.
 - **Múltiplos processos na mesma máquina**, cada um com sua própria sessão
-  onnxruntime/lock — precisa de um roteador na frente (nginx/Traefik) decidindo qual
+  onnxruntime/lock. Precisa de um roteador na frente (nginx/Traefik) decidindo qual
   processo atende qual `cnpj`, e um banco compartilhado (ou um banco por processo, com
   o custo de perder a visão consolidada num painel só).
-- **Sharding de clientes por servidor** (réplicas completas — banco + processo — cada
+- **Sharding de clientes por servidor** (réplicas completas, banco + processo, cada
   uma dona de um subconjunto de clientes): mais simples de operar que múltiplos
   processos numa máquina só, mas perde o "servidor central único" que é a proposta
   atual (o cadastro/painel deixa de ser um lugar só).
 - **Fila de leitura com prioridade/timeout explícito** em vez de deixar o lock
-  enfileirar tudo às cegas — devolve 503 rápido a quem está esperando demais, em vez
+  enfileirar tudo às cegas: devolve 503 rápido a quem está esperando demais, em vez
   de segurar a conexão até o `leitura_timeout_seg` estourar.
 
-Nenhuma dessas foi decidida — a decisão certa depende do número que
+Nenhuma dessas foi decidida, porque a decisão certa depende do número que
 `medir_concorrencia.py` trouxer.
 
 ---
 
 ## 21. RBAC: o que ficou de uma branch paralela e o que foi resolvido
 
-Durante o desenvolvimento do RBAC (papel `admin` × `cliente` restrito a um posto —
+Durante o desenvolvimento do RBAC (papel `admin` × `cliente` restrito a um posto, ver
 seções acima), uma branch paralela (`feat: administração de usuários e testes`)
 implementou, ao mesmo tempo e sem visibilidade de uma pra outra, uma **segunda**
 solução de gestão de usuários. O merge das duas não gerou conflito de texto (os
 dois trabalhos mexiam em arquivos/caminhos técnicamente diferentes), mas deixou
-metade do código órfão — `app/core/banco.py` (modificado nesta sessão) coexistindo
+metade do código órfão: `app/core/banco.py` (modificado nesta sessão) coexistindo
 com `app/core/banco/` (pacote da outra branch), com o pacote vencendo a resolução
 de import do Python **silenciosamente**. Só apareceu ao rodar `pytest
-testes/unitarios` pela primeira vez com sucesso — os 60 testes que a outra branch
+testes/unitarios` pela primeira vez com sucesso. Os 60 testes que a outra branch
 trouxe testavam um desenho que tinha virado código morto.
 
 Decisão, revisada teste a teste:
 
 **Adotado** (portado para dentro de `app/core/banco/`, hoje em produção):
-- **Sessões em SQLite** (`banco.sessao_*`) em vez de dict em memória —
+- **Sessões em SQLite** (`banco.sessao_*`) em vez de dict em memória. Elas
   sobrevivem a restart do servidor e, mais importante pro momento (ver §20), abrem
   a porta pra rodar múltiplos workers uvicorn sem cada um ter sua própria sessão.
   `app/seguranca/sessao.py` manteve a mesma interface pública; ninguém que já
   chamava `criar_sessao`/`obter_user_id`/etc. precisou mudar.
-- **`GET /api/usuarios/eu`** — "quem sou eu", usado pela UI e pelas travas abaixo.
+- **`GET /api/usuarios/eu`**: "quem sou eu", usado pela UI e pelas travas abaixo.
 - **Autoproteção**: um admin não consegue alterar o PRÓPRIO papel/status via
-  `PUT /api/usuarios/{id}` (precisa pedir a outro admin) — trava a mais além de "não
+  `PUT /api/usuarios/{id}` (precisa pedir a outro admin), uma trava a mais além de "não
   pode ser o último admin ativo", que sozinha só cobre o caso de sobrar zero.
 - **Edição de nome/e-mail** no mesmo `PUT` (antes só papel/posto/ativo).
 - **`app/seguranca/tentativas.py`** (freio de força bruta por e-mail+IP, com espera
-  progressiva) substituiu o limitador genérico só-por-IP no `/login` — mais preciso
+  progressiva) substituiu o limitador genérico só-por-IP no `/login`, e é mais preciso
   contra os dois padrões de ataque (varrer e-mails de um IP, atacar um e-mail de
   vários IPs).
-- **Papel `operador`** (adotado numa segunda passada, a pedido — não ligado a um
+- **Papel `operador`** (adotado numa segunda passada, a pedido, não ligado a um
   posto específico, vê todos como admin, mas não passa em `deps.exigir_admin`):
   equipe interna que opera o painel no dia a dia sem poder reconfigurar o sistema.
   `deps.empresa_do_usuario` trata `operador` igual a `admin` (sem restrição de
-  escopo) — a única diferença dos dois é `eh_admin`.
-- **Troca de senha self-service** (`POST /api/usuarios/eu/senha`) — qualquer usuário
+  escopo), e a única diferença dos dois é `eh_admin`.
+- **Troca de senha self-service** (`POST /api/usuarios/eu/senha`): qualquer usuário
   logado (admin, operador ou cliente) troca a PRÓPRIA senha sem depender de um
   admin, mediante a senha atual. Isso obrigou a tirar o gate de admin do
   `include_router` de `/api/usuarios` (era bloqueio geral) e mover pra cada rota
-  individualmente — `GET /api/usuarios/eu` e a troca de senha ficaram abertas a
+  individualmente. `GET /api/usuarios/eu` e a troca de senha ficaram abertas a
   qualquer logado; listar/criar/editar outros usuários continuam admin-only.
   Página `/minha-conta` (link no nav, visível a todo mundo logado).
 
-**Rejeitado** (removido/não usado — decisão de produto, não técnica):
+**Rejeitado** (removido/não usado, decisão de produto e não técnica):
 - **`api_key` obrigatória por padrão em `/api/leitura`** (com geração automática no
-  boot) — contradiz a decisão já tomada de opt-in por posto (README, §"Autenticação").
+  boot), que contradiz a decisão já tomada de opt-in por posto (README, §"Autenticação").
   Ativar isso hoje derrubaria a integração de todo posto sem api_key configurada.
-- **`DELETE /api/usuarios/{id}`** (exclusão definitiva) — só desativação
+- **`DELETE /api/usuarios/{id}`** (exclusão definitiva). Ficou só a desativação
   (`ativo=False`), reversível e preserva o registro para auditoria.
 - Gate de escrita **por middleware genérico** (`_negar_por_papel`, qualquer
-  POST/PUT/DELETE exige admin por padrão, salvo lista curta) — arquitetura
+  POST/PUT/DELETE exige admin por padrão, salvo lista curta). É uma arquitetura
   interessante (uma rota nova nasce protegida sem precisar que alguém lembre de
   anotá-la) mas trocar o modelo já testado (`Depends(deps.exigir_admin)` por rota)
   por esse no meio da reconciliação era risco desnecessário. Fica registrado como
@@ -743,16 +743,16 @@ Decisão, revisada teste a teste:
 
 `testes/unitarios/test_autenticacao.py`, `test_autorizacao.py` e `test_usuarios.py`
 foram reescritos linha a linha pra testar o que ficou de pé (nenhum teste foi só
-apagado por dar trabalho — cada um foi adaptado pro design real ou removido com
+apagado por dar trabalho: cada um foi adaptado pro design real ou removido com
 justificativa, registrada nos próprios arquivos).
 
 ### Recomendação de processo
 
 O incidente só foi possível porque duas sessões desenvolveram RBAC ao mesmo tempo
-sem se ver. Não tem solução técnica — é hábito de equipe:
+sem se ver. Não tem solução técnica, é hábito de equipe:
 - `git fetch origin` (ou olhar PRs abertas) antes de embarcar em algo grande que
   mexe em superfície compartilhada (auth, cadastro, schema).
-- Merges menores e mais frequentes em vez de branches longas divergindo — quanto
+- Merges menores e mais frequentes em vez de branches longas divergindo, porque quanto
   maior a janela, maior a chance de duas pessoas (ou duas sessões) resolverem o
   mesmo problema em paralelo sem saber.
 - Depois de um merge não-trivial, rodar a suíte de testes (agora automático via CI,
@@ -760,22 +760,22 @@ sem se ver. Não tem solução técnica — é hábito de equipe:
 
 ---
 
-## 22. Usuários e permissões — segunda leva (auditoria, autoatendimento)
+## 22. Usuários e permissões: segunda leva (auditoria, autoatendimento)
 
 Depois do RBAC (admin/operador/cliente, §21), uma rodada de melhorias sobre a MESMA
-área — todas opcionais/aditivas, nada muda o comportamento de quem já usava o sistema
+área, todas opcionais/aditivas, e nada muda o comportamento de quem já usava o sistema
 sem configurar nada a mais:
 
 - **Log de auditoria** (`banco.auditoria_registrar`/`auditoria_listar`, tabela
   `auditoria`, painel em `/auditoria`, admin-only): login/login_falha, criação/edição
   de usuário, troca de senha (self, admin, ou por link), criação/edição/remoção de
   posto e entidade, gerar/revogar api_key, definir retenção, salvar configuração
-  (só os NOMES das chaves alteradas, nunca o valor — várias são segredo). Deliberadamente
-  **não** cobre CRUD de automação/bico/câmera — escopo cortado para não inflar demais
+  (só os NOMES das chaves alteradas, nunca o valor, porque várias são segredo). Deliberadamente
+  **não** cobre CRUD de automação/bico/câmera: escopo cortado para não inflar demais
   esta rodada; extensível pelo mesmo padrão se algum dia fizer falta.
 - **Política de senha** (`app/seguranca/sessao.py:senha_fraca`): mínimo 8 caracteres
   (já existia) + pelo menos 2 classes de caractere (letra/dígito/símbolo). Não exige
-  símbolo obrigatório de propósito — NIST 800-63B desaconselha regra de complexidade
+  símbolo obrigatório de propósito, porque o NIST 800-63B desaconselha regra de complexidade
   rígida, que na prática empurra pra padrões previsíveis tipo "Senha123!". Aplicada em
   todo ponto que define senha (bootstrap, criação/edição de usuário, reset por admin,
   troca self-service, redefinição por link).
@@ -785,29 +785,29 @@ sem configurar nada a mais:
 - **"Esqueci minha senha"** (`/esqueci-senha` → `/redefinir-senha/{token}`) e
   **convite por e-mail** na criação de usuário (`/usuarios` → "Convidar por e-mail"):
   os dois reaproveitam o mesmo mecanismo de token de uso único (`reset_senha_tokens`,
-  2h de validade). Exigem SMTP configurado (`smtp_*` em Configuração → Sistema) — sem
+  2h de validade). Exigem SMTP configurado (`smtp_*` em Configuração → Sistema); sem
   isso, ambos mostram um aviso ("peça a um administrador") em vez de quebrar. Convite
   gera uma senha placeholder aleatória que ninguém conhece (nem quem criou a conta);
   a pessoa convidada define a senha de verdade pelo link.
 - **Sessões ativas** (`/minha-conta` → "Sessões ativas", `banco.sessoes_listar_do_usuario`):
-  qualquer usuário vê e revoga individualmente as próprias sessões — útil pra notar um
+  qualquer usuário vê e revoga individualmente as próprias sessões, útil pra notar um
   acesso esquecido aberto em outro aparelho. Escopado ao dono: o endpoint de revogação
   confere que o token pertence a quem está pedindo antes de apagar.
-- **Confirmação na UI antes de desativar ou rebaixar** um admin (`usuarios.html`) —
+- **Confirmação na UI antes de desativar ou rebaixar** um admin (`usuarios.html`),
   só client-side (a trava de verdade já existe no backend desde §21); evita clique
   acidental.
-- **Último login** na listagem de usuários (`usuarios.ultimo_login`) — mostra "Nunca"
+- **Último login** na listagem de usuários (`usuarios.ultimo_login`), que mostra "Nunca"
   pra conta criada e nunca usada.
 
-**Deliberadamente fora desta rodada** (mencionado a pedido, não implementado — sem
-necessidade concreta ainda, não porque seja difícil):
-- **Permissões granulares por módulo** (ex.: "pode editar câmera mas não postos") — os
+**Deliberadamente fora desta rodada** (mencionado a pedido, não implementado porque ainda
+não há necessidade concreta, e não porque seja difícil):
+- **Permissões granulares por módulo** (ex.: "pode editar câmera mas não postos"): os
   três papéis atuais (admin/operador/cliente) cobrem os casos de uso reais até aqui;
   criar um sistema de permissões bit-a-bit sem nenhum consumidor concreto é complexidade
   especulativa (mais código, mais testes, mais superfície de ataque) por um benefício
   hipotético. Se surgir um caso real ("operador X pode mexer em Y mas não Z"), vale
   revisitar.
 - **Tokens de API pessoais** (um token por usuário/operador, para scripts, distinto da
-  `api_key` global) — mesma lógica: ninguém pediu ainda um script/integração rodando
+  `api_key` global), mesma lógica: ninguém pediu ainda um script/integração rodando
   como um usuário específico. A `api_key` global mais o `X-API-Key` já cobre o caso de
   integração hoje existente (o roteador do posto).

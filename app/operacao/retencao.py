@@ -95,12 +95,12 @@ class RetentionWorker:
         # cliente — ver banco.deteccoes_e_chamadas_antigas) que precisa continuar sendo
         # respeitado independente da política padrão do servidor.
         if dias <= 0:
-            log.info("Retenção padrão desativada (retencao_dias=0) — deteccoes/chamadas "
+            log.info("Retenção padrão desativada (retencao_dias=0). Deteccoes/chamadas "
                      "sem prazo próprio crescem sem limite; prazos por cliente continuam valendo")
         self._dias = dias
         self._max_imagens = max_imagens
         if max_imagens <= 0:
-            log.info("Teto de imagens desativado (retencao_max_imagens=0) — o histórico "
+            log.info("Teto de imagens desativado (retencao_max_imagens=0). O histórico "
                      "guarda foto de toda leitura até o prazo em dias alcançá-la")
         self._parar.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="alpr-retencao")
@@ -118,7 +118,7 @@ class RetentionWorker:
         """
         self._parar.set()
         return threads.encerrar_thread(self._thread, timeout, lambda: log.warning(
-            "Retenção: purga não encerrou em %.0fs — seguindo com o desligamento", timeout))
+            "Retenção: purga não encerrou em %.0fs, seguindo com o desligamento", timeout))
 
     def _loop(self) -> None:
         # As duas políticas rodam já no boot (útil se o servidor ficou dias sem subir) e

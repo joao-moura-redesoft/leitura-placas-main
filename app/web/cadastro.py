@@ -379,7 +379,7 @@ def empresas_remover(id_: int, request: Request):
     if (cfg.get("feira_empresa_id") or "").strip() == str(id_):
         cfg["feira_empresa_id"] = ""
         config.salvar(cfg)
-        log.warning("Posto de demonstracao %s removido — modo feira DESARMADO.", id_)
+        log.warning("Posto de demonstracao %s removido, modo feira DESARMADO.", id_)
 
     quem_id, quem_nome = deps.quem_pede(request)
     banco.auditoria_registrar(
@@ -522,7 +522,7 @@ def _validar_bico(payload: dict) -> None:
     camera2_id = int(bruto2)
     if camera2_id == camera_id:
         raise HTTPException(
-            400, "A segunda câmera precisa ser diferente da primeira — o ganho vem de "
+            400, "A segunda câmera precisa ser diferente da primeira: o ganho vem de "
                  "enxergar o veículo por outro ângulo.")
     _validar_camera_do_posto(camera2_id, automacao)
 
@@ -533,7 +533,7 @@ def _validar_bico(payload: dict) -> None:
     # a única coisa que o diagnóstico de duas fontes existe para dizer.
     if payload["papel_camera"] == payload["papel_camera2"]:
         raise HTTPException(
-            400, "As duas câmeras não podem enxergar o mesmo lado do veículo — uma é a "
+            400, "As duas câmeras não podem enxergar o mesmo lado do veículo: uma é a "
                  "traseira e a outra a frente. É por esse nome que o diagnóstico da "
                  "leitura diz qual das duas precisa de ajuste.")
 
@@ -648,7 +648,7 @@ def bicos_ler_placa_teste(id_: int, request: Request, rapido: bool = False):
     ip = request.client.host if request.client else "?"
     if not limitador.permitido("ler_placa_teste", ip, _LIMITE_LER_PLACA_MIN, 60):
         raise HTTPException(
-            429, "Muitas leituras de teste seguidas — aguarde um instante.")
+            429, "Muitas leituras de teste seguidas. Aguarde um instante.")
 
     bico, motivo = banco.bico_verificar_ativo(id_)
     if bico is None:
@@ -831,7 +831,7 @@ def feira_criar_posto(payload: dict, request: Request):
         # NÃO é erro: o cadastro está montado e o operador pode ajustar a câmera e
         # redesenhar a área depois. Falhar aqui obrigaria a refazer tudo por causa de um
         # cabo solto.
-        aviso_camera = ("a câmera não respondeu — o cadastro foi criado, mas confira o "
+        aviso_camera = ("a câmera não respondeu. O cadastro foi criado, mas confira o "
                         "índice/endereço em Câmeras e desenhe a área do bico")
 
     # O supervisor NÃO descobre câmera nova: ele só itera os pipelines já em execução.
@@ -905,7 +905,7 @@ def feira_apontar_posto(payload: dict, request: Request):
     banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome,
                               acao="feira_posto_apontado", alvo_tipo="empresa",
                               alvo_id=empresa_id, detalhe=f"nome={emp['nome']}")
-    log.warning("MODO FEIRA apontado para o posto %s (%s) — leituras dele passam a ser "
+    log.warning("MODO FEIRA apontado para o posto %s (%s): leituras dele passam a ser "
                 "mockadas quando a placa casar.", empresa_id, emp["nome"])
     return {"armado": True, "empresa_id": empresa_id, "nome": emp["nome"],
             "cnpj": emp["cnpj"]}
@@ -1017,7 +1017,7 @@ def feira_scan(request: Request, forcar: bool = False):
 
     ip = request.client.host if request.client else "?"
     if not limitador.permitido("feira_scan", ip, _LIMITE_FEIRA_SCAN_MIN, 60):
-        raise HTTPException(429, "Muitas leituras seguidas — aguarde um instante.")
+        raise HTTPException(429, "Muitas leituras seguidas. Aguarde um instante.")
 
     perfil = leitura.PERFIL_COMPLETO if forcar else leitura.PERFIL_RAPIDO
 

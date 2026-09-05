@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Configuração — ALPR{% endblock %}
+{% block title %}Configuração | ALPR{% endblock %}
 {% block conteudo %}
 <h1 id="titulo-config" style="cursor:default; user-select:none;" onclick="_toqueSecreto()">Configuração</h1>
 <p class="t-suave mb-4">Alterações são salvas em <code>config.txt</code> e o pipeline é reiniciado automaticamente.</p>
@@ -29,7 +29,7 @@
       <label>Protocolo <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Tipo de câmera a usar. USB para webcam local, RTSP para câmera IP com URL direta, Intelbras para modelos VIP via protocolo Dahua/RTSP, CSI para câmera flat-cable do Raspberry Pi.">?</button>
         <select name="camera_tipo" id="camera_tipo" onchange="mostrarSecaoProtocolo()">
           <option value="usb">USB / Webcam local</option>
-          <option value="rtsp">RTSP (URL direta — inclui IP/PTZ)</option>
+          <option value="rtsp">RTSP (URL direta, inclui IP/PTZ)</option>
           <option value="intelbras">Intelbras VIP (RTSP/Dahua)</option>
           <option value="csi">CSI (Raspberry Pi Camera)</option>
         </select>
@@ -46,14 +46,14 @@
     </fieldset>
 
     <fieldset class="proto-secao" data-proto="rtsp">
-      <legend>RTSP — URL completa</legend>
+      <legend>RTSP: URL completa</legend>
       <div class="grid-form">
         <label style="grid-column: 1 / -1;">URL <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Endereço RTSP completo da câmera IP. Exemplo: rtsp://admin:senha@192.168.1.10:554/cam/realmonitor?channel=1&subtype=1">?</button>
           <input type="text" name="camera_indice" placeholder="rtsp://usuario:senha@host:554/path">
         </label>
         <label>Transporte <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="TCP é mais estável e evita perda de frames em redes congestionadas (recomendado). UDP é mais rápido mas pode perder pacotes. Troque para UDP apenas se TCP causar latência excessiva.">?</button>
           <select name="rtsp_transporte">
-            <option value="tcp">TCP (recomendado — mais estável)</option>
+            <option value="tcp">TCP (recomendado, mais estável)</option>
             <option value="udp">UDP (mais rápido, pode perder frames)</option>
           </select>
         </label>
@@ -80,8 +80,8 @@
         </label>
         <label>Subtype <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="0 = main stream (alta resolução). 1 = sub stream (menor resolução, recomendado para Raspberry Pi).">?</button>
           <select name="intelbras_subtype">
-            <option value="0">0 — main (alta resolução)</option>
-            <option value="1">1 — sub (recomendado Pi)</option>
+            <option value="0">0 (main, alta resolução)</option>
+            <option value="1">1 (sub, recomendado Pi)</option>
           </select>
         </label>
         <label>Formato <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="'Padrão' funciona na maioria dos modelos VIP. 'Legado' para VIP 1120, 1220 e 1130.">?</button>
@@ -92,7 +92,7 @@
         </label>
         <label>Transporte <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="TCP é mais estável e evita perda de frames em redes congestionadas (recomendado). UDP é mais rápido mas pode perder pacotes.">?</button>
           <select name="rtsp_transporte">
-            <option value="tcp">TCP (recomendado — mais estável)</option>
+            <option value="tcp">TCP (recomendado, mais estável)</option>
             <option value="udp">UDP (mais rápido, pode perder frames)</option>
           </select>
         </label>
@@ -101,7 +101,7 @@
 
     <fieldset class="proto-secao" data-proto="csi">
       <legend>CSI</legend>
-      <p style="color:var(--texto-3); margin: 0;">Sem parâmetros adicionais — usa libcamerasrc do Raspberry Pi.</p>
+      <p style="color:var(--texto-3); margin: 0;">Sem parâmetros adicionais. Usa libcamerasrc do Raspberry Pi.</p>
     </fieldset>
 
     <div style="margin-top: 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
@@ -119,11 +119,11 @@
     <div class="grid-form">
       <label>Resolução <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Largura × altura do frame capturado. Resoluções maiores melhoram leitura de placas distantes, mas aumentam uso de CPU e RAM. Para Raspberry Pi, HD (1280×720) é o ponto de equilíbrio recomendado.">?</button>
         <select id="resolucao_preset" onchange="aplicarPreset()">
-          <option value="640x480">VGA — 640×480 (mais leve)</option>
-          <option value="1280x720">HD — 1280×720 (padrão)</option>
-          <option value="1920x1080">Full HD — 1920×1080</option>
-          <option value="2560x1440">QHD — 2560×1440</option>
-          <option value="3840x2160">4K UHD — 3840×2160</option>
+          <option value="640x480">VGA (640×480, mais leve)</option>
+          <option value="1280x720">HD (1280×720, padrão)</option>
+          <option value="1920x1080">Full HD (1920×1080)</option>
+          <option value="2560x1440">QHD (2560×1440)</option>
+          <option value="3840x2160">4K UHD (3840×2160)</option>
           <option value="custom">Personalizado</option>
         </select>
       </label>
@@ -154,7 +154,7 @@
     <div class="grid-form">
       <label>Backend <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="open-image-models (MIT, uso comercial livre) baixa um YOLOv9-t ONNX automaticamente. ONNX local usa um arquivo .onnx seu (models/) e permite votação por múltiplos modelos.">?</button>
         <select name="detector_backend">
-          <option value="open_image_models">open-image-models (MIT — comercial OK)</option>
+          <option value="open_image_models">open-image-models (MIT, comercial OK)</option>
           <option value="onnx">ONNX local (models/*.onnx)</option>
         </select>
       </label>
@@ -191,9 +191,9 @@
       </div>
       <label>Votos mínimos (detector) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Número mínimo de modelos que precisam detectar a mesma região para aceitar. 1 = aceita qualquer modelo. 2 = exige ≥2 concordando.">?</button>
         <select name="detector_votos_minimos">
-          <option value="1">1 — aceita qualquer modelo (padrão)</option>
-          <option value="2">2 — exige ≥ 2 modelos concordando</option>
-          <option value="3">3 — exige ≥ 3 modelos concordando</option>
+          <option value="1">1 (aceita qualquer modelo, padrão)</option>
+          <option value="2">2 (exige ≥ 2 modelos concordando)</option>
+          <option value="3">3 (exige ≥ 3 modelos concordando)</option>
         </select>
       </label>
       <label>Confiança mínima <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Nível mínimo de confiança do YOLO para aceitar uma detecção (0.0 a 1.0). Recomendado: 0.40 a 0.60.">?</button>
@@ -217,20 +217,20 @@
     <div class="grid-form">
       <label>Na leitura (Ler Placa / GET) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Ativa os 2 estágios só na leitura sob demanda, que tolera a latência extra do modelo de veículo. Recomendado: Sim.">?</button>
         <select name="veiculo_dois_estagios_get">
-          <option value="sim">Sim — mais preciso</option>
+          <option value="sim">Sim (mais preciso)</option>
           <option value="nao">Não</option>
         </select>
       </label>
       <label>No stream ao vivo <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Ativa os 2 estágios também no stream contínuo. Roda 2 modelos por frame — mais preciso, porém mais pesado. Recomendado: Não, a menos que o servidor tenha CPU sobrando.">?</button>
         <select name="veiculo_dois_estagios_live">
-          <option value="nao">Não — stream leve</option>
-          <option value="sim">Sim — filtra também ao vivo</option>
+          <option value="nao">Não (stream leve)</option>
+          <option value="sim">Sim (filtra também ao vivo)</option>
         </select>
       </label>
       <label>Modo estrito <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Não = se nenhum veículo for detectado, busca a placa no frame inteiro (nunca fica pior que hoje). Sim = sem veículo, sem placa — filtro mais rigoroso, mas pode perder leituras se o detector de veículo falhar.">?</button>
         <select name="veiculo_obrigatorio">
-          <option value="nao">Não — cai para frame inteiro (seguro)</option>
-          <option value="sim">Sim — exige veículo detectado</option>
+          <option value="nao">Não (cai para frame inteiro, seguro)</option>
+          <option value="sim">Sim (exige veículo detectado)</option>
         </select>
       </label>
       <label>Confiança mínima (veículo) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Nível mínimo de confiança do detector de veículo (0.0 a 1.0). Recomendado: 0.40.">?</button>
@@ -255,7 +255,7 @@
     <div class="grid-form">
       <label>Ativa na leitura (Ler Placa / GET) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Recomendado: Sim. Só entra quando a passada normal não achou nada, então não afeta a latência das leituras de carro.">?</button>
         <select name="tiles_fallback_get">
-          <option value="sim">Sim — recupera placa pequena</option>
+          <option value="sim">Sim (recupera placa pequena)</option>
           <option value="nao">Não</option>
         </select>
       </label>
@@ -286,8 +286,8 @@
     <div class="grid-form">
       <label>Detecção automática <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Sim = detecta placas continuamente no stream em tempo real. Não = detecção só ocorre ao clicar 'Ler Placa'.">?</button>
         <select name="deteccao_automatica">
-          <option value="sim">Sim — contínua (tempo real)</option>
-          <option value="nao">Não — somente pelo botão</option>
+          <option value="sim">Sim (contínua, tempo real)</option>
+          <option value="nao">Não (somente pelo botão)</option>
         </select>
       </label>
       <label>FPS máx de detecção <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Limita quantas vezes por segundo o YOLO é executado — e também a frequência do ajuste de imagem (aba Detecção → Ajuste de Ambiente), que roda junto. Reduzir alivia CPU bastante. Recomendado: 5.">?</button>
@@ -375,8 +375,8 @@
     <div class="grid-form">
       <label>Ativar ajuste adaptativo <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Sim = corrige a imagem automaticamente conforme a luz/contraste do ambiente. Não = usa o frame da câmera sem alteração.">?</button>
         <select name="ajuste_ambiente">
-          <option value="sim">Sim — corrige por ambiente</option>
-          <option value="nao">Não — imagem original</option>
+          <option value="sim">Sim (corrige por ambiente)</option>
+          <option value="nao">Não (imagem original)</option>
         </select>
       </label>
       <label>Intensidade (0–1) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Mistura entre imagem original e corrigida. 0 = sem efeito, 1 = correção total. Recomendado: 0.8.">?</button>
@@ -467,9 +467,9 @@
       </div>
       <label>Votos mínimos <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Número mínimo de engines que precisam concordar para aceitar a leitura. 1 = aceita qualquer resultado. 2 = exige ≥2 engines concordando.">?</button>
         <select name="ocr_votos_minimos">
-          <option value="1">1 — aceita qualquer engine (padrão)</option>
-          <option value="2">2 — exige ≥ 2 engines concordando</option>
-          <option value="3">3 — exige ≥ 3 engines concordando</option>
+          <option value="1">1 (aceita qualquer engine, padrão)</option>
+          <option value="2">2 (exige ≥ 2 engines concordando)</option>
+          <option value="3">3 (exige ≥ 3 engines concordando)</option>
         </select>
       </label>
     </div>
@@ -582,8 +582,8 @@
     <div class="grid-form">
       <label>Cookie só em HTTPS <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Marca o cookie de sessão como 'Secure' — só é enviado em conexões HTTPS. Ligue quando o servidor estiver atrás de um proxy reverso com TLS; deixe desligado para acesso local (http://localhost) ou o login para de funcionar.">?</button>
         <select name="cookie_secure">
-          <option value="nao">Não — acesso local/sem TLS</option>
-          <option value="sim">Sim — servidor atrás de HTTPS</option>
+          <option value="nao">Não (acesso local/sem TLS)</option>
+          <option value="sim">Sim (servidor atrás de HTTPS)</option>
         </select>
       </label>
     </div>
@@ -646,8 +646,8 @@
       </label>
       <label>Quem dispara a consulta <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Manual: nada consulta sozinho — o abastecimento entrega só o que já está em cache, e você gasta pelo botão no Histórico. Automático: a primeira leitura de cada placa consulta (1 crédito) e as seguintes vêm do cache. Use manual enquanto a cota for curta.">?</button>
         <select name="apiplacas_modo">
-          <option value="manual">Manual — só quando eu pedir</option>
-          <option value="automatico">Automático — no abastecimento</option>
+          <option value="manual">Manual (só quando eu pedir)</option>
+          <option value="automatico">Automático (no abastecimento)</option>
         </select>
       </label>
       <label>Reconsultar após (dias) <button type="button" class="help" aria-expanded="false" aria-label="Ajuda sobre este campo" data-tip="Depois deste prazo a placa é consultada de novo, para atualizar situação e município. Combustível, marca e modelo não mudam nunca. 180 dias = cerca de 2 consultas por veículo por ano. 0 = nunca reconsultar.">?</button>
@@ -729,7 +729,7 @@
           </div>
           <small style="display:block; margin-top:6px; color:#92400e;">
             O mock passa a valer nas leituras DESTE posto. Os demais continuam com leitura
-            real. Escolher "— nenhum —" desarma sem apagar nada.
+            real. Escolher "nenhum" desarma sem apagar nada.
           </small>
         </label>
       </div>
@@ -794,8 +794,8 @@
     <div class="grid">
       <label>Ativar modo feira
         <select name="feira_ativo">
-          <option value="nao">Não — operação normal</option>
-          <option value="sim">Sim — leituras de demonstração mockadas</option>
+          <option value="nao">Não (operação normal)</option>
+          <option value="sim">Sim (leituras de demonstração mockadas)</option>
         </select>
       </label>
       <label>Tolerância do casamento
@@ -1203,7 +1203,7 @@ async function carregarListaModelos() {
     const nomePrincipal = principal.split('/').pop().split('\\').pop();
     const extras = modelos.filter(m => m !== nomePrincipal);
     if (!extras.length) {
-      lista.textContent = 'Nenhum modelo extra em models/ — coloque arquivos .onnx lá.';
+      lista.textContent = 'Nenhum modelo extra em models/. Coloque arquivos .onnx lá.';
       return;
     }
     const selecionados = (document.getElementById('modelos-extra-value').value || '')
@@ -1275,13 +1275,13 @@ async function carregarUsoApiPlacas() {
     if (campo) campo.placeholder = u.token_configurado ? '(sem alteração)' : 'cole aqui o token da sua conta';
     if (estado) {
       if (!u.ativo) {
-        estado.textContent = 'Desligado — a resposta do roteador não inclui dados do veículo.';
+        estado.textContent = 'Desligado. A resposta do roteador não inclui dados do veículo.';
         estado.style.color = '#64748b';
       } else if (!u.token_configurado) {
-        estado.textContent = 'Ligado, mas SEM TOKEN — nenhuma consulta será feita. Preencha o token abaixo.';
+        estado.textContent = 'Ligado, mas SEM TOKEN. Nenhuma consulta será feita: preencha o token abaixo.';
         estado.style.color = '#f87171';
       } else {
-        estado.textContent = 'Ativo — token configurado.';
+        estado.textContent = 'Ativo, token configurado.';
         estado.style.color = '#16a34a';
       }
     }
@@ -1297,7 +1297,7 @@ async function verSaldoApiPlacas(botao) {
   // "não configurado" com um token visivelmente preenchido na tela.
   const campo = form.querySelector('[name="apiplacas_token"]');
   if (campo && campo.value.trim()) {
-    alvo.textContent = 'salve a configuração antes — o saldo usa o token já gravado';
+    alvo.textContent = 'salve a configuração antes: o saldo usa o token já gravado';
     alvo.style.color = '#f87171';
     return;
   }
@@ -1320,7 +1320,7 @@ async function verSaldoApiPlacas(botao) {
 
 async function copiarApiKey(botao) {
   const campo = form.querySelector('[name="api_key"]');
-  if (!campo.value) return avisar('Ainda não há chave — reinicie o servidor para gerá-la.', 'err');
+  if (!campo.value) return avisar('Ainda não há chave. Reinicie o servidor para gerá-la.', 'err');
   try {
     await navigator.clipboard.writeText(campo.value);
   } catch {
@@ -1407,17 +1407,17 @@ async function preencherPostosFeira(selecionado) {
   if (!sel) return;
   try {
     const postos = await fetch('/api/postos').then(r => r.json());
-    sel.innerHTML = '<option value="">— nenhum (desarmar) —</option>'
+    sel.innerHTML = '<option value="">nenhum (desarmar)</option>'
       + postos.map(p => `<option value="${p.id}"${p.id === selecionado ? ' selected' : ''}>`
-          + `${esc(p.nome)} — ${esc(p.cnpj)}${p.pronto ? '' : ' (sem área desenhada)'}`
-          + `</option>`).join('');
+          + `${esc(p.nome)} (${esc(p.cnpj)}${p.pronto ? '' : ' (sem área desenhada)'}`
+          + `)</option>`).join('');
   } catch (e) { /* o seletor e conveniencia; o botao de criar continua valendo */ }
 }
 
 async function apontarPostoFeira() {
   const sel = document.getElementById('feira-posto-existente');
   const id = sel.value ? parseInt(sel.value) : null;
-  if (id === null && !confirm('Desarmar o modo feira? O cadastro nao e apagado — as '
+  if (id === null && !confirm('Desarmar o modo feira? O cadastro nao e apagado, as '
       + 'leituras simplesmente voltam a ser reais.')) return;
   const r = await fetch('/api/feira/posto', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -1532,7 +1532,7 @@ async function criarPostoFeira() {
     }
     document.getElementById('feira-dialogo').hidden = true;
     // O aviso da câmera NÃO é erro: o cadastro está montado, só a imagem não veio.
-    if (d.aviso) avisar('Posto de demonstração criado — ' + esc(d.aviso), 'err');
+    if (d.aviso) avisar('Posto de demonstração criado: ' + esc(d.aviso), 'err');
     else avisar('Posto de demonstração pronto.', 'ok');
     await carregarEstadoFeira();
   } catch (e) {
@@ -1545,7 +1545,7 @@ async function removerPostoFeira() {
   if (!confirm('Remover o posto de demonstração? As leituras da demo são apagadas junto.')) return;
   const r = await fetch('/api/feira/posto', { method: 'DELETE' });
   if (!r.ok) return avisarResposta(r);
-  avisar('Posto de demonstração removido — modo feira desarmado.', 'ok');
+  avisar('Posto de demonstração removido, modo feira desarmado.', 'ok');
   await carregarEstadoFeira();
 }
 
@@ -1621,7 +1621,7 @@ function _linhaFicha(placa, f) {
         ${_campoFicha('uf', 'UF', f.uf)}
       </div>
       <small style="color:var(--texto-2);">
-        Campo em branco sai como <code>null</code> no payload — igual a um registro que
+        Campo em branco sai como <code>null</code> no payload, igual a um registro que
         não informa o dado. <code>Ano</code> e <code>Ano do modelo</code> saem como número.
       </small>
     </details>
@@ -1732,10 +1732,10 @@ function _iniciarPollingInstalacao() {
         _esconderBannerInstalacao();
         clearInterval(_pollingTimer); _pollingTimer = null;
         if (st.pipeline) {
-          statusEl.textContent = 'Instalação concluída — pipeline reiniciado com sucesso.';
+          statusEl.textContent = 'Instalação concluída, pipeline reiniciado com sucesso.';
           statusEl.className = 't-13 st-ok';
         } else {
-          statusEl.textContent = 'Instalação concluída — aguardando pipeline iniciar…';
+          statusEl.textContent = 'Instalação concluída, aguardando pipeline iniciar…';
           statusEl.className = 't-13 st-atencao';
         }
       }
@@ -1801,7 +1801,7 @@ async function salvar() {
       statusEl.className = 't-13 st-ok';
       document.getElementById('btn-salvar').disabled = false;
     } else {
-      statusEl.textContent = 'Configuração salva — verificando instalação de dependências…';
+      statusEl.textContent = 'Configuração salva, verificando instalação de dependências…';
       statusEl.className = 't-13 st-info';
     }
   } catch (e) {
@@ -1854,7 +1854,7 @@ async function testarConexao() {
     const url = URL.createObjectURL(blob);
     img.src = url; img.dataset.url = url;
     preview.style.display = 'block';
-    statusT.textContent = 'Conectado — frame capturado com sucesso';
+    statusT.textContent = 'Conectado, frame capturado com sucesso';
     statusT.style.color = '#16a34a';
   } catch (e) {
     statusT.textContent = 'Erro de rede: ' + e;

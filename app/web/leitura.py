@@ -197,7 +197,7 @@ def perfil_pedido(rapido: bool, cfg: dict) -> tuple[str, str]:
     ativo = cfg.get("rapido_ativo", config.PADROES.get("rapido_ativo", "sim"))
     if not config.get_bool({"rapido_ativo": ativo}, "rapido_ativo"):
         return (leitura.PERFIL_COMPLETO,
-                "modo rápido pedido mas desativado neste servidor — leitura completa")
+                "modo rápido pedido mas desativado neste servidor, leitura completa")
     return leitura.PERFIL_RAPIDO, ""
 
 
@@ -471,10 +471,10 @@ def leitura_reativa(
     ip = request.client.host if request.client else "?"
     if not limitador.permitido("leitura_ip", ip, _LIMITE_LEITURA_IP_MIN, 60):
         _registrar("erro_cadastro", "rate limit por IP excedido")
-        raise HTTPException(429, "Muitas requisições — tente novamente em instantes.")
+        raise HTTPException(429, "Muitas requisições. Tente novamente em instantes.")
     if not limitador.permitido("leitura_cnpj", cnpj_norm, _LIMITE_LEITURA_CNPJ_MIN, 60):
         _registrar("erro_cadastro", "rate limit por CNPJ excedido")
-        raise HTTPException(429, "Muitas requisições para este CNPJ — tente novamente em instantes.")
+        raise HTTPException(429, "Muitas requisições para este CNPJ. Tente novamente em instantes.")
 
     reg, motivo = banco.resolver_bico(cnpj_norm, automacao, bico)
 

@@ -100,7 +100,7 @@ def _auto_instalar(engine: str) -> bool:
     pacotes = _ENGINE_PACOTES.get(engine, [])
     if not pacotes:
         return False
-    log.info("Engine '%s' não instalado — iniciando instalação: %s", engine, " ".join(pacotes))
+    log.info("Engine '%s' não instalado. Iniciando instalação: %s", engine, " ".join(pacotes))
     for pacote in pacotes:
         log.info("  pip install %s ...", pacote)
         estado.instalando_pacote = pacote
@@ -176,7 +176,7 @@ class OCR:
         try:
             import pytesseract
         except ImportError:
-            log.error("pytesseract não instalado — execute: pip install pytesseract")
+            log.error("pytesseract não instalado. Execute: pip install pytesseract")
             return
         caminho = _localizar_tesseract()
         if caminho:
@@ -191,7 +191,7 @@ class OCR:
 
     def _carregar_easyocr(self) -> None:
         if not _tentar_importar("easyocr"):
-            log.error("EasyOCR indisponível — caindo para tesseract")
+            log.error("EasyOCR indisponível, caindo para tesseract")
             self.engine = "tesseract"
             self._carregar_tesseract()
             return
@@ -210,7 +210,7 @@ class OCR:
 
     def _carregar_paddleocr(self) -> None:
         if not _tentar_importar("paddleocr"):
-            log.error("PaddleOCR indisponível — caindo para tesseract")
+            log.error("PaddleOCR indisponível, caindo para tesseract")
             self.engine = "tesseract"
             self._carregar_tesseract()
             return
@@ -224,9 +224,9 @@ class OCR:
             import paddle
             if paddle.device.is_compiled_with_cuda():
                 paddle.set_device("gpu")
-                log.info("PaddleOCR: GPU CUDA disponível (paddlepaddle-gpu) — usando GPU")
+                log.info("PaddleOCR: GPU CUDA disponível (paddlepaddle-gpu), usando GPU")
         except Exception as e:
-            log.warning("PaddleOCR: falha ao configurar GPU (%s) — usando CPU", e)
+            log.warning("PaddleOCR: falha ao configurar GPU (%s), usando CPU", e)
         # API 3.x (PP-OCRv5/v6). enable_mkldnn=False evita um bug do oneDNN no executor
         # PIR do paddlepaddle 3.x em CPU (irrelevante em GPU, oneDNN é CPU-only).
         # Desliga pré/pós de documento (é crop de placa).
@@ -241,7 +241,7 @@ class OCR:
 
     def _carregar_doctr(self) -> None:
         if not _tentar_importar("doctr"):
-            log.error("docTR indisponível — caindo para tesseract")
+            log.error("docTR indisponível, caindo para tesseract")
             self.engine = "tesseract"
             self._carregar_tesseract()
             return
@@ -251,7 +251,7 @@ class OCR:
 
     def _carregar_fast_plate_ocr(self) -> None:
         if not _tentar_importar("fast_plate_ocr"):
-            log.error("fast-plate-ocr indisponível — caindo para tesseract")
+            log.error("fast-plate-ocr indisponível, caindo para tesseract")
             self.engine = "tesseract"
             self._carregar_tesseract()
             return
@@ -264,11 +264,11 @@ class OCR:
             try:
                 rec = LicensePlateRecognizer(nome)
             except Exception as e:
-                log.error("fast-plate-ocr: membro %s não carregou (%s) — segue sem ele", nome, e)
+                log.error("fast-plate-ocr: membro %s não carregou (%s), segue sem ele", nome, e)
                 continue
             self._fast_membros.append((nome, rec, _cor_do_modelo(rec)))
         if not self._fast_membros:
-            log.error("fast-plate-ocr: nenhum membro carregou — caindo para tesseract")
+            log.error("fast-plate-ocr: nenhum membro carregou, caindo para tesseract")
             self.engine = "tesseract"
             self._carregar_tesseract()
             return
@@ -543,7 +543,7 @@ class OCR:
         if not (50 <= hue_media <= 150):
             log.debug(
                 "_remover_header M2: saturação detectada mas matiz=%.0f fora do range azul/verde"
-                " (50-150) — ignorando (provável pele ou fundo colorido)",
+                " (50-150), ignorando (provável pele ou fundo colorido)",
                 hue_media,
             )
             return crop_bgr, False, False
@@ -1081,7 +1081,7 @@ def _alinhar_por_char(texto: str, char_probs, nome: str):
     except (TypeError, ValueError):
         return None
     if len(vals) < len(texto):
-        log.debug("fast-plate-ocr[%s]: char_probs (%d) menor que o texto (%d) — usando só a "
+        log.debug("fast-plate-ocr[%s]: char_probs (%d) menor que o texto (%d), usando só a "
                   "média", nome, len(vals), len(texto))
         return None
     return vals[:len(texto)]

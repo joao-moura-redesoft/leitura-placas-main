@@ -13,6 +13,7 @@ Requisito externo (sem pip):
 """
 from __future__ import annotations
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -31,6 +32,17 @@ HLS_DIR = Path("hls")
 _FPS       = 15    # frames por segundo enviados ao FFmpeg
 _HLS_TIME  = 1     # segundos por segmento .ts
 _HLS_LIST  = 6     # quantidade de segmentos mantidos no playlist (~6s de buffer)
+
+# Threads do x264. Sem `-threads`, o libx264 abre ~1,5x o numero de nucleos do HOST -- e
+# o host, aqui, e compartilhado com PDV/Java/React e o container tem teto de 2 CPUs. Num
+# host de 16 nucleos seriam ~24 threads disputando 2 CPUs de cota: o cgroup throttla e o
+# tempo vai para troca de contexto, o mesmo padrao ja medido no onnxruntime (ver
+# app/visao/hardware.py:onnx_session_options).
+#
+# 2 basta com folga: `-preset ultrafast -tune zerolatency` num stream 1280x720@15fps e
+# barato, e o encoder e best-effort -- se atrasar, o cliente perde qualidade de preview,
+# nao leitura de placa. O `-threads` do ffmpeg limita o pool do codec, nao o processo.
+_X264_THREADS = os.environ.get("HLS_X264_THREADS", "2")
 
 
 def ffmpeg_disponivel() -> bool:
@@ -66,7 +78,7 @@ class _Encoder:
         """
         self._stop.set()
         return threads.encerrar_thread(self._thread, timeout, lambda: log.warning(
-            "HLS câmera %d: encoder não encerrou em %.0fs — o processo ffmpeg pode "
+            "HLS câmera %d: encoder não encerrou em %.0fs. O processo ffmpeg pode "
             "ficar órfão", self.camera_id, timeout))
 
     def morto(self) -> bool:
@@ -80,7 +92,7 @@ class _Encoder:
         dim = self._aguardar_dimensoes(timeout=60.0)
         if dim is None:
             log.warning(
-                "HLS câmera %d: nenhum frame em 60s — encoder cancelado",
+                "HLS câmera %d: nenhum frame em 60s, encoder cancelado",
                 self.camera_id,
             )
             return
@@ -95,7 +107,7 @@ class _Encoder:
                 proc = self._criar_ffmpeg(w, h)
                 self._alimentar(proc, w, h)
             except Exception as e:
-                log.error("HLS câmera %d: %s — reiniciando em 5s", self.camera_id, e)
+                log.error("HLS câmera %d: %s. Reiniciando em 5s", self.camera_id, e)
             finally:
                 if proc:
                     # `stdin.close()` FORA do `if poll() is None`: quando o ffmpeg já morreu
@@ -138,6 +150,7 @@ class _Encoder:
             "-s", f"{w}x{h}", "-r", str(_FPS),
             "-i", "pipe:0",
             "-c:v", "libx264", "-preset", "ultrafast",
+            "-threads", _X264_THREADS,
             "-tune", "zerolatency", "-crf", "28",
             "-g", str(_FPS * 2), "-sc_threshold", "0",
             "-hls_time",         str(_HLS_TIME),
@@ -199,7 +212,7 @@ class HLSManager:
         """Inicia encoders para todas as câmeras ativas. Retorna False se FFmpeg ausente."""
         if not ffmpeg_disponivel():
             log.warning(
-                "FFmpeg não encontrado — streaming HLS indisponível.\n"
+                "FFmpeg não encontrado: streaming HLS indisponível.\n"
                 "  Windows: winget install Gyan.FFmpeg\n"
                 "  Linux:   apt install ffmpeg"
             )
@@ -275,7 +288,7 @@ class HLSManager:
             # sem quadro) continuava no dicionário, e este `return` antecipado impedia
             # qualquer recriação: a câmera ficava SEM HLS até reiniciar o processo, mesmo
             # depois de voltar a transmitir.
-            log.info("HLS: encoder da câmera %d estava morto — recriando", camera_id)
+            log.info("HLS: encoder da câmera %d estava morto, recriando", camera_id)
             self._encoders.pop(camera_id, None)
         enc = _Encoder(camera_id)
         enc.iniciar()

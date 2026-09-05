@@ -1,4 +1,4 @@
-# Casos de Uso — Sistema ALPR v2.1
+# Casos de Uso do Sistema ALPR v2.1
 
 ## Visão Geral
 
@@ -6,7 +6,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 
 ---
 
-## UC-01 — Leitura Automática de Placa no Abastecimento
+## UC-01: Leitura Automática de Placa no Abastecimento
 
 **Ator:** Sistema (pipeline automático)  
 **Gatilho:** Veículo para em frente à bomba de combustível.
@@ -15,10 +15,10 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 1. Câmera IP captura frames contínuos (padrão: 15 fps)
 2. Se ROI configurado, o frame é recortado para a área de interesse antes da detecção
 3. Detector YOLO identifica placa no frame
-4. Tracker associa detecção ao veículo (track_id) — pula OCR se já identificado recentemente
+4. Tracker associa detecção ao veículo (track_id) e pula o OCR se já identificado recentemente
 5. OCR extrai texto da região detectada
 6. Validador normaliza e classifica (Mercosul / Antigo)
-7. Tracker acumula votos — ao atingir `tracker_votos_emitir`, placa é emitida
+7. Tracker acumula votos; ao atingir `tracker_votos_emitir`, a placa é emitida
 8. Detecção é registrada no banco com `bomba`, `lado`, `placa`, `confiança` e snapshot
 9. Webhook opcional notifica sistema externo (ERP / PDV)
 
@@ -32,7 +32,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 
 ---
 
-## UC-02 — Leitura Manual de Placa (Disparo Único)
+## UC-02: Leitura Manual de Placa (Disparo Único)
 
 **Ator:** Operador / Sistema externo via API  
 **Gatilho:** Chamada `POST /api/cameras/{id}/ler-placa`
@@ -51,7 +51,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 
 ---
 
-## UC-03 — Consulta de Histórico de Placa
+## UC-03: Consulta de Histórico de Placa
 
 **Ator:** Operador / Sistema externo  
 **Gatilho:** Chamada `GET /api/placa/{placa}` ou `GET /api/deteccoes`
@@ -70,7 +70,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 
 ---
 
-## UC-04 — Alerta de Veículo em Lista Negra
+## UC-04: Alerta de Veículo em Lista Negra
 
 **Ator:** Sistema (automático ao detectar placa)  
 **Gatilho:** Placa detectada está cadastrada como `negra` em `listas_placas`.
@@ -87,7 +87,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 
 ---
 
-## UC-05 — Gerenciamento de Listas Branca e Negra
+## UC-05: Gerenciamento de Listas Branca e Negra
 
 **Ator:** Administrador  
 **Interface:** `GET/POST/DELETE /api/listas` ou página `/listas`
@@ -102,7 +102,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 
 ---
 
-## UC-06 — Cadastro e Configuração de Câmera
+## UC-06: Cadastro e Configuração de Câmera
 
 **Ator:** Técnico / Administrador  
 **Interface:** `POST/PUT /api/cameras` ou página `/cameras`
@@ -121,7 +121,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 
 ---
 
-## UC-07 — Descoberta e Scan de Câmeras na Rede
+## UC-07: Descoberta e Scan de Câmeras na Rede
 
 **Ator:** Técnico  
 **Interface:** `GET /api/cameras/rede-local` + `POST /api/cameras/scan` ou página `/cameras` (aba Scan)
@@ -137,7 +137,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 
 ---
 
-## UC-08 — Monitoramento ao Vivo (Dashboard)
+## UC-08: Monitoramento ao Vivo (Dashboard)
 
 **Ator:** Operador  
 **Interface:** Página `/` ou `/dashboard`
@@ -145,7 +145,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 **Informações disponíveis:**
 - Stream MJPEG ou HLS com bounding boxes em tempo real
 - Feed das últimas 20 detecções com placa, câmera, timestamp
-- **Painel de saúde das câmeras** — status por câmera (ok / sem_frame / parado), restarts, backoff atual
+- **Painel de saúde das câmeras** com status por câmera (ok / sem_frame / parado), restarts e backoff atual
 - Crop do último OCR (`/api/debug/ocr_crop`)
 - Estatísticas: total de detecções, top 10 placas, FPS atual, uptime
 
@@ -153,7 +153,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 
 ---
 
-## UC-09 — Configuração do Sistema
+## UC-09: Configuração do Sistema
 
 **Ator:** Administrador  
 **Interface:** `GET/POST /api/config` ou página `/configuracao`
@@ -171,7 +171,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 
 ---
 
-## UC-10 — Integração com Sistema Externo (ERP / PDV)
+## UC-10: Integração com Sistema Externo (ERP / PDV)
 
 **Ator:** Sistema externo via API REST  
 **Base URL:** `http://<host>:14000`
@@ -187,11 +187,11 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 | Status do sistema | `GET /api/status` | Health check da integração |
 | Saúde das câmeras | `GET /api/health` | Verificar se câmeras estão operacionais |
 
-**Autenticação:** Token de sessão via cookie (logar em `/login` antes de usar a API em contexto de browser). Para integração machine-to-machine, implementar token de API estático — pendente.
+**Autenticação:** Token de sessão via cookie (logar em `/login` antes de usar a API em contexto de browser). Para integração machine-to-machine, implementar token de API estático (pendente).
 
 ---
 
-## UC-11 — Detecção Multi-Câmera Simultânea
+## UC-11: Detecção Multi-Câmera Simultânea
 
 **Ator:** Sistema  
 **Cenário típico:** Posto com 3 bombas × 2 lados = 6 câmeras simultâneas
@@ -203,11 +203,11 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 - Detecções registradas com respectivos `bomba` e `lado`
 - `WorkerSupervisor` monitora todas as câmeras e reinicia falhas automaticamente
 
-**Limitação Intelbras:** Apenas 1 conexão RTSP simultânea por câmera física — sistema reutiliza o frame do pipeline ativo.
+**Limitação Intelbras:** Apenas 1 conexão RTSP simultânea por câmera física, então o sistema reutiliza o frame do pipeline ativo.
 
 ---
 
-## UC-12 — Validação e Testes de Acurácia
+## UC-12: Validação e Testes de Acurácia
 
 **Ator:** Técnico / Desenvolvedor  
 **Interface:** Página `/testes` + scripts em `testes/`
@@ -225,11 +225,11 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 | AutoOCR (`auto`) | 92,9% |
 | fast-plate-ocr | ~90% |
 | EasyOCR | ~85% |
-| Tesseract | ~70–75% |
+| Tesseract | ~70% a 75% |
 
 ---
 
-## UC-13 — Configuração de Área de Captura (ROI)
+## UC-13: Configuração de Área de Captura (ROI)
 
 **Ator:** Técnico  
 **Interface:** Página `/roi/{camera_id}`
@@ -239,16 +239,16 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 2. Clica em "Atualizar Imagem" para capturar o frame atual
 3. Clica e arrasta para desenhar o retângulo de interesse sobre a imagem
 4. Clica em "Ler Placa" para testar a leitura dentro da área
-5. Se satisfatório, clica em "Salvar Área" — aplicado imediatamente sem reiniciar o pipeline
+5. Se satisfatório, clica em "Salvar Área", que é aplicado imediatamente sem reiniciar o pipeline
 6. Para remover a restrição, clica em "Usar Frame Completo"
 
-**Resultado:** Pipeline passa a detectar apenas placas dentro da área configurada — elimina falsos positivos de fundos e cartazes fora da pista.
+**Resultado:** Pipeline passa a detectar apenas placas dentro da área configurada, o que elimina falsos positivos de fundos e cartazes fora da pista.
 
 **Impacto técnico:** ROI crop é aplicado antes do YOLO; bboxes são deslocadas de volta às coordenadas originais para anotação correta no stream.
 
 ---
 
-## UC-14 — Autenticação e Acesso ao Sistema
+## UC-14: Autenticação e Acesso ao Sistema
 
 **Ator:** Administrador / Operador  
 **Interface:** `/criar-admin`, `/login`, `/logout`
@@ -256,7 +256,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 **Fluxo de primeiro acesso:**
 1. Primeira execução redireciona para `/setup` (wizard)
 2. Após configuração inicial, sistema disponibiliza `/criar-admin`
-3. Administrador cria conta (nome, e-mail, senha) — aceito apenas se nenhum usuário existe
+3. Administrador cria conta (nome, e-mail, senha), aceito apenas se nenhum usuário existe
 4. A partir daí, `/criar-admin` retorna 403 (bloqueado)
 
 **Fluxo de login:**
@@ -276,7 +276,7 @@ Sistema de reconhecimento automático de placas veiculares (ALPR) desenvolvido p
 
 ---
 
-## UC-15 — Monitoramento de Saúde das Câmeras
+## UC-15: Monitoramento de Saúde das Câmeras
 
 **Ator:** Operador / Sistema  
 **Interface:** Dashboard (`/dashboard`) + `GET /api/health`

@@ -1,9 +1,9 @@
-# Plano de Reorganização de Arquivos — ALPR
+# Plano de Reorganização de Arquivos do ALPR
 
-> **Status: executado (Fases 0–3 concluídas e validadas ao vivo).** Mantido como registro
+> **Status: executado (Fases 0 a 3 concluídas e validadas ao vivo).** Mantido como registro
 > da migração. Duas correções em relação ao plano original: `ambiente.py` e `hardware.py`
 > (não listados na varredura inicial) também foram movidos para `app/visao/`; e o split do
-> `ocr.py` (Fase 2) preservou os métodos da classe `OCR` intactos — a divisão foi por
+> `ocr.py` (Fase 2) preservou os métodos da classe `OCR` intactos, porque a divisão foi por
 > classe/função de nível de módulo (`engines.py`/`auto.py`), não por método interno, para
 > não alterar lógica numa pipeline em produção sem suíte de testes.
 >
@@ -78,7 +78,7 @@ importam de todos; nada importa `web` a não ser `servidor`.
 | `validador.py` | `app/visao/validador.py` |
 | `tracker.py` | `app/visao/tracker.py` |
 | `pipeline.py` | `app/visao/pipeline.py` |
-| `ocr.py` | `app/visao/ocr/` (fase 2 — ver §6) |
+| `ocr.py` | `app/visao/ocr/` (fase 2, ver §6) |
 | `stream.py` | `app/streaming/stream.py` |
 | `hls_encoder.py` | `app/streaming/hls_encoder.py` |
 | `supervisor.py` | `app/operacao/supervisor.py` |
@@ -94,7 +94,7 @@ Adicionar `__init__.py` (vazio) em: `app/`, `core/`, `visao/`, `streaming/`,
 
 ## 3. Mapa de reescrita de imports
 
-Substituir em cada arquivo (imports internos apenas — libs externas intactas):
+Substituir em cada arquivo (imports internos apenas, libs externas intactas):
 
 | Import antigo | Import novo |
 |---------------|-------------|
@@ -133,10 +133,10 @@ Substituir em cada arquivo (imports internos apenas — libs externas intactas):
 - `app/web/auth.py` → sessao (ex-auth), banco
 - `app/web/paginas.py` → config
 - `app/web/stream.py` → stream (streaming)
-- `app/web/testes.py` → config, banco, estado, pipeline, camera (imports lazy dentro de funções — atenção às linhas 152/166/179-183)
+- `app/web/testes.py` → config, banco, estado, pipeline, camera (imports lazy dentro de funções, atenção às linhas 152/166/179-183)
 
 > **Não** alterar strings de caminho (`directory="templates"`, `Path("models")`,
-> `Path("static/snapshots")`, `Path("placas.db")`, etc.) — elas continuam válidas
+> `Path("static/snapshots")`, `Path("placas.db")`, etc.), pois elas continuam válidas
 > porque o CWD permanece a raiz. Só mexer nelas na fase opcional §7.
 
 ---
@@ -163,13 +163,13 @@ no path). Padronizar a execução em **`python -m app.main`** a partir da raiz.
 Cada fase termina com o servidor subindo (`python -m app.main` ou atual) e uma
 navegação rápida (`/`, `/dashboard`, um stream, `/api/status`).
 
-1. **Fase 0 — sem risco de import:**
+1. **Fase 0, sem risco de import:**
    - Criar `benchmarks/` e mover `benchmark_*.py`.
    - Criar `docs/` e mover os `.md`.
    - Nada de import de produção muda. Validar que benchmarks ainda rodam (eles
-     fazem `sys.path` próprio — conferir linhas iniciais).
+     fazem `sys.path` próprio, então conferir linhas iniciais).
 
-2. **Fase 1 — criar o pacote e mover em bloco:**
+2. **Fase 1, criar o pacote e mover em bloco:**
    - Criar `app/` + subpastas + `__init__.py`.
    - `git mv` (ou mover) todos os módulos conforme §2, `rotas/`→`app/web/`,
      `auth.py`→`app/seguranca/sessao.py`.
@@ -178,9 +178,9 @@ navegação rápida (`/`, `/dashboard`, um stream, `/api/status`).
    - Adicionar `pyproject.toml`.
    - Subir e validar tudo. Esta é a fase grande; fazer num commit isolado.
 
-3. **Fase 2 — quebrar `ocr.py`** (independente, ver §6).
+3. **Fase 2, quebrar `ocr.py`** (independente, ver §6).
 
-4. **Fase 3 (opcional) — mover `templates/`/`static/` para `app/web/`** (§7).
+4. **Fase 3 (opcional), mover `templates/`/`static/` para `app/web/`** (§7).
 
 > Alternativa de menor risco à Fase 1: manter *shims* temporários na raiz
 > (`banco.py` contendo `from app.core.banco import *`) para migrar consumidores aos
@@ -188,17 +188,17 @@ navegação rápida (`/`, `/dashboard`, um stream, `/api/status`).
 
 ---
 
-## 6. Quebra do `ocr.py` (904 linhas) — Fase 2
+## 6. Quebra do `ocr.py` (904 linhas) na Fase 2
 
 Transformar `ocr.py` no pacote `app/visao/ocr/` preservando a API pública `OCR.ler()`:
 
-- `ocr/__init__.py` — expõe a classe `OCR` (fachada). `from app.visao.ocr import OCR`
+- `ocr/__init__.py`: expõe a classe `OCR` (fachada). `from app.visao.ocr import OCR`
   continua funcionando.
-- `ocr/engines.py` — inicialização e chamada de cada engine (tesseract, easyocr,
+- `ocr/engines.py`: inicialização e chamada de cada engine (tesseract, easyocr,
   paddleocr, doctr, fast_plate_ocr) atrás de uma interface comum.
-- `ocr/preprocess.py` — `_remover_header`, `_remover_ruidos_mercosul`,
+- `ocr/preprocess.py`: `_remover_header`, `_remover_ruidos_mercosul`,
   `_focar_caracteres` e utilitários de imagem.
-- `ocr/auto.py` — a lógica de seleção automática de engine (§6 do ARQUITETURA.md).
+- `ocr/auto.py`: a lógica de seleção automática de engine (§6 do ARQUITETURA.md).
 
 Fazer **só depois** da Fase 1 estar estável, e num commit próprio, porque envolve
 recortar código (não só mover). Manter `estado.registrar_crop_ocr` sendo chamado do
@@ -206,7 +206,7 @@ mesmo ponto.
 
 ---
 
-## 7. Mover assets para dentro de `app/` — Fase 3 (opcional)
+## 7. Mover assets para dentro de `app/` na Fase 3 (opcional)
 
 Só se quiser um pacote 100% autocontido. Exige, para cada caminho relativo:
 
@@ -219,7 +219,7 @@ Só se quiser um pacote 100% autocontido. Exige, para cada caminho relativo:
   `Path("hls")`, `Path("testes/...")` por caminhos ancorados em `RAIZ`.
 - Reavaliar `entrypoint.sh` (ele cria `config.txt` em `/app/config.txt`).
 
-Não recomendado junto com a Fase 1 — dobra o risco por pouco ganho.
+Não recomendado junto com a Fase 1, porque dobra o risco por pouco ganho.
 
 ---
 

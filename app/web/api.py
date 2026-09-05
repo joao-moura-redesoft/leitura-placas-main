@@ -115,7 +115,7 @@ def remover_deteccao(id_: int):
     # remoção manual de uma linha do histórico, sem essa janela de segurança.
     intocaveis = rotulos.protegidos()
     if intocaveis is None:
-        log.warning("Remoção da detecção %d: dataset ilegível — snapshots preservados", id_)
+        log.warning("Remoção da detecção %d: dataset ilegível, snapshots preservados", id_)
         apagaveis: list[str] = []
     else:
         apagaveis = [a for a in arquivos if Path(a).name not in intocaveis]
@@ -389,7 +389,7 @@ def _validar_camera(payload: dict) -> dict:
         raise HTTPException(400, "nome é obrigatório")
     empresa_id = payload.get("empresa_id")
     if not empresa_id:
-        raise HTTPException(400, "empresa_id é obrigatório — toda câmera pertence a um posto")
+        raise HTTPException(400, "empresa_id é obrigatório: toda câmera pertence a um posto")
     if not banco.empresas_obter(deps.inteiro_ou_400(empresa_id, 'empresa_id')):
         raise HTTPException(400, f"Empresa {empresa_id} não encontrada")
     return {**payload, "nome": nome, "local": (payload.get("local") or "").strip()}
@@ -405,7 +405,7 @@ def cameras_inserir(payload: dict):
         # A mensagem interna da exceção (texto do SQLite, caminho de arquivo) fica no
         # LOG, não na resposta ao cliente. (Auditoria 27/08/2026.)
         log.error("Falha em câmera: %s" % e, exc_info=True)
-        raise HTTPException(500, "Operação falhou — veja o log do servidor.")
+        raise HTTPException(500, "Operação falhou. Veja o log do servidor.")
     # Inicia pipeline em background sem bloquear a resposta
     cam = banco.cameras_obter(id_)
     if cam and cam["ativo"]:
@@ -427,7 +427,7 @@ def cameras_atualizar(id_: int, payload: dict):
         # A mensagem interna da exceção (texto do SQLite, caminho de arquivo) fica no
         # LOG, não na resposta ao cliente. (Auditoria 27/08/2026.)
         log.error("Falha em câmera: %s" % e, exc_info=True)
-        raise HTTPException(500, "Operação falhou — veja o log do servidor.")
+        raise HTTPException(500, "Operação falhou. Veja o log do servidor.")
     if not ok:
         raise HTTPException(404, "Câmera não encontrada")
     # empresa_id pode ter mudado — o HLS não pode continuar servindo pela permissão velha
@@ -465,7 +465,7 @@ def cameras_remover(id_: int):
     except sqlite3.IntegrityError:
         # A checagem acima e o DELETE não são atômicos — se um bico foi cadastrado
         # nessa câmera bem no meio da janela entre as duas, o RESTRICT dispara aqui.
-        raise HTTPException(409, "Câmera passou a estar em uso por um bico durante a remoção — tente novamente.")
+        raise HTTPException(409, "Câmera passou a estar em uso por um bico durante a remoção. Tente novamente.")
     deps.descartar_cache_camera(id_)
     # A linha já saiu do banco; o pipeline pode não ter parado. `parar_camera` devolve
     # False quando a thread não confirmou morte — e nesse caso ela NÃO desregistra a
@@ -613,7 +613,7 @@ def cameras_snapshot(id_: int, request: Request):
                 },
             )
         if frame is None:
-            raise HTTPException(503, "Não foi possível capturar imagem da câmera — verifique a conexão")
+            raise HTTPException(503, "Não foi possível capturar imagem da câmera. Verifique a conexão")
     ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     if not ok:
         raise HTTPException(500, "Falha ao codificar frame")
@@ -641,7 +641,7 @@ def cameras_teste(id_: int, request: Request):
             ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
             if ok:
                 return Response(content=jpg.tobytes(), media_type="image/jpeg")
-        raise HTTPException(503, "Pipeline iniciado mas câmera ainda sem frame — aguarde e tente novamente")
+        raise HTTPException(503, "Pipeline iniciado mas câmera ainda sem frame. Aguarde e tente novamente")
 
     # Câmera ainda não está no pipeline — tenta conexão direta
     intelbras = {
@@ -699,7 +699,7 @@ def cameras_scan(payload: dict):
         raise HTTPException(400, f"Rede inválida: '{rede}'. Use CIDR (ex: 192.168.1.0/24)")
 
     if net.num_addresses > 1024:
-        raise HTTPException(400, "Rede muito grande — limite: /22 (1024 endereços)")
+        raise HTTPException(400, "Rede muito grande. Limite: /22 (1024 endereços)")
 
     hosts = [str(ip) for ip in net.hosts()]
 
@@ -853,7 +853,7 @@ def config_salvar(payload: dict, request: Request):
             _hls.hls_manager.parar()
             if novo.get("streaming_modo", "mjpeg") == "hls":
                 if not _hls.hls_manager.iniciar(banco.cameras_listar()):
-                    log.warning("HLS não subiu — a tela cai para MJPEG")
+                    log.warning("HLS não subiu, a tela cai para MJPEG")
         except Exception as e:
             log.error("Falha ao aplicar streaming_modo: %s", e)
 
@@ -982,7 +982,7 @@ def veiculo_consultar(placa: str, request: Request):
     """
     cfg = config.carregar()
     if not apiplacas.configurado(cfg):
-        raise HTTPException(400, "Consulta de veículo não configurada — falta o token em Configuração.")
+        raise HTTPException(400, "Consulta de veículo não configurada: falta o token em Configuração.")
 
     placa_norm = apiplacas.normalizar_placa(placa)
     if not apiplacas.placa_consultavel(placa_norm):
@@ -998,7 +998,7 @@ def veiculo_consultar(placa: str, request: Request):
         banco.auditoria_registrar(
             usuario_id=quem_id, usuario_nome=quem_nome, acao="veiculo_consultado",
             alvo_tipo="placa", alvo_id=placa_norm,
-            detalhe=f"consulta paga ({bloco['consulta']})" + ("" if ja_tinha else " — placa nova"),
+            detalhe=f"consulta paga ({bloco['consulta']})" + ("" if ja_tinha else " (placa nova)"),
         )
     return {"placa": placa_norm, "veiculo": bloco}
 

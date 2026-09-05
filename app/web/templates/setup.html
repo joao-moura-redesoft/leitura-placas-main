@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Configuração Inicial — ALPR{% endblock %}
+{% block title %}Configuração Inicial | ALPR{% endblock %}
 {% block conteudo %}
 
 <style>
@@ -94,7 +94,7 @@
 <div id="etapa-1" class="etapa ativa">
   <div class="etapa-card">
     <h1 class="etapa-titulo">Bem-vindo ao ALPR</h1>
-    <p class="etapa-subtitulo">Sistema de reconhecimento automático de placas veiculares — versão 2.0</p>
+    <p class="etapa-subtitulo">Sistema de reconhecimento automático de placas veiculares, versão 2.0</p>
 
     <p style="color:#cbd5e1;margin-bottom:20px">
       Este assistente irá guiá-lo pela configuração inicial do sistema.<br>
@@ -144,8 +144,8 @@
       </label>
       <label class="setup-label">Detecção automática
         <select id="cfg-deteccao-auto">
-          <option value="sim">Sim — detecta continuamente no stream</option>
-          <option value="nao">Não — apenas pelo botão "Ler Placa"</option>
+          <option value="sim">Sim (detecta continuamente no stream)</option>
+          <option value="nao">Não (apenas pelo botão "Ler Placa")</option>
         </select>
       </label>
       <label class="setup-label">Nível de log
@@ -197,7 +197,7 @@
     </div>
 
     <label class="setup-label" id="setup-empresa-wrap" style="max-width:420px;margin-bottom:16px">
-      Empresa (posto) — aplica a todas as linhas
+      Empresa (posto), aplica a todas as linhas
       <select id="s-empresa"></select>
     </label>
 
@@ -227,8 +227,8 @@
           </label>
           <label class="setup-label">Subtype
             <select id="s-subtype">
-              <option value="1">1 — Sub (leve)</option>
-              <option value="0">0 — Main (HD)</option>
+              <option value="1">1 (Sub, leve)</option>
+              <option value="0">0 (Main, HD)</option>
             </select>
           </label>
           <label class="setup-label">Formato URL
@@ -406,7 +406,7 @@ async function salvarCamerasSetup() {
 
   const empresaId = parseInt(document.getElementById('s-empresa').value) || null;
   if (!empresaId) {
-    mostrarAlertaCam('erro', 'Selecione a empresa (posto) das câmeras — ou remova as linhas e pule esta etapa.');
+    mostrarAlertaCam('erro', 'Selecione a empresa (posto) das câmeras, ou remova as linhas e pule esta etapa.');
     return;
   }
 

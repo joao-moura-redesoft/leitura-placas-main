@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Câmera — ALPR{% endblock %}
+{% block title %}Câmera | ALPR{% endblock %}
 {% block conteudo %}
 <a id="voltar" href="/cameras" class="link-voltar">← Voltar</a>
 
@@ -81,7 +81,7 @@
           <button class="btn-split-alt" onclick="testarBico(true)" id="btn-testar-rapido"
                   style="background:#334155"
                   aria-label="Ler placa deste bico em modo rapido"
-                  title="Leitura rapida — 1 a 2 fotos, modelos leves, resposta em poucos segundos. Troca acuracia por tempo.">⚡</button>
+                  title="Leitura rapida: 1 a 2 fotos, modelos leves, resposta em poucos segundos. Troca acuracia por tempo.">⚡</button>
         </span>
         <div id="resultado" style="display:none;margin-top:10px;padding:12px;border-radius:8px;
              background:var(--superficie-2);border:1px solid var(--borda);text-align:center;font-size:13px"></div>
@@ -195,7 +195,7 @@ function desenhar() {
   const b = _bicos.find(x => x.id === _ativo);
   document.getElementById('info').textContent = b && b.roi
     ? `${b.codigo}: x=${b.roi.x} y=${b.roi.y} · ${b.roi.w}×${b.roi.h}px`
-    : (b && _editando ? `${b.codigo}: sem área — arraste na imagem` : '');
+    : (b && _editando ? `${b.codigo}: sem área, arraste na imagem` : '');
   const bs = document.getElementById('btn-salvar');
   if (bs) bs.disabled = !_bicos.some(x => x.sujo);
 }
@@ -370,7 +370,7 @@ async function atualizarImagem(forcar) {
     if (!forcar && video.src && video.naturalWidth) { mostrarImagem(); return; }
     const aquecendo = modo === 'aquecendo';
     mostrarVazio('📡', aquecendo
-      ? 'Conectando à câmera — aguardando o primeiro quadro…'
+      ? 'Conectando à câmera, aguardando o primeiro quadro…'
       : 'Abrindo transmissão ao vivo…', false);
     definirImagem(video, `/stream/${CAM_ID}.mjpg?t=${Date.now()}`);
     // Enquanto sobe (RTSP + modelos) o primeiro quadro demora bem mais que no
@@ -396,7 +396,7 @@ window.addEventListener('resize', desenhar);
 async function testarBico(rapido = false) {
   const b = _bicos.find(x => x.id === _ativo);
   if (!b) return;
-  if (b.sujo) { msg(false, 'Salve a área antes de testar — o teste usa o que está gravado.'); return; }
+  if (b.sujo) { msg(false, 'Salve a área antes de testar: o teste usa o que está gravado.'); return; }
   const res = document.getElementById('resultado');
   // Os dois travam: disputam o mesmo lock de camera no servidor.
   const principal = document.getElementById('btn-testar');
@@ -430,7 +430,7 @@ async function testarBico(rapido = false) {
           d.confirmada === false ? ' · a conferir' : ''}</div>${
         rapido && (d.modo || 'completo') !== 'rapido'
           ? '<div style="color:#a16207;font-size:12px;margin-top:4px">⚠ modo rapido pedido, mas '
-            + 'esta desligado no servidor (rapido_ativo) — rodou completo</div>' : ''}
+            + 'esta desligado no servidor (rapido_ativo), rodou completo</div>' : ''}
       <a href="/historico?bico_id=${b.id}&origem=teste" target="_blank"
          style="display:inline-block;margin-top:6px;font-size:12px;color:var(--marca-texto);text-decoration:none">
         ver testes deste bico no histórico →</a>`;

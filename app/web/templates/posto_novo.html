@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Novo posto — ALPR{% endblock %}
+{% block title %}Novo posto | ALPR{% endblock %}
 {% block conteudo %}
 <div style="max-width:900px">
   <a href="/postos" class="link-voltar">← Postos</a>
@@ -37,7 +37,7 @@
     <details style="margin-bottom:14px">
       <summary style="cursor:pointer;font-size:13px;color:var(--texto-2);padding:9px 13px;background:var(--superficie-2);
                border:1px solid var(--borda);border-radius:8px;user-select:none">
-        Credenciais padrão — preenchem cada nova linha
+        Credenciais padrão (preenchem cada nova linha)
       </summary>
       <div style="background:var(--superficie-2);border:1px solid var(--borda);border-top:none;border-radius:0 0 8px 8px;
                   padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px">
@@ -62,7 +62,7 @@
   <div class="card">
     <h2 style="margin:0 0 4px">3. Automação e bicos</h2>
     <p style="color:var(--texto-3);font-size:13px;margin:0 0 12px">
-      Códigos precisam ser <strong>exatamente</strong> os que o roteador envia — confirme com quem
+      Códigos precisam ser <strong>exatamente</strong> os que o roteador envia. Confirme com quem
       configura o sistema do posto antes de salvar.
     </p>
     <label style="max-width:300px;margin-bottom:14px;display:block">Código da automação
@@ -154,9 +154,9 @@ function syncSelects() {
   document.querySelectorAll('#bicos select.b-camera, #bicos select.b-camera2').forEach(sel => {
     const atual = sel.value;
     // A segunda câmera é opcional; a primeira, obrigatória.
-    const vazia = sel.classList.contains('b-camera2') ? '<option value="">— nenhuma —</option>' : '';
+    const vazia = sel.classList.contains('b-camera2') ? '<option value="">nenhuma</option>' : '';
     sel.innerHTML = cams.length ? vazia + opcoes
-      : '<option value="">— defina uma câmera acima —</option>';
+      : '<option value="">defina uma câmera acima</option>';
     if (atual === '' || cams.some(c => c.idx === atual)) sel.value = atual;
   });
 }
@@ -257,12 +257,12 @@ async function salvar() {
       passo(`Bico "${b.codigo}" criado${b.camIdx2 ? ' (2 câmeras)' : ''}`);
     }
 
-    passo('Pronto — abrindo o posto para desenhar as áreas');
+    passo('Pronto! Abrindo o posto para desenhar as áreas');
     setTimeout(() => { location.href = `/posto/${empId}`; }, 900);
   } catch (ex) {
     passo(ex.message, false);
     erro(`<strong>Parou aqui:</strong> ${esc(ex.message)}<br>
-      O que já foi criado permanece — continue pela
+      O que já foi criado permanece. Continue pela
       <a href="/postos" style="color:#b91c1c;font-weight:600">lista de postos</a>.`);
     btn.disabled = false; btn.textContent = 'Criar posto';
   }

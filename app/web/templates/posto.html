@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Posto — ALPR{% endblock %}
+{% block title %}Posto | ALPR{% endblock %}
 {% block conteudo %}
 <a href="/postos" class="link-voltar">← Postos</a>
 <div style="display:flex;align-items:baseline;gap:12px;margin:6px 0;flex-wrap:wrap">
@@ -34,7 +34,7 @@
       <tbody id="tb-cameras"></tbody></table>
   </div>
   <p id="sem-cameras" style="display:none;color:var(--texto-3);margin:12px 0 0">
-    Nenhuma câmera neste posto — é o primeiro passo.
+    Nenhuma câmera neste posto. Esse é o primeiro passo.
   </p>
 </div>
 
@@ -72,11 +72,11 @@
   </div>
   <p style="color:var(--texto-3);font-size:13px;margin:0 0 10px">
     Imagem atual de cada câmera do posto. O botão de cada bico lê usando a
-    <strong>área dele</strong> — igual à chamada do roteador.
+    <strong>área dele</strong>, igual à chamada do roteador.
   </p>
   <div id="aviso-auto" style="display:none" class="alert alert-err" role="status" aria-live="polite">
     <strong>Atualização automática ligada.</strong> Cada captura ocupa a câmera por alguns
-    segundos — se o roteador chamar a leitura nesse intervalo, ela vai esperar ou falhar.
+    segundos. Se o roteador chamar a leitura nesse intervalo, ela vai esperar ou falhar.
     Use para diagnóstico e desligue depois.
   </div>
   <!-- Teto de 440px por câmera: com `1fr` uma câmera sozinha esticava a imagem de
@@ -96,9 +96,18 @@
     <label style="min-width:220px">Bico
       <select id="teste-bico" style="width:100%;margin-top:4px"></select>
     </label>
-    <button onclick="testarLeitura()" id="btn-testar" style="height:36px;background:#0f172a">Chamar leitura</button>
+    <!-- Botao dividido, mesmo par do painel de ROI: a pergunta do posto nao e "roda?", e
+         "quanto eu perco indo de rapido?" — e ela so se responde disparando os DOIS perfis
+         no mesmo bico, um atras do outro, sem trocar de tela. -->
+    <span class="btn-split">
+      <button onclick="testarLeitura()" id="btn-testar" style="height:36px;background:#0f172a">Chamar leitura</button>
+      <button class="btn-split-alt" onclick="testarLeitura(true)" id="btn-testar-rapido"
+              style="height:36px;background:#334155"
+              aria-label="Chamar leitura em modo rapido"
+              title="Leitura rapida (rapido=1): 1 a 2 fotos, modelos leves, resposta em poucos segundos. Troca acuracia por tempo.">⚡</button>
+    </span>
   </div>
-  <div id="teste-url" style="font-family:monospace;font-size:12px;color:var(--texto-2);margin-top:10px;word-break:break-all"></div>
+  <div id="teste-url" style="font-family:monospace;font-size:12px;color:var(--texto-2);margin-top:10px;word-break:break-all;white-space:pre-line;line-height:1.6"></div>
   <div id="teste-resultado" style="display:none;margin-top:12px;padding:14px;border-radius:8px;
        background:var(--superficie-2);border:1px solid var(--borda)"></div>
 </div>
@@ -248,7 +257,7 @@ function botaoBico(b) {
   const aviso = faltando.length
     ? `title="Sem área ${fontes.length > 1
         ? 'na câmera da ' + faltando.map(f => esc(f.papel)).join(' e da ')
-        : 'nesta câmera'} — vai analisar o quadro inteiro"`
+        : 'nesta câmera'}, vai analisar o quadro inteiro"`
     : '';
   // Botao DIVIDIDO, nao dois botoes soltos. Esta tela repete o par uma vez por bico, e
   // com dois bicos na mesma camera quatro botoes soltos viram um campo de adivinhacao:
@@ -266,7 +275,7 @@ function botaoBico(b) {
        id="btn-bico-rapido-${b.id}"
        style="background:#334155;padding:6px 10px;font-size:13px"
        aria-label="Ler bico ${esc(b.codigo)} em modo rapido"
-       title="Leitura rapida do bico ${esc(b.codigo)} — 1 a 2 fotos, modelos leves, resposta em poucos segundos. Troca acuracia por tempo.">⚡</button>
+       title="Leitura rapida do bico ${esc(b.codigo)}: 1 a 2 fotos, modelos leves, resposta em poucos segundos. Troca acuracia por tempo.">⚡</button>
    </span>`;
 }
 
@@ -430,7 +439,7 @@ function selo(d, pediuRapido) {
     border-radius:10px;padding:1px 7px">${rotulo}${fotos}${
     d.confirmada === false ? ' · a conferir' : ''}</span>${
     recusou ? '<div style="color:#a16207;font-size:12px;margin-top:4px">⚠ modo rapido pedido, '
-            + 'mas esta desligado no servidor (rapido_ativo) — rodou completo</div>' : ''}`;
+            + 'mas esta desligado no servidor (rapido_ativo), rodou completo</div>' : ''}`;
 }
 
 async function lerBico(bicoId, codigo, rapido = false) {
@@ -456,7 +465,7 @@ async function lerBico(bicoId, codigo, rapido = false) {
     // o corpo ilegível vira nota de rodapé, não a manchete.
     const d = await r.json().catch(() => null);
     if (d === null) {
-      res.innerHTML = `<span style="color:#b91c1c">✗ erro ${r.status} no servidor — `
+      res.innerHTML = `<span style="color:#b91c1c">✗ erro ${r.status} no servidor: `
         + `veja o log do servidor para o motivo.</span>`;
       return;
     }
@@ -533,7 +542,7 @@ async function removerPosto() {
       linhas.push('Isto APAGA junto:');
       perdas.forEach(x => linhas.push('  · ' + x));
     } else {
-      linhas.push('O posto está vazio — nada mais será apagado.');
+      linhas.push('O posto está vazio, nada mais será apagado.');
     }
     linhas.push('');
     if (i.usuarios_cliente)
@@ -645,7 +654,7 @@ function renderAutomacoes() {
                 ${b.nome ? `<span style="color:var(--texto-3)"> ${esc(b.nome)}</span>` : ''}</td>
             <td>${b.bomba ?? '—'} / ${b.lado ?? '—'}</td>
             <td>${(b.cameras || []).map(f =>
-                  `<div>${esc(f.local ? f.local + ' — ' : '')}${esc(f.nome)}
+                  `<div>${esc(f.local ? f.local + ' / ' : '')}${esc(f.nome)}
                      <span style="color:var(--texto-3);font-size:12px">(${esc(f.papel)})</span></div>`).join('')
                  || esc(b.camera_nome)}</td>
             <td>${(() => {
@@ -687,7 +696,7 @@ function renderChecklist() {
     const cam = _d.cameras.find(c => c.id === Number(camId));
     itens.push(`Definir as <a href="/roi-camera/${camId}" style="color:var(--marca-texto)">áreas de captura</a>
       da câmera <strong>${esc(cam ? (cam.local || cam.nome) : camId)}</strong>
-      — ${cods.length} bico(s): ${esc(cods.join(', '))}`);
+      / ${cods.length} bico(s): ${esc(cods.join(', '))}`);
   });
 
   document.getElementById('card-checklist').style.display = itens.length ? '' : 'none';
@@ -751,8 +760,8 @@ function modalCamera(cam = null) {
     <div class="linha-2">
       <label>Canal<input id="m-canal" value="${esc(cam?.intelbras_canal || '1')}"></label>
       <label>Subtype<select id="m-subtype">
-        <option value="0"${cam?.intelbras_subtype === '0' ? ' selected' : ''}>0 — Main (HD)</option>
-        <option value="1"${cam?.intelbras_subtype === '1' ? ' selected' : ''}>1 — Sub (leve)</option>
+        <option value="0"${cam?.intelbras_subtype === '0' ? ' selected' : ''}>0 (Main, HD)</option>
+        <option value="1"${cam?.intelbras_subtype === '1' ? ' selected' : ''}>1 (Sub, leve)</option>
       </select></label>
     </div>
     <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
@@ -778,7 +787,7 @@ function modalCamera(cam = null) {
 function modalAutomacao(a = null) {
   abrirModal(a ? 'Editar automação' : 'Nova automação', `
     <label>Código
-      <small style="color:var(--texto-3);font-weight:400"> — exatamente o valor que o roteador envia</small>
+      <small style="color:var(--texto-3);font-weight:400">: exatamente o valor que o roteador envia</small>
       <input id="m-codigo" value="${esc(a?.codigo || '')}" required></label>
     <label>Nome / descrição<input id="m-nome" value="${esc(a?.nome || '')}" placeholder="opcional"></label>
     <label style="display:flex;align-items:center;gap:8px">
@@ -792,9 +801,9 @@ function modalAutomacao(a = null) {
 
 function modalBico(b = null, automacaoId = null) {
   if (!_d.cameras.length) { msg(false, 'Cadastre uma câmera antes de criar bicos.'); return; }
-  const opcoes = (sel, vazia) => (vazia ? `<option value="">— sem segunda câmera —</option>` : '')
+  const opcoes = (sel, vazia) => (vazia ? `<option value="">sem segunda câmera</option>` : '')
     + _d.cameras.map(c =>
-        `<option value="${c.id}"${sel === c.id ? ' selected' : ''}>${esc(c.local ? c.local + ' — ' : '')}${esc(c.nome)}</option>`).join('');
+        `<option value="${c.id}"${sel === c.id ? ' selected' : ''}>${esc(c.local ? c.local + ' / ' : '')}${esc(c.nome)}</option>`).join('');
   // O ângulo é RÓTULO de diagnóstico, não configuração: ele não chega ao detector nem ao
   // OCR (ver `fontes` em app/visao/leitura.py) — é o nome pelo qual o resultado da leitura
   // aponta a câmera que precisa de ajuste. Por isso os dois são sempre opostos.
@@ -806,7 +815,7 @@ function modalBico(b = null, automacaoId = null) {
       </select></label>`;
   abrirModal(b ? 'Editar bico' : 'Novo bico', `
     <label>Código
-      <small style="color:var(--texto-3);font-weight:400"> — exatamente o valor que o roteador envia</small>
+      <small style="color:var(--texto-3);font-weight:400">: exatamente o valor que o roteador envia</small>
       <input id="m-codigo" value="${esc(b?.codigo || '')}" required></label>
     <label>Nome<input id="m-nome" value="${esc(b?.nome || '')}" placeholder="opcional"></label>
     <div class="linha-2">
@@ -821,7 +830,7 @@ function modalBico(b = null, automacaoId = null) {
     <p style="color:var(--texto-3);font-size:12px;margin:-4px 0 12px">
       Duas câmeras cobrem o veículo por dois ângulos: quando a placa de um lado está
       encoberta (estepe, carona colada), a do outro resolve. Cada câmera tem a
-      <strong>sua própria área</strong> — desenhe as duas. O lado que cada uma enxerga é o
+      <strong>sua própria área</strong>, então desenhe as duas. O lado que cada uma enxerga é o
       nome que aparece no resultado da leitura (“a frente não detectou placa”), então uma
       é sempre a traseira e a outra a frente.
     </p>
@@ -905,10 +914,11 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') fecharModal(
 // ── Teste ────────────────────────────────────────────────────────────────────
 function renderTeste() {
   const opts = _d.automacoes.flatMap(a =>
-    a.bicos.map(b => `<option value="${esc(a.codigo)}|${esc(b.codigo)}">${esc(a.codigo)} / ${esc(b.codigo)}${b.nome ? ' — ' + esc(b.nome) : ''}</option>`));
+    a.bicos.map(b => `<option value="${esc(a.codigo)}|${esc(b.codigo)}">${esc(a.codigo)} / ${esc(b.codigo)}${b.nome ? ' / ' + esc(b.nome) : ''}</option>`));
   const sel = document.getElementById('teste-bico');
-  sel.innerHTML = opts.join('') || '<option value="">— nenhum bico cadastrado —</option>';
-  document.getElementById('btn-testar').disabled = !opts.length;
+  sel.innerHTML = opts.join('') || '<option value="">nenhum bico cadastrado</option>';
+  for (const id of ['btn-testar', 'btn-testar-rapido'])
+    document.getElementById(id).disabled = !opts.length;
   sel.onchange = mostrarUrl;
   mostrarUrl();
 }
@@ -923,8 +933,12 @@ function mostrarUrl() {
   const q = paramsTeste();
   // `api_key` chega mascarada (segredo); o que importa aqui é só SE existe chave.
   const chave = _d.empresa.api_key
-    ? ' (o roteador precisa mandar X-API-Key — este posto tem chave própria)' : '';
-  document.getElementById('teste-url').textContent = q ? `GET /api/leitura?${q}${chave}` : '';
+    ? ' (o roteador precisa mandar X-API-Key, este posto tem chave própria)' : '';
+  // As duas URLs, porque sao duas chamadas diferentes: quem integra o sidecar copia daqui,
+  // e mostrar so a completa faria o `rapido=1` do botao ⚡ nao existir em lugar nenhum.
+  document.getElementById('teste-url').textContent = q
+    ? `GET /api/leitura?${q}${chave}
+⚡ GET /api/leitura?${q}&rapido=1` : '';
 }
 // Um quadro por câmera do bico, cada um rotulado com o papel e o que ela contribuiu.
 // Com bico de 2 câmeras é este painel que mostra QUAL ângulo está mal enquadrado — sem
@@ -1009,19 +1023,26 @@ function quadrosDoTeste(d) {
     }).join('')}</div>`;
 }
 
-async function testarLeitura() {
+async function testarLeitura(rapido = false) {
   const q = paramsTeste();
   if (!q) return;
+  if (rapido) q.set('rapido', '1');
   const btn = document.getElementById('btn-testar');
   const res = document.getElementById('teste-resultado');
   const t0 = Date.now();
-  btn.disabled = true;
+  // Os DOIS travam: disputam o mesmo lock de câmera no servidor, e deixar o outro clicável
+  // durante a leitura só rende um erro de câmera ocupada.
+  const botoes = [btn, document.getElementById('btn-testar-rapido')].filter(Boolean);
+  botoes.forEach(b => { b.disabled = true; });
   res.style.display = 'block';
-  // Contador visível: a chamada leva ~30s e sem isso parece travamento.
+  // Contador visível: a chamada leva ~30s e sem isso parece travamento. No rápido o teto é
+  // outro (`rapido_timeout_seg`, poucos segundos) — prometer "~30s" ali faria a leitura
+  // parecer lenta justamente no perfil que existe para ser rápido.
+  const teto = rapido ? 'poucos segundos' : 'até ~30s';
   const tick = setInterval(() => {
     const s = Math.round((Date.now() - t0) / 1000);
-    btn.textContent = `Lendo… ${s}s`;
-    res.innerHTML = `<span style="color:var(--texto-3)">Conectando à câmera e analisando (${s}s de até ~30s)…</span>`;
+    btn.textContent = `Lendo${rapido ? ' (rapido)' : ''}… ${s}s`;
+    res.innerHTML = `<span style="color:var(--texto-3)">Conectando à câmera e analisando (${s}s de ${teto})…</span>`;
   }, 250);
   try {
     // SEM X-API-Key: o painel autentica por SESSÃO. `/api/leitura` aceita a sessão de
@@ -1036,7 +1057,7 @@ async function testarLeitura() {
     const d = await r.json();
     if (!r.ok) res.innerHTML = `<span style="color:#b91c1c">✗ ${esc(d.detail || 'falha')}</span>
         ${jsonDoTeste(d, r.status)}`;
-    else if (!d.placa) res.innerHTML = `<span style="color:#a16207">Nenhuma placa detectada.</span>
+    else if (!d.placa) res.innerHTML = `<span style="color:#a16207">Nenhuma placa detectada.</span>${selo(d, rapido)}
         <span style="color:var(--texto-3)">${esc(d.mensagem || '')} (${d.tentativas} tentativa(s))</span>
         ${quadrosDoTeste(d)}
         ${jsonDoTeste(d, r.status)}`;
@@ -1046,6 +1067,7 @@ async function testarLeitura() {
           <span class="badge badge-${esc(d.padrao)}">${esc(d.padrao)}</span>
           &nbsp;${Math.round((d.confianca||0)*100)}% confiança · acordo ${Math.round((d.acordo||0)*100)}% · ${d.tentativas} foto(s)
           ${(d.fontes || []).length > 1 ? ` · ${d.n_cameras_votando} de ${d.fontes.length} câmeras concordaram` : ''}
+          ${selo(d, rapido)}
         </div>
         ${quadrosDoTeste(d)}
         ${jsonDoTeste(d, r.status)}`;
@@ -1053,7 +1075,8 @@ async function testarLeitura() {
     res.innerHTML = `<span style="color:#b91c1c">Erro de rede: ${esc(ex.message)}</span>`;
   } finally {
     clearInterval(tick);
-    btn.disabled = false; btn.textContent = 'Chamar leitura';
+    botoes.forEach(b => { b.disabled = false; });
+    btn.textContent = 'Chamar leitura';
   }
 }
 
