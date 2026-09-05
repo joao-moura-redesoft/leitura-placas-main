@@ -1111,7 +1111,21 @@ def _ler_placa(
             # seria revisitada com o dobro do intervalo e o total de fotos cairia à toa.
             # Com uma fonte só, é exatamente o comportamento de sempre.
             intervalo = 0.15 if f.usar_pipeline else 0.5
-            if f.tentativas:
+            # Guarda em `ultimo_ts` e NÃO em `tentativas`: `tentativas` só incrementa
+            # quando um frame chega, então uma câmera que nunca publica (reconectando, ou
+            # frame velho demais) ficava em zero para sempre e a cadência nunca se
+            # aplicava a ela. Com DUAS fontes o `sleep(0.1)` de baixo também não pega (é
+            # guardado por `len(ativas) == 1`), e o laço girava livre: medido nesta
+            # máquina, com o `frame_ao_vivo` de verdade, 50 chamadas ao provider com uma
+            # câmera contra 2.070.246 com duas — um núcleo inteiro queimado, mais ~1,3
+            # milhão de linhas de WARNING (~120 MB) numa única leitura, que estoura a
+            # rotação de 40 MB e leva embora o rastro de qualquer queda.
+            #
+            # `ultimo_ts` é atualizado logo abaixo em TODA passada, com ou sem frame, então
+            # o dado da cadência já existia — só não estava sendo consultado. Na primeira
+            # visita a uma fonte ele é 0.0 e a espera é saltada, que é o comportamento
+            # desejado: a primeira foto sai na hora.
+            if f.ultimo_ts:
                 espera = intervalo - (time.time() - f.ultimo_ts)
                 if espera > 0:
                     time.sleep(espera)
