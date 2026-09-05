@@ -812,6 +812,40 @@
       <small>Separadas por vírgula. Hífen e minúsculas são aceitos (<code>MOK-3H92</code>).</small>
     </label>
 
+    <div class="grid" style="margin-top:12px;">
+      <label>Mostrar placas não cadastradas
+        <select name="feira_livre">
+          <option value="nao">Não (só os veículos de demonstração)</option>
+          <option value="sim">Sim (revela qualquer placa lida)</option>
+        </select>
+        <small>Deixa o visitante apontar para o <strong>próprio carro</strong> e ver a placa dele
+        na tela. Ligado, a vitrine revela qualquer placa que a câmera ler — inclusive a de um
+        <strong>celular na mão de quem passa</strong>. Ligue durante a demonstração e desligue
+        depois.</small>
+      </label>
+      <label>Consultar placa não cadastrada
+        <select name="feira_livre_consulta">
+          <option value="sim">Sim (só no botão "Forçar leitura")</option>
+          <option value="nao">Não (mostra só a placa)</option>
+        </select>
+        <small>Busca marca, modelo e combustível reais na apiplacas — <strong>gasta 1 crédito</strong>
+        por consulta. Nunca no loop automático: só quando alguém aperta "Forçar leitura" na tela.
+        Sem internet, a placa aparece sozinha.</small>
+      </label>
+      <label>Captura do botão "Forçar leitura"
+        <select name="feira_forcar_perfil">
+          <option value="completo">Completo (mais fotos, mais robusto)</option>
+          <option value="rapido">Rápido (responde em segundos)</option>
+        </select>
+        <small><strong>Completo</strong> tira até <code>leitura_max_tentativas</code> fotos com
+        orçamento de <code>leitura_timeout_seg</code>; <strong>Rápido</strong> usa
+        <code>rapido_max_tentativas</code> e <code>rapido_timeout_seg</code> — os mesmos valores
+        do loop automático. Troque para Rápido num estande com fila, onde esperar pesa mais que
+        a acurácia extra. O <strong>loop automático da vitrine usa sempre o rápido</strong> e não
+        muda com isto.</small>
+      </label>
+    </div>
+
     <!-- Fichas da demonstração: o card "Bem-vindo!" da tela /feira E o bloco `veiculo`
          do payload do roteador. Como não há internet na feira, a apiplacas nunca
          responderia — a ficha é a fonte offline dos dois. Dado sintético, guardado à

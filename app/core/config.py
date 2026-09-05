@@ -522,6 +522,45 @@ PADROES: dict[str, str] = {
     # cumpriria o que promete. 2 em 7 caracteres continua MUITO longe de qualquer placa
     # de visitante — é por isso que o celular do cliente passa intacto.
     "feira_tolerancia": "2",
+    # MODO LIVRE: a vitrine também revela placa NÃO cadastrada — o visitante aponta para o
+    # carro dele e vê a própria placa na tela. Sem isto (o default) só o carrinho de
+    # demonstração aparece, e qualquer outra leitura vira "Nenhuma placa reconhecida".
+    #
+    # Default "nao" porque ligado a tela passa a exibir placa de terceiro: a câmera do
+    # estande enxerga o celular na mão de quem passa, e o OCR lê a placa que estiver na
+    # tela dele. Isso é aceitável quando alguém ARMOU a demo para isso, e não como
+    # comportamento de fábrica.
+    #
+    # Só afeta EXIBIÇÃO. Quem decide gasto é `feira_livre_consulta` abaixo.
+    "feira_livre": "nao",
+    # Se a placa livre pode custar uma consulta paga à apiplacas, e só no botão "Forçar
+    # leitura" (`forcar=1`) — nunca no loop hands-free.
+    #
+    # O loop varre a cada ~1,6s sem ninguém pedir: ali cada celular de visitante lido por
+    # acaso viraria crédito queimado e dado de um veículo real de terceiro numa TV de
+    # estande. O botão é apertado por um humano com o cliente ao lado, que é exatamente a
+    # intenção deliberada que uma consulta paga exige — a mesma régua do botão do Histórico.
+    #
+    # Depende de `feira_livre`: sem exibição não há o que consultar. E os freios normais
+    # do módulo continuam valendo (tetos, cooldown, disjuntor), inclusive
+    # `apiplacas_ativo=nao`, que é o estado da máquina de feira sem internet — aí a placa
+    # aparece sozinha, que é o comportamento pedido para o cenário offline.
+    "feira_livre_consulta": "sim",
+    # Perfil de captura do botão "Forçar leitura" (↻) da vitrine. O loop hands-free usa
+    # SEMPRE o rápido e não é afetado por isto.
+    #
+    #   completo -> leitura_max_tentativas (12) fotos, orçamento leitura_timeout_seg (28s)
+    #   rapido   -> rapido_max_tentativas (2) fotos, orçamento rapido_timeout_seg (5s)
+    #
+    # Default "completo": o botão é o socorro de quando o loop rápido JÁ não fechou, e
+    # repetir o mesmo perfil que acabou de falhar não acrescenta nada — mais fotos é
+    # justamente o que muda o desfecho num ângulo ruim.
+    #
+    # Existe configurável porque o custo é tempo na frente do público: num estande com fila
+    # e câmera bem enquadrada, 28s de espera pesam mais que a acurácia extra, e aí o
+    # operador prefere um botão que responde em ~5s. Vale a mesma régua do resto do modo:
+    # valor ilegível cai no default em vez de inventar um perfil.
+    "feira_forcar_perfil": "completo",
     # FASE 2 (declarada, ainda inerte): marcadores ArUco colados nos carrinhos, no formato
     # "id:PLACA,id:PLACA". Resolve o caso em que a mini-placa é pequena demais para o OCR
     # devolver QUALQUER string — aí não há o que casar por distância de edição.

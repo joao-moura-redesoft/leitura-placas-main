@@ -122,6 +122,23 @@ def espera_frame_do_perfil(cfg: dict, perfil: str, padrao_completo: float) -> fl
         return float(padrao)
 
 
+def perfil_forcar_feira(cfg: dict) -> str:
+    """Perfil do botão "Forçar leitura" (↻) da vitrine — `feira_forcar_perfil`.
+
+    Só o BOTÃO. O loop hands-free da vitrine usa sempre `PERFIL_RAPIDO` e não passa por
+    aqui: é ele que varre a cada ~1,6s sozinho, e deixá-lo configurável para "completo"
+    poria a máquina para gastar 28s de CPU por varredura sem ninguém ter pedido.
+
+    Qualquer valor que não seja exatamente "rapido" resolve para `PERFIL_COMPLETO`, que é
+    o default. Fail-safe na direção certa: config digitada à mão ("Rápido", "completa",
+    vazio) cai no perfil MAIS robusto, e o pior caso de um typo é o botão demorar o que
+    sempre demorou — nunca a demonstração ficar menos capaz do que o operador pensa.
+    """
+    return (PERFIL_RAPIDO
+            if (cfg.get("feira_forcar_perfil") or "").strip().lower() == PERFIL_RAPIDO
+            else PERFIL_COMPLETO)
+
+
 def _componentes_do_perfil(perfil: str):
     """(fábrica de detector, lock do detector, fábrica de OCR, lock do OCR) deste perfil.
 
