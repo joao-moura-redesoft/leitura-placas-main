@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Testes — ALPR{% endblock %}
+{% block title %}Testes | ALPR{% endblock %}
 
 {% block conteudo %}
 <h1>Testes de Precisão</h1>
@@ -14,13 +14,13 @@
     <div style="font-size:13px;color:var(--texto-2);"><span id="clf-contador"></span></div>
   </div>
   <p style="color:var(--texto-3);margin-top:0;font-size:13px;">
-    A placa abaixo é <strong>o que o OCR leu</strong>, não a resposta certa —
+    A placa abaixo é <strong>o que o OCR leu</strong>, não a resposta certa:
     confira contra a imagem antes de adicionar. Aceitar sem olhar faz o teste medir o
     OCR contra ele mesmo.
   </p>
 
   <div id="clf-vazio" style="display:none;color:var(--texto-2);padding:24px;text-align:center;">
-    Nada na fila — tudo que o ALPR capturou já foi rotulado ou recusado.
+    Nada na fila. Tudo que o ALPR capturou já foi rotulado ou recusado.
   </div>
 
   <div id="clf-corpo" style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,1fr);gap:20px;align-items:start;">
@@ -99,7 +99,7 @@
   <div style="background:var(--superficie-2);border-radius:8px;padding:14px;margin-bottom:16px;border:1px solid var(--borda);">
     <div style="font-size:13px;color:var(--texto-3);margin-bottom:4px;font-weight:600;">Capturar de um bico</div>
     <div style="font-size:12px;color:var(--texto-3);margin-bottom:10px;">
-      A imagem é salva já recortada pela área do bico — é exatamente o que o detector
+      A imagem é salva já recortada pela área do bico, exatamente o que o detector
       recebe na leitura reativa, então o teste mede o caminho real.
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
@@ -126,7 +126,7 @@
        style="border:2px dashed #e2e8f0;border-radius:8px;padding:20px;text-align:center;margin-bottom:16px;cursor:pointer;transition:border-color .2s,background .2s;"
        onclick="document.getElementById('input-upload').click()">
     <div style="color:var(--texto-2);font-size:13px;">Arraste fotos aqui ou clique para selecionar</div>
-    <div style="color:var(--texto-3);font-size:11px;margin-top:4px;">JPG ou PNG — frame (cena completa) ou crop (recorte da placa)</div>
+    <div style="color:var(--texto-3);font-size:11px;margin-top:4px;">JPG ou PNG: frame (cena completa) ou crop (recorte da placa)</div>
   </div>
   <input id="input-upload" type="file" accept="image/jpeg,image/png" multiple style="display:none;" onchange="uploadArquivos(this.files)">
   <div id="upload-progress" style="display:none;margin-bottom:12px;"></div>
@@ -141,7 +141,7 @@
     <h2 style="margin:0;">Dataset Rotulado <span id="badge-total" style="font-size:13px;color:var(--texto-3);"></span></h2>
     <button onclick="carregarDataset()" style="background:var(--superficie);color:var(--texto-2);border:1px solid var(--borda);font-size:13px;padding:6px 12px;">Atualizar</button>
   </div>
-  <div id="dataset-vazio" style="color:var(--texto-2);padding:24px;text-align:center;display:none;">Dataset vazio — adicione fotos acima.</div>
+  <div id="dataset-vazio" style="color:var(--texto-2);padding:24px;text-align:center;display:none;">Dataset vazio. Adicione fotos acima.</div>
   <div style="overflow-x:auto;">
     <table id="dataset-tabela" style="display:none;">
       <thead>
@@ -268,8 +268,8 @@ async function carregarBicos() {
     sel.innerHTML = Object.entries(grupos).map(([posto, bs]) =>
       `<optgroup label="${posto}">` + bs.map(b =>
         `<option value="${b.id}">${b.automacao_codigo}/${b.codigo}` +
-        `${b.nome ? ' — ' + b.nome : ''} · ${b.camera_local || b.camera_nome}` +
-        `${b.tem_roi ? '' : '  (sem área)'}</option>`).join('') + '</optgroup>'
+        `${b.nome ? ' (' + b.nome : ''} · ${b.camera_local || b.camera_nome}` +
+        `${b.tem_roi ? '' : '  (sem área)'})</option>`).join('') + '</optgroup>'
     ).join('');
     avisarRoi();
   } catch {
@@ -284,7 +284,7 @@ function avisarRoi() {
   const el = document.getElementById('aviso-roi');
   if (b && !b.tem_roi) {
     el.style.display = 'block';
-    el.innerHTML = `Este bico não tem área definida — a captura virá com o frame inteiro,
+    el.innerHTML = `Este bico não tem área definida, a captura virá com o frame inteiro,
       que <strong>não é</strong> o que a leitura reativa analisa.
       <a href="/roi-camera/${b.camera_id}?bico=${b.id}" style="color:#a16207;font-weight:600">Definir a área</a>.`;
   } else {
@@ -316,7 +316,7 @@ async function capturarBico() {
     const d = await r.json();
     status.innerHTML = `<span style="color:#15803d;">Capturado: ${d.nome}</span>
       <span style="color:var(--texto-3)">· ${d.largura}×${d.altura}px
-      ${d.recortado_por_roi ? '(área do bico)' : '(frame inteiro — bico sem área)'}
+      ${d.recortado_por_roi ? '(área do bico)' : '(frame inteiro, bico sem área)'}
       · ${d.origem}</span>`;
     setTimeout(() => { status.style.display = 'none'; }, 6000);
     await carregarSnapshots();
@@ -536,13 +536,13 @@ async function rodarTestes() {
 function renderizarResultado(dados) {
   const div = document.getElementById('testes-resultado');
   if (!dados || !dados.engines) {
-    div.innerHTML = '<div style="color:#a16207;padding:12px;">Dataset vazio — adicione fotos rotuladas primeiro.</div>';
+    div.innerHTML = '<div style="color:#a16207;padding:12px;">Dataset vazio. Adicione fotos rotuladas primeiro.</div>';
     div.style.display = 'block';
     return;
   }
 
   let html = `<div style="font-size:13px;color:var(--texto-3);margin-bottom:16px;">
-    ${new Date(dados.data).toLocaleString('pt-BR')} — ${dados.total_fotos} foto(s)
+    ${new Date(dados.data).toLocaleString('pt-BR')} / ${dados.total_fotos} foto(s)
   </div>`;
 
   for (const [eng, stats] of Object.entries(dados.engines)) {
@@ -715,7 +715,7 @@ function mostrarCandidato() {
     corpo.style.display = 'none';
     vazio.style.display = 'block';
     // Pular reenfileira, então chegar ao fim significa que tudo foi resolvido.
-    vazio.textContent = 'Fila vazia — tudo que o ALPR capturou já foi rotulado ou recusado.';
+    vazio.textContent = 'Fila vazia. Tudo que o ALPR capturou já foi rotulado ou recusado.';
     return;
   }
   corpo.style.display = 'grid';
@@ -725,8 +725,8 @@ function mostrarCandidato() {
   document.getElementById('clf-nome').textContent = c.nome;
   document.getElementById('clf-placa').value = c.placa_sugerida || '';
   document.getElementById('clf-sugestao').textContent = c.placa_sugerida
-    ? `Leitura do OCR: ${c.placa_sugerida} — confira antes de aceitar`
-    : 'O OCR não deixou placa no nome do arquivo — digite a que você lê na imagem';
+    ? `Leitura do OCR: ${c.placa_sugerida}. Confira antes de aceitar`
+    : 'O OCR não deixou placa no nome do arquivo. Digite a que você lê na imagem';
   document.getElementById('clf-tipo').value = c.tipo || 'crop';
   document.getElementById('clf-formato').value = '';
   document.querySelector('input[name="clf-layout"][value="carro"]').checked = true;

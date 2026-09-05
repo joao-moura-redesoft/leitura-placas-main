@@ -12,6 +12,9 @@ Redução de OCR:
   - OCR roda novamente a cada `ocr_a_cada_n_frames` frames do mesmo track
   - Emite quando o track acumula `votos_emitir` leituras que CONVERGEM (ver
     `_EstadoTrack.placa_eleita`) — concordância por posição, não por string exata
+  - SUSPENDE o OCR do track que gastou `max_ocr_sem_leitura` tentativas sem produzir uma
+    única leitura válida (ver `_EstadoTrack.contar_tentativa`) — é o perfil de texto de
+    cena (letreiro, adesivo, texto de piso), que é caixa fixa e nunca sai do quadro
 """
 from __future__ import annotations
 import heapq
@@ -121,12 +124,19 @@ class _EstadoTrack:
 
     __slots__ = ("track_id", "frames_visto", "ultimo_ocr_frame",
                  "resultados", "emitido", "bbox", "conf_det", "frames_sem_match",
-                 "_seqs")
+                 "tentativas_ocr", "desistiu", "_seqs")
 
     def __init__(self, track_id: int) -> None:
         self.track_id = track_id
         self.frames_visto: int = 0
         self.ultimo_ocr_frame: int = -1
+        # Quantas vezes o ensemble foi autorizado a rodar neste track, TENHA validado ou
+        # não. `resultados` só cresce quando `validar()` aceitou o texto, então ele não
+        # mede custo: um track que nunca lê nada fica com `resultados` vazio para sempre
+        # e é justamente o que gasta mais OCR. Ver `contar_tentativa`.
+        self.tentativas_ocr: int = 0
+        # OCR suspenso neste track por ter esgotado o teto sem uma leitura válida.
+        self.desistiu: bool = False
         self.resultados: list[tuple[str, str, float]] = []  # (placa, padrao, conf)
         # Ordem GLOBAL de chegada de cada item de `resultados`, para `leituras_recentes`
         # poder cortar por recência entre tracks diferentes. Lista paralela em vez de uma
@@ -142,11 +152,41 @@ class _EstadoTrack:
         self.frames_sem_match: int = 0
 
     def precisa_ocr(self, frame_global: int, intervalo: int) -> bool:
-        if self.emitido:
+        if self.emitido or self.desistiu:
             return False
         if self.ultimo_ocr_frame < 0:
             return True
         return (frame_global - self.ultimo_ocr_frame) >= intervalo
+
+    def contar_tentativa(self, max_sem_leitura: int) -> bool:
+        """Conta uma tentativa de OCR; True se foi ESTA que esgotou o teto.
+
+        O teto vale só para track que NUNCA produziu leitura válida (`resultados` vazio) —
+        essa condição é a que separa o caso patológico do veículo difícil:
+
+          - Texto de cena (letreiro, adesivo, texto de piso) nunca valida NADA. É uma caixa
+            fixa no quadro, o tracker a mantém com o mesmo id indefinidamente, e a cada
+            tentativa ela gasta as três passadas do ensemble. Medido no log de 04/09/2026,
+            cam1: o trk16 sobre a palavra ENTRADA rodou `ENTRR6DA`/`ENNTFADA`/`ENTTRADA`
+            hora após hora, e as três passadas custam ~62 ms cada rodada.
+          - Veículo com placa difícil produz leitura de vez em quando. A PRIMEIRA leitura
+            válida desarma o teto para sempre neste track, então um carro parado na bomba
+            que já leu uma vez nunca é abandonado por ficar 30 s ocluso por uma pessoa.
+
+        O que NÃO é feito aqui, de propósito: mexer no intervalo de OCR. `ultimo_ocr_frame`
+        só é atualizado em `registrar`, que só roda quando `validar()` aceitou — então um
+        track que não valida é reexaminado a CADA frame de detecção, e não a cada
+        `ocr_a_cada_n_frames`. Isso é acidental (o intervalo não throttla justamente quem
+        mais custa), mas também é o que dá muitas chances à placa difícil, e nunca foi
+        medido: mudar junto tornaria impossível saber qual das duas coisas mexeu na taxa de
+        leitura do posto.
+        """
+        self.tentativas_ocr += 1
+        if (max_sem_leitura > 0 and not self.resultados
+                and self.tentativas_ocr >= max_sem_leitura):
+            self.desistiu = True
+            return True
+        return False
 
     def registrar(self, placa: str, padrao: str, conf: float, frame_global: int) -> None:
         self.resultados.append((placa, padrao, conf))
@@ -252,9 +292,12 @@ class Tracker:
     """
 
     def __init__(self, ocr_a_cada_n_frames: int = 5, votos_emitir: int = 2,
-                 paciencia_frames: int = 40) -> None:
+                 paciencia_frames: int = 40, max_ocr_sem_leitura: int = 60) -> None:
         self._ocr_intervalo = max(1, ocr_a_cada_n_frames)
         self._votos = max(1, votos_emitir)
+        # Teto de tentativas de OCR de um track que nunca produziu leitura válida
+        # (0 = sem teto). Ver `_EstadoTrack.contar_tentativa`.
+        self._max_sem_leitura = max(0, max_ocr_sem_leitura)
         # Frames (de detecção, não frames brutos) tolerados sem match antes de considerar
         # o veículo perdido. Um valor baixo fragmenta o track de um veículo parado na
         # bomba (oclusão momentânea por pessoa/mangueira) em vários IDs — cada um vota do
@@ -277,15 +320,18 @@ class Tracker:
             )
             self._usando_bytetrack = True
             log.info(
-                "ByteTrack (boxmot) ativo — OCR a cada %d frames, %d voto(s) para emitir, "
-                "paciência %d frames",
+                "ByteTrack (boxmot) ativo: OCR a cada %d frames, %d voto(s) para emitir, "
+                "paciência %d frames, teto de %s tentativa(s) sem leitura",
                 self._ocr_intervalo, self._votos, self._paciencia,
+                self._max_sem_leitura or "∞",
             )
         except Exception as e:
             log.info(
-                "boxmot indisponível (%s) — usando tracker IoU interno "
-                "(OCR a cada %d frames, %d voto(s) para emitir, paciência %d frames)",
+                "boxmot indisponível (%s), usando tracker IoU interno "
+                "(OCR a cada %d frames, %d voto(s) para emitir, paciência %d frames, "
+                "teto de %s tentativa(s) sem leitura)",
                 e, self._ocr_intervalo, self._votos, self._paciencia,
+                self._max_sem_leitura or "∞",
             )
             self._backend = _IoUTracker(iou_min=0.3, max_perdido=self._paciencia)
             self._usando_bytetrack = False
@@ -364,8 +410,27 @@ class Tracker:
     # ── OCR state management ──────────────────────────────────────────────────
 
     def precisa_ocr(self, track_id: int) -> bool:
+        """Autoriza (e CONTA) uma passada de OCR neste track.
+
+        Contar aqui, e não em `registrar_ocr`, é o ponto todo: `registrar_ocr` só é chamado
+        quando `validar()` aceitou o texto, então a tentativa que não validou — a que o teto
+        existe para limitar — era invisível ao tracker. Quem pergunta roda: o pipeline usa a
+        resposta imediatamente para chamar (ou não) o ensemble.
+        """
         st = self._estados.get(track_id)
-        return st.precisa_ocr(self._frame_count, self._ocr_intervalo) if st else False
+        if st is None or not st.precisa_ocr(self._frame_count, self._ocr_intervalo):
+            return False
+        if st.contar_tentativa(self._max_sem_leitura):
+            log.info(
+                "trk%d: OCR SUSPENSO após %d tentativas sem UMA leitura válida "
+                "(tracker_max_ocr_sem_leitura=%d). Caixa fixa de texto de cena "
+                "(letreiro, adesivo, texto de piso) fica exatamente assim, e cada "
+                "tentativa custa as passadas do ensemble inteiro. A primeira leitura "
+                "válida desarmaria o teto, mas não houve nenhuma.",
+                track_id, st.tentativas_ocr, self._max_sem_leitura,
+            )
+            return False
+        return True
 
     def registrar_ocr(self, track_id: int, placa: str, padrao: str, conf: float) -> None:
         st = self._estados.get(track_id)
@@ -378,7 +443,7 @@ class Tracker:
             # rumo ao consenso. Aqui vai a contagem da placa líder, que é a que conta.
             votos_lider, total = st.consenso()
             log.info(
-                "Leitura %d de trk%d: %s conf=%.2f — líder %d/%d (emite com %d)",
+                "Leitura %d de trk%d: %s conf=%.2f, líder %d/%d (emite com %d)",
                 total, track_id, placa, conf, votos_lider, total, self._votos,
             )
 
@@ -501,12 +566,32 @@ class Tracker:
                 melhor = st.placa_eleita(1)
                 if melhor:
                     votos_lider, total = st.consenso()
+                    # As leituras CRUAS vão na linha porque são elas que dizem qual das duas
+                    # causas travou a emissão, e sem elas as duas ficam idênticas no log:
+                    #
+                    #   ['BZB8141','B2B8I41','BZB8T41'] → mesma placa, e o que barrou foi o
+                    #       agrupamento/`votos_min` (`placa_eleita` com `votos_min=1` elege,
+                    #       com 2 não: `agrupar_por_veiculo` partiu o pool e o maior grupo
+                    #       ficou menor que o mínimo).
+                    #   ['BZB8141','RZP0J47','B3D8T4I'] → o OCR não está lendo o veículo, e
+                    #       nenhum limiar de consenso conserta isso.
+                    #
+                    # O caso real que motivou: 04/09/2026, cam1, "trk2 SAIU sem emitir — 3
+                    # leitura(s), melhor BZB8141 com 1 voto(s)". Três leituras acumuladas,
+                    # um veículo perdido, e a linha não permitia distinguir as duas coisas.
                     log.info(
-                        "trk%d SAIU sem emitir — %d leitura(s), melhor %s com %d voto(s)",
-                        tid, total, melhor[0], votos_lider,
+                        "trk%d SAIU sem emitir: %d leitura(s) %s, melhor %s com %d "
+                        "voto(s) (emite com %d)",
+                        tid, total, [p for p, _, _ in st.resultados], melhor[0],
+                        votos_lider, self._votos,
                     )
             elif not st.resultados:
                 # Veículo detectado e nunca lido é um caso diferente de "lido e não
                 # convergiu", e some do log se não for dito aqui — o de cima só dispara
                 # quando houve alguma leitura válida.
-                log.info("trk%d SAIU sem nenhuma leitura válida", tid)
+                #
+                # As tentativas vão na linha porque são o CUSTO desse track: é o número
+                # que separa "passou pelo quadro e não deu tempo" (2, 3 tentativas) de
+                # "caixa fixa consumindo o ensemble" (dezenas, e aí `desistiu` já entrou).
+                log.info("trk%d SAIU sem nenhuma leitura válida: %d tentativa(s) de OCR%s",
+                         tid, st.tentativas_ocr, " (OCR suspenso antes de sair)" if st.desistiu else "")

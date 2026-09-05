@@ -9,6 +9,7 @@ from pathlib import Path
 
 import cv2
 
+from app.core import arquivos
 from app.core import banco
 from app.core import broadcaster as bc
 from app.core import estado
@@ -110,6 +111,73 @@ def _vale_como_negativo(crop) -> bool:
         return False
     h, w = crop.shape[:2]
     return crop_legivel(w, h)
+
+
+def _roi_dos_bicos(camera_db_id: int) -> dict | None:
+    """Retângulo que cobre a área de TODOS os bicos desta câmera, ou None.
+
+    A UNIÃO, e não uma área por bico: o pipeline é um só por câmera e faz uma passada de
+    detecção por tick. Recortar por bico multiplicaria a inferência pelo número de bicos —
+    o oposto do que este recorte existe para fazer. Fora da união não há bico nenhum, e é
+    por definição a parte do quadro que a operação não usa (pista, letreiro, posto vizinho).
+
+    FAIL-OPEN em três casos, todos devolvendo None (= detecta no quadro inteiro, o
+    comportamento de sempre):
+
+      - câmera sem bico: não há área a respeitar;
+      - QUALQUER bico da câmera sem área desenhada: recortar pela área dos outros cegaria
+        justamente o bico que falta configurar, e isso é pior que olhar o quadro todo — é a
+        mesma razão pela qual `cadastro.rois_faltando` considera o posto incompleto;
+      - erro lendo o banco: subir sem recorte é degradação, subir sem detecção é queda.
+
+    Slot importa: um bico com duas câmeras guarda o retângulo da primeira em `roi` e o da
+    segunda em `roi2`, cada um em coordenadas do frame da SUA câmera (ver
+    `banco.slots_do_bico`). Misturar os dois recortaria o pedaço errado da imagem sem erro
+    nenhum — o modo de falha que `testes/unitarios/test_roi_bico.py` documenta.
+    """
+    import json
+
+    try:
+        bicos = banco.bicos_listar(camera_id=camera_db_id)
+    except Exception as e:
+        log.error("Câmera %d: falha ao ler a área dos bicos (%s), detecção segue no "
+                  "quadro inteiro", camera_db_id, e)
+        return None
+    if not bicos:
+        return None
+
+    caixas: list[dict] = []
+    for b in bicos:
+        for _slot, cam_id, roi_bruto, _papel in banco.slots_do_bico(b):
+            if cam_id != camera_db_id:
+                continue        # o outro slot deste bico, que é de outra câmera
+            if not roi_bruto:
+                log.info("Câmera %d: bico %s sem área desenhada, detecção no quadro "
+                         "inteiro (roi_bicos_no_continuo exige TODOS os bicos com área)",
+                         camera_db_id, b.get("codigo") or b.get("id"))
+                return None
+            try:
+                # Os quatro campos são extraídos um a um, e não usados como vieram: o que
+                # entra aqui virou índice de fatia de numpy (`frame[y:y+h, x:x+w]`), e um
+                # `w` que seja `None` ou string não estoura na hora — recorta errado, ou
+                # nada, e o sintoma aparece como "essa câmera parou de ler".
+                bruto = json.loads(roi_bruto)
+                caixas.append({k: int(bruto[k]) for k in ("x", "y", "w", "h")})
+            except (ValueError, TypeError, KeyError) as e:
+                log.error("Câmera %d: área do bico %s ilegível (%s), detecção no quadro "
+                          "inteiro", camera_db_id, b.get("codigo") or b.get("id"), e)
+                return None
+
+    if not caixas:
+        return None
+    x0 = min(r["x"] for r in caixas)
+    y0 = min(r["y"] for r in caixas)
+    x1 = max(r["x"] + r["w"] for r in caixas)
+    y1 = max(r["y"] + r["h"] for r in caixas)
+    uniao = {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
+    log.info("Câmera %d: detecção contínua restrita à área dos bicos: %dx%d em (%d,%d), "
+             "união de %d área(s)", camera_db_id, uniao["w"], uniao["h"], x0, y0, len(caixas))
+    return uniao
 
 
 def _maxlen_historico(frames_consenso: int) -> int:
@@ -245,6 +313,12 @@ class Pipeline:
         import json as _json
         roi_raw = cfg.get("roi")
         self.roi: dict | None = _json.loads(roi_raw) if roi_raw else None
+        # Sem `roi` na config (o caso de sempre — ver `roi_bicos_no_continuo`), a área dos
+        # bicos desta câmera é a única definição de "onde a operação acontece" que existe
+        # no cadastro. Só quando explicitamente ligado.
+        if self.roi is None and cfg.get("roi_bicos_no_continuo", "nao").lower() in (
+                "sim", "true", "1"):
+            self.roi = _roi_dos_bicos(camera_db_id)
 
         self._historico: deque = deque(maxlen=_maxlen_historico(self.frames_consenso))
         self._parar = threading.Event()
@@ -263,6 +337,7 @@ class Pipeline:
                 ocr_a_cada_n_frames=int(cfg.get("tracker_ocr_intervalo", "5")),
                 votos_emitir=int(cfg.get("tracker_votos_emitir", "2")),
                 paciencia_frames=int(cfg.get("tracker_paciencia_frames", "40")),
+                max_ocr_sem_leitura=int(cfg.get("tracker_max_ocr_sem_leitura", "60")),
             )
         else:
             self.tracker = None
@@ -282,7 +357,7 @@ class Pipeline:
                     self.camera.abrir()
                 estado.marcar_conexao(self.camera_db_id, True)
             except Exception as e:
-                log.error("Câmera não encontrada ao iniciar (%s) — pipeline aguardará reconexão", e)
+                log.error("Câmera não encontrada ao iniciar (%s), pipeline aguardará reconexão", e)
                 estado.marcar_conexao(self.camera_db_id, False)
         self.detector.carregar()
         estado.modelo_carregado = self.detector.sess is not None
@@ -318,7 +393,7 @@ class Pipeline:
             if self._thread.is_alive():
                 log.error(
                     "Câmera %d: thread do pipeline não encerrou em 5s (provável "
-                    "travada em leitura/reconexão de câmera) — NÃO fechando a câmera "
+                    "travada em leitura/reconexão de câmera). NÃO fechando a câmera "
                     "nem prosseguindo, para não abrir uma segunda conexão RTSP "
                     "concorrente enquanto a thread antiga ainda está viva",
                     self.camera_db_id,
@@ -333,7 +408,7 @@ class Pipeline:
         if not self.camera.fechar():
             log.error(
                 "Câmera %d: loop encerrado, mas a conexão não pôde ser liberada com "
-                "segurança — pipeline segue registrado para nova tentativa",
+                "segurança. O pipeline segue registrado para nova tentativa",
                 self.camera_db_id,
             )
             return False
@@ -379,9 +454,9 @@ class Pipeline:
                     agora = time.time()
                     if sem_frame_desde is None:
                         sem_frame_desde = agora
-                        log.warning("Câmera %d sem frame — aguardando...", self.camera_db_id)
+                        log.warning("Câmera %d sem frame, aguardando...", self.camera_db_id)
                     elif agora - sem_frame_desde >= 3.0:
-                        log.warning("Câmera %d sem resposta por 3s — tentando reconectar...", self.camera_db_id)
+                        log.warning("Câmera %d sem resposta por 3s, tentando reconectar...", self.camera_db_id)
                         estado.marcar_conexao(self.camera_db_id, False)
                         # Mesmo lock de `iniciar()` acima — a reconexão também abre RTSP
                         # do zero, e pode coincidir com uma leitura reativa da mesma
@@ -394,7 +469,7 @@ class Pipeline:
                             sem_frame_desde = None
                             log.info("Câmera %d reconectada", self.camera_db_id)
                         else:
-                            log.warning("Câmera %d: reconexão falhou — nova tentativa em 30s", self.camera_db_id)
+                            log.warning("Câmera %d: reconexão falhou, nova tentativa em 30s", self.camera_db_id)
                             sem_frame_desde = time.time()
                             # Fatiado em passos de 1s em vez de um único sleep(30): sem
                             # isso, `parar()` (Correção 3) podia esperar até 30s pela
@@ -495,7 +570,7 @@ class Pipeline:
                     time.sleep(restante)
 
             except Exception as e:
-                log.error("Pipeline câmera %d: exceção no loop: %s — retomando em 1s",
+                log.error("Pipeline câmera %d: exceção no loop: %s. Retomando em 1s",
                           self.camera_db_id, e)
                 time.sleep(1.0)
 
@@ -513,9 +588,14 @@ class Pipeline:
                 return
             bboxes_roi = self.detector.detectar(frame_det)
             # `deslocar` e não uma comprehension crua: remontar a tupla descartaria o
-            # `tipo_veiculo` que o 2 estágios anexou. Ramo dormente hoje (a tabela
-            # `cameras` não tem coluna `roi`, então `_cfg_para_camera` deixa self.roi
-            # None), mas o dia em que uma ROI de câmera existir o tipo sumiria calado.
+            # `tipo_veiculo` que o 2 estágios anexou.
+            #
+            # Este ramo ficou DORMENTE de 2026 até aqui: `_cfg_para_camera` só preenche
+            # `roi` a partir de uma coluna `roi` em `cameras`, que deixou de existir quando
+            # bomba/lado/roi passaram para `bicos`. Ele volta a ter dono com
+            # `roi_bicos_no_continuo=sim`, que traz a união das áreas dos bicos desta
+            # câmera (ver `_roi_dos_bicos`). As coordenadas do ROI são do frame CHEIO, e é
+            # por isso que a bbox precisa ser deslocada de volta antes de sair daqui.
             bboxes = [deslocar(b, rx, ry) for b in bboxes_roi]
         else:
             bboxes = self.detector.detectar(frame)
@@ -766,7 +846,7 @@ class Pipeline:
             nome = f"{ts}_{placa}.jpg"
             caminho = SNAPSHOT_DIR / nome
             crop = frame_limpo[y: y + h, x: x + w]
-            cv2.imwrite(str(caminho), crop, [int(cv2.IMWRITE_JPEG_QUALITY), self.snapshot_q])
+            arquivos.imwrite_atomico(caminho, crop, self.snapshot_q)
             snapshot_rel = f"/static/snapshots/{nome}"
 
         # Quadro inteiro com a caixa lida, igual ao que a leitura reativa grava. Só o
@@ -786,8 +866,7 @@ class Pipeline:
                 r = self.roi
                 cv2.rectangle(marcado, (r["x"], r["y"]),
                               (r["x"] + r["w"], r["y"] + r["h"]), (120, 120, 120), 1)
-            cv2.imwrite(str(SNAPSHOT_DIR / nome_f), marcado,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), self.snapshot_q])
+            arquivos.imwrite_atomico(SNAPSHOT_DIR / nome_f, marcado, self.snapshot_q)
             frame_rel = f"/static/snapshots/{nome_f}"
 
         # Desempacota os quatro campos aqui — o único ponto em que `banco` (que não deve
@@ -850,7 +929,7 @@ class Pipeline:
             return
         url = self.cfg.get("webhook_url", "").strip()
         if not url:
-            log.warning("webhook_todas=sim mas webhook_url vazio — pulei notificação de %s", placa)
+            log.warning("webhook_todas=sim mas webhook_url vazio, pulei notificação de %s", placa)
             return
         payload = {"bomba": self.bomba, "lado": self.lado, "placa": placa,
                    "padrao": padrao, "confianca": round(conf, 3), "snapshot": snapshot}
@@ -883,7 +962,7 @@ class Pipeline:
             return
         url = self.cfg.get("webhook_url", "").strip()
         if not url:
-            log.warning("ALERTA: placa NEGRA detectada (%s) — webhook não configurado", placa)
+            log.warning("ALERTA: placa NEGRA detectada (%s), webhook não configurado", placa)
             return
         payload = {"placa": placa, "padrao": padrao, "descricao": entrada.get("descricao", ""),
                    "alerta": "lista_negra"}
@@ -1014,7 +1093,7 @@ def _iniciar_camera_travado(camera_db_id: int, cfg: dict[str, str]) -> None:
         thread = getattr(existente, "_thread", None)
         if getattr(existente, "iniciando", False) or (thread is not None and thread.is_alive()):
             log.error(
-                "Câmera %d: início IGNORADO — já existe pipeline vivo para ela; abrir "
+                "Câmera %d: início IGNORADO: já existe pipeline vivo para ela; abrir "
                 "outro duplicaria a conexão RTSP e deixaria o anterior órfão",
                 camera_db_id,
             )
@@ -1043,7 +1122,7 @@ def iniciar_cameras_db(cfg: dict[str, str]) -> None:
     """Inicia um pipeline por câmera ativa no banco. Sem câmeras cadastradas, não inicia nada."""
     cameras_ativas = [c for c in banco.cameras_listar() if c["ativo"]]
     if not cameras_ativas:
-        log.info("Nenhuma câmera cadastrada — pipeline aguarda cadastro via interface")
+        log.info("Nenhuma câmera cadastrada. O pipeline aguarda cadastro via interface")
         return
     for cam in cameras_ativas:
         try:
@@ -1112,7 +1191,7 @@ def reiniciar_camera_status(camera_db_id: int, cfg: dict[str, str]) -> str:
     """Como `reiniciar_camera`, mas devolve o MOTIVO — ver `REINICIO_OCUPADO`."""
     if not parar_camera(camera_db_id):
         log.warning(
-            "Câmera %d: reinício adiado — a thread anterior ainda está numa leitura "
+            "Câmera %d: reinício adiado: a thread anterior ainda está numa leitura "
             "(teto de ~30 s). NÃO abrindo uma segunda conexão RTSP concorrente; nova "
             "tentativa no próximo ciclo, sem escalar o backoff.",
             camera_db_id,
@@ -1150,7 +1229,7 @@ def parar_todas() -> bool:
     stream_mod.limpar_cache()
     if presos:
         log.error(
-            "Parada geral: %d pipeline(s) não confirmaram encerramento (câmeras %s) — "
+            "Parada geral: %d pipeline(s) não confirmaram encerramento (câmeras %s). "
             "mantidos registrados para não abrir conexão RTSP concorrente ao subir de novo",
             len(presos), ", ".join(str(c) for c in presos),
         )

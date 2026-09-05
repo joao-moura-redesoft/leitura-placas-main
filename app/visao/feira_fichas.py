@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 
-from app.core import banco, config
+from app.core import arquivos, banco, config
 from app.integracoes import apiplacas
 from app.visao import feira
 
@@ -72,7 +72,7 @@ PADROES: dict[str, dict[str, str]] = {
         "ano": "2024",
         # Sem repetir "Bem-vindo!": esse é o <h1> do card, e a mensagem aparece LOGO
         # ABAIXO dele na vitrine. A linha aqui serve para dizer o que a demo prova.
-        "mensagem": "Leitura feita pela câmera — sem etiqueta, sem antena e sem parar o veículo.",
+        "mensagem": "Leitura feita pela câmera, sem etiqueta, sem antena e sem parar o veículo.",
         # Registro: o que dá ao payload da demo a mesma cara de uma consulta real. São
         # fatos do veículo (um Nivus 2024), não do cadastro do DETRAN.
         "marca": "VW",
@@ -124,7 +124,7 @@ def carregar_fichas() -> dict[str, dict[str, str]]:
                     if norm and isinstance(ficha, dict):
                         fichas[norm] = _limpar(ficha)
         except Exception as e:
-            log.warning("Falha ao ler %s — usando fichas padrão (%s)", caminho, e)
+            log.warning("Falha ao ler %s, usando fichas padrão (%s)", caminho, e)
     return fichas
 
 
@@ -139,7 +139,12 @@ def salvar_fichas(fichas: dict) -> dict[str, dict[str, str]]:
         for placa, ficha in (fichas or {}).items()
         if feira.normalizar(placa) and isinstance(ficha, dict)
     }
-    _arquivo().write_text(json.dumps(limpo, ensure_ascii=False, indent=2), encoding="utf-8")
+    # ATÔMICO: a vitrine (`/api/feira/scan`, ~1,5 s entre leituras) e `/feira` chamam
+    # `carregar_fichas` em paralelo a este salvamento. Com `write_text` (trunca e depois
+    # escreve), o `json.loads` do leitor levantava no meio da janela e `carregar_fichas`
+    # caía nos PADROES — a demo perdia as fichas do operador em silêncio, na hora errada.
+    # (Auditoria 05/09/2026.)
+    arquivos.escrever_json_atomico(_arquivo(), limpo)
     return limpo
 
 
@@ -222,11 +227,11 @@ def bloco_de_leitura(resultado: dict) -> dict | None:
     placa = resultado["placa"]
     ficha = ficha_de(placa)
     if ficha is None:
-        log.warning("MODO FEIRA: placa mockada %s sem ficha cadastrada — bloco 'veiculo' "
+        log.warning("MODO FEIRA: placa mockada %s sem ficha cadastrada. O bloco 'veiculo' "
                     "sai indisponivel. Cadastre a ficha em /configuracao.", placa)
         return apiplacas.bloco_sem_ficha(
             f"veiculo de demonstracao '{placa}' sem ficha cadastrada")
-    log.warning("MODO FEIRA: bloco 'veiculo' de %s montado da ficha LOCAL (MOCK) — "
+    log.warning("MODO FEIRA: bloco 'veiculo' de %s montado da ficha LOCAL (MOCK). "
                 "nao houve consulta a apiplacas.", placa)
     return apiplacas.bloco_demonstracao(
         _curados(ficha),

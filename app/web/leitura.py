@@ -197,7 +197,7 @@ def perfil_pedido(rapido: bool, cfg: dict) -> tuple[str, str]:
     ativo = cfg.get("rapido_ativo", config.PADROES.get("rapido_ativo", "sim"))
     if not config.get_bool({"rapido_ativo": ativo}, "rapido_ativo"):
         return (leitura.PERFIL_COMPLETO,
-                "modo rápido pedido mas desativado neste servidor — leitura completa")
+                "modo rápido pedido mas desativado neste servidor, leitura completa")
     return leitura.PERFIL_RAPIDO, ""
 
 
@@ -250,6 +250,11 @@ def bloco_veiculo(resultado: dict, cfg: dict, decorrido: float,
                   perfil: str = leitura.PERFIL_COMPLETO) -> dict | None:
     """O `veiculo{}` do payload, ou None quando não há o que acrescentar.
 
+    `perfil` NÃO altera mais o resultado: rápido e completo consultam igual, sob o mesmo
+    `orcamento_seg`. Fica no contrato porque é informação legítima desta camada e porque
+    o corpo documenta por que ela deixou de decidir — tirar o parâmetro apagaria o registro
+    de uma regra que já existiu e apostaria que ninguém vai querê-la de volta.
+
     Mora AQUI, e não dentro de `ler_placa`, por três motivos que se somam:
 
     - **custo**: `ler_placa` tem um segundo chamador, `bicos_ler_placa_teste`
@@ -292,15 +297,23 @@ def bloco_veiculo(resultado: dict, cfg: dict, decorrido: float,
     if not config.get_bool(cfg, "apiplacas_ativo") or not resultado.get("placa"):
         return None
     try:
-        # Perfil rápido é SEMPRE cache-only, sem orçamento de rede — mesmo com
-        # `apiplacas_modo=automatico`. Duas razões independentes, e cada uma bastaria:
-        # uma consulta externa custa até `apiplacas_timeout_seg` (2,5s hoje), que sozinha
-        # é metade do orçamento inteiro do modo; e o modo rápido produz mais leitura não
-        # confirmada, que é justamente a que `_pode_gastar` já se recusa a pagar. Placa
-        # em cache continua vindo de graça e instantânea.
-        if perfil == leitura.PERFIL_RAPIDO:
-            return apiplacas.consultar(resultado["placa"], cfg,
-                                       permitir_gasto=False, orcamento_seg=0.0)
+        # O perfil NÃO decide mais se pode gastar — rápido e completo seguem o mesmo
+        # caminho. Antes o rápido era cache-only categórico, por duas razões; medindo
+        # contra leitura real, só uma sobreviveu, e ela não precisa de veto:
+        #
+        # - "gasta mais em leitura ruim": já é trabalho de `_pode_gastar`, que barra
+        #   `confirmada is False` e parada por timeout. O veto por perfil barrava JUNTO a
+        #   leitura boa — payload de moto com acordo=1,0, 3 engines concordando e
+        #   `confirmada=True` saía com "este fluxo não consulta a API paga", que é
+        #   exatamente o caso que vale enriquecer.
+        # - "custa até `apiplacas_timeout_seg`": continua verdade, e quem trata disso é o
+        #   `orcamento_seg` abaixo — estourou, `consultar` devolve "sem orçamento de tempo
+        #   para consultar" SEM gastar. Teto de tempo é o instrumento certo para custo de
+        #   tempo; recusar a consulta inteira era caro demais para o problema.
+        #
+        # `apiplacas_modo=manual` e `apiplacas_exigir_confirmada` seguem mandando, pelo
+        # `_pode_gastar`. Quem quiser o rápido barato de novo tem os dois interruptores.
+        #
         # O que sobrou do orçamento da leitura. A consulta externa não pode empurrar a
         # resposta para além do que o roteador tolera esperar.
         teto = config.get_float(cfg, "apiplacas_timeout_seg")
@@ -471,10 +484,10 @@ def leitura_reativa(
     ip = request.client.host if request.client else "?"
     if not limitador.permitido("leitura_ip", ip, _LIMITE_LEITURA_IP_MIN, 60):
         _registrar("erro_cadastro", "rate limit por IP excedido")
-        raise HTTPException(429, "Muitas requisições — tente novamente em instantes.")
+        raise HTTPException(429, "Muitas requisições. Tente novamente em instantes.")
     if not limitador.permitido("leitura_cnpj", cnpj_norm, _LIMITE_LEITURA_CNPJ_MIN, 60):
         _registrar("erro_cadastro", "rate limit por CNPJ excedido")
-        raise HTTPException(429, "Muitas requisições para este CNPJ — tente novamente em instantes.")
+        raise HTTPException(429, "Muitas requisições para este CNPJ. Tente novamente em instantes.")
 
     reg, motivo = banco.resolver_bico(cnpj_norm, automacao, bico)
 

@@ -237,7 +237,7 @@ class Camera:
             try:
                 if not self.cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 4000):
                     log.debug(
-                        "Backend não aceitou CAP_PROP_READ_TIMEOUT_MSEC — vale o teto "
+                        "Backend não aceitou CAP_PROP_READ_TIMEOUT_MSEC, vale o teto "
                         "interno do OpenCV (~30 s) para cada cap.read()"
                     )
             except Exception as e:
@@ -300,7 +300,7 @@ class Camera:
             with self._frame_lock:
                 self._ultimo_frame = None
             if motivo != "parada solicitada":
-                log.error("[%s] Thread leitora encerrada — %s. A câmera passa a reportar "
+                log.error("[%s] Thread leitora encerrada: %s. A câmera passa a reportar "
                           "'sem frame' e o pipeline vai tentar reconectar.", self.tipo, motivo)
 
     def ler(self):
@@ -345,7 +345,7 @@ class Camera:
             self._reader.join(timeout=TIMEOUT_JOIN_LEITORA_SEG)
             if self._reader.is_alive():
                 log.error(
-                    "Câmera (%s): thread leitora não encerrou a tempo — provavelmente "
+                    "Câmera (%s): thread leitora não encerrou a tempo, provavelmente "
                     "presa em cap.read(). NÃO liberando o cap: release() com a leitura "
                     "em andamento derruba o processo. A conexão fica retida até a "
                     "próxima tentativa de fechar.",
@@ -422,7 +422,7 @@ def fechar_ou_adiar(cam: "Camera", contexto: str) -> None:
     with _pendentes_lock:
         _pendentes_fechar.append(cam)
     log.error(
-        "%s: conexão retida (thread leitora presa) — %d câmera(s) aguardando liberação. "
+        "%s: conexão retida (thread leitora presa). %d câmera(s) aguardando liberação. "
         "A próxima captura tenta de novo.",
         contexto, len(_pendentes_fechar),
     )

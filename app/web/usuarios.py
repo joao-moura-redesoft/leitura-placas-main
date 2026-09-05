@@ -147,7 +147,7 @@ def criar(payload: dict, request: Request):
         # a pessoa convidada define a senha de verdade pelo link (mesmo mecanismo do
         # "esqueci minha senha").
         if not email_mod.configurado(cfg):
-            raise HTTPException(400, "Convite por e-mail exige SMTP configurado em Configuração — "
+            raise HTTPException(400, "Convite por e-mail exige SMTP configurado em Configuração. "
                                      "defina uma senha diretamente, ou configure o envio antes.")
         senha_hash = auth_mod.hash_senha(secrets.token_urlsafe(24))
     else:
@@ -174,7 +174,7 @@ def criar(payload: dict, request: Request):
         token = banco.reset_token_criar(uid)
         link = f"{email_mod.url_base(request, cfg)}/redefinir-senha/{token}"
         email_mod.enviar(
-            email, "Você foi convidado — Leitura de Placas",
+            email, "Você foi convidado | Leitura de Placas",
             f"Olá, {nome}.\n\n"
             f"Uma conta foi criada para você no sistema de leitura de placas (papel: {papel}).\n\n"
             f"Para definir sua senha e acessar, use o link abaixo — ele vale por 2 horas:\n{link}\n\n"
@@ -237,15 +237,15 @@ def atualizar(id_: int, payload: dict, request: Request):
     quem_pede = deps.usuario_atual(request)
     eh_auto_edicao = quem_pede is not None and quem_pede["id"] == id_
     if eh_auto_edicao and atual["papel"] == "admin" and (papel != "admin" or not ativo):
-        raise HTTPException(400, "Você não pode alterar seu próprio papel ou status — peça a outro administrador.")
+        raise HTTPException(400, "Você não pode alterar seu próprio papel ou status. Peça a outro administrador.")
 
+    # A trava do último admin NÃO é checada aqui — é aplicada dentro do próprio UPDATE,
+    # via `exigir_outro_admin` (ver `banco.usuarios_atualizar`). Checar antes, em outra
+    # transação, era uma corrida real: dois admins em duas máquinas rebaixando um ao outro
+    # ao mesmo tempo passavam os dois pela checagem e o sistema ficava com ZERO admin
+    # ativo — todo mundo trancado fora do painel, recuperável só por SQL na mão.
+    # (Auditoria 05/09/2026.)
     vira_nao_admin = atual["papel"] == "admin" and (papel != "admin" or not ativo)
-    if vira_nao_admin and banco.usuarios_contar_admins_ativos(excluir_id=id_) == 0:
-        raise HTTPException(
-            400,
-            "Este é o último administrador ativo — promova outro usuário a admin "
-            "antes de rebaixar ou desativar este.",
-        )
 
     dados = {
         "nome": nome, "email": email,
@@ -256,9 +256,15 @@ def atualizar(id_: int, payload: dict, request: Request):
         dados["senha_hash"] = auth_mod.hash_senha(senha)
 
     try:
-        banco.usuarios_atualizar(id_, dados)
+        banco.usuarios_atualizar(id_, dados, exigir_outro_admin=vira_nao_admin)
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"E-mail {email} já cadastrado")
+    except banco.UltimoAdminError:
+        raise HTTPException(
+            400,
+            "Este é o último administrador ativo. Promova outro usuário a admin "
+            "antes de rebaixar ou desativar este.",
+        )
 
     mudancas = []
     if nome != atual["nome"]:

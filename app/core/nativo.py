@@ -95,7 +95,7 @@ def aplicar() -> None:
     try:
         import cv2
     except Exception as e:                      # pragma: no cover - ambiente sem OpenCV
-        log.warning("OpenCV indisponível (%s) — ajustes nativos não aplicados", e)
+        log.warning("OpenCV indisponível (%s), ajustes nativos não aplicados", e)
         return
 
     try:

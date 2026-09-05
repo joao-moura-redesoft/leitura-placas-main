@@ -7,7 +7,7 @@ warnings.filterwarnings("ignore", message=".*pin_memory.*no accelerator.*", cate
 from app import servidor
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ALPR — Leitura de Placas")
+    parser = argparse.ArgumentParser(description="ALPR | Leitura de Placas")
     parser.add_argument(
         "--reload",
         action="store_true",

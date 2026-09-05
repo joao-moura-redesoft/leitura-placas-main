@@ -1,7 +1,7 @@
 """API de testes — gerencia dataset rotulado e executa avaliações de precisão."""
 from __future__ import annotations
 import json
-import os
+import logging
 import re
 import threading
 import uuid
@@ -9,6 +9,10 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
+
+from app.core.arquivos import escrever_json_atomico as _escrever_json_atomico
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/testes")
 
@@ -43,27 +47,6 @@ def _ler_descartados() -> set[str]:
     if not _DESCARTADOS.exists():
         return set()
     return set(json.loads(_DESCARTADOS.read_text(encoding="utf-8")).get("arquivos", []))
-
-
-def _escrever_json_atomico(destino, dados: dict) -> None:
-    """Grava JSON sem NUNCA deixar o arquivo num estado meio escrito.
-
-    `write_text` trunca e só então escreve: entre as duas coisas o arquivo existe e está
-    incompleto. Os locks deste módulo não bastam porque quem LÊ está em outro módulo e não
-    os conhece — `app/core/rotulos.protegidos()` é chamado pelo worker de retenção a cada
-    5 minutos e por TODO gatilho de captura de dataset. Pegando o arquivo truncado, o
-    `json.loads` levanta, `protegidos()` devolve None e a coleta PARA com "dataset
-    ilegível" — enquanto o arquivo está íntegro quando alguém vai olhar, o que torna o
-    diagnóstico péssimo. (Auditoria 27/08/2026, achado M11.)
-
-    `os.replace` é atômico no mesmo volume, em POSIX e no Windows: o leitor vê o conteúdo
-    antigo ou o novo, nunca metade. O temporário fica ao lado do destino de propósito —
-    `tempfile.gettempdir()` pode estar em outro volume, e aí `replace` deixa de ser atômico.
-    """
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    tmp = destino.with_suffix(destino.suffix + ".tmp")
-    tmp.write_text(json.dumps(dados, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, destino)
 
 
 def _salvar_descartados(arquivos: set[str]) -> None:
@@ -425,7 +408,7 @@ def rodar_testes(payload: dict = {}):
         # A mensagem interna da exceção (texto do SQLite, caminho de arquivo) fica no
         # LOG, não na resposta ao cliente. (Auditoria 27/08/2026.)
         log.error("Falha em a execução dos testes: %s" % e, exc_info=True)
-        raise HTTPException(500, "Operação falhou — veja o log do servidor.")
+        raise HTTPException(500, "Operação falhou. Veja o log do servidor.")
     finally:
         sys.path[:] = _sys_path_backup
 

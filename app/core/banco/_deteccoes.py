@@ -369,6 +369,26 @@ def remover_deteccao(id_: int) -> list[str] | None:
         return [v for v in (linha["snapshot"], linha["frame"]) if v]
 
 
+def empresa_da_imagem(url_rel: str):
+    """empresa_id dona do JPEG servido em `url_rel`, ou `None` se ninguém o referencia.
+
+    Existe para escopar `/static/snapshots/` por posto. O arquivo não carrega o dono no
+    nome (`{ts}_{PLACA}.jpg`), então quem sabe de quem ele é são as linhas de `deteccoes`
+    que o apontam -- em `snapshot` (o recorte da placa) ou em `frame` (o quadro inteiro).
+
+    `None` cobre DOIS casos que a rota trata igual (404): URL que nenhuma detecção
+    referencia, e detecção cuja empresa não se resolve (contínuo em câmera sem posto). O
+    aberto por omissão seria voltar ao vazamento que esta função existe para fechar.
+    """
+    with cursor() as c:
+        linha = c.execute(
+            f"SELECT {_EMPRESA_DETECCAO} AS empresa_id FROM deteccoes d "
+            f"{_JOIN_EMPRESA_DETECCAO} WHERE d.snapshot = ? OR d.frame = ? LIMIT 1",
+            (url_rel, url_rel),
+        ).fetchone()
+    return linha["empresa_id"] if linha else None
+
+
 def _corte(dias: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
 

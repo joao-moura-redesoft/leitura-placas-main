@@ -19,6 +19,19 @@ services:
     image: leitura-placas:gpu
     deploy:
       resources:
+        # Tetos MAIORES que os do compose base de proposito -- o merge do compose
+        # SUBSTITUI estes valores escalares, nao os soma. Duas coisas mudam com GPU:
+        #  * memoria: o contexto CUDA + os buffers do onnxruntime-gpu somam varias
+        #    centenas de MB de RAM do HOST (alem da VRAM), em cima dos ~594 MB medidos
+        #    em CPU. 2g fica apertado no boot; 4g e o teto com folga.
+        #  * cpu: a inferencia sai da CPU, mas o pre-processamento (CLAHE,
+        #    bilateralFilter, resize) e o decode de RTSP continuam nela -- e agora sem a
+        #    inferencia serializando o pipeline, chegam MAIS quadros por segundo. Por
+        #    isso 4.0 e nao menos: cortar CPU aqui vira gargalo de alimentacao da GPU.
+        # Ajuste por .env (ALPR_CPUS_GPU / ALPR_MEM_GPU) conforme o servidor real.
+        limits:
+          cpus: "${ALPR_CPUS_GPU:-4.0}"
+          memory: ${ALPR_MEM_GPU:-4g}
         reservations:
           devices:
             - driver: nvidia

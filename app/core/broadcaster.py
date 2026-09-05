@@ -46,13 +46,13 @@ class Broadcaster:
         with self._lock:
             self._clientes.add(ws)
             total = len(self._clientes)
-        log.debug("WS conectado — %d cliente(s)", total)
+        log.debug("WS conectado: %d cliente(s)", total)
 
     def desconectar(self, ws: WebSocket) -> None:
         with self._lock:
             self._clientes.discard(ws)
             total = len(self._clientes)
-        log.debug("WS desconectado — %d cliente(s)", total)
+        log.debug("WS desconectado: %d cliente(s)", total)
 
     async def _enviar_todos(self, data: dict) -> None:
         with self._lock:

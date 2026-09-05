@@ -26,6 +26,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from app.core import arquivos
 from app.core import banco
 from app.core import estado
 from app.operacao import retencao as ret_mod
@@ -119,6 +120,23 @@ def espera_frame_do_perfil(cfg: dict, perfil: str, padrao_completo: float) -> fl
         return float(cfg.get("rapido_espera_frame_seg") or padrao)
     except (TypeError, ValueError):
         return float(padrao)
+
+
+def perfil_forcar_feira(cfg: dict) -> str:
+    """Perfil do botão "Forçar leitura" (↻) da vitrine — `feira_forcar_perfil`.
+
+    Só o BOTÃO. O loop hands-free da vitrine usa sempre `PERFIL_RAPIDO` e não passa por
+    aqui: é ele que varre a cada ~1,6s sozinho, e deixá-lo configurável para "completo"
+    poria a máquina para gastar 28s de CPU por varredura sem ninguém ter pedido.
+
+    Qualquer valor que não seja exatamente "rapido" resolve para `PERFIL_COMPLETO`, que é
+    o default. Fail-safe na direção certa: config digitada à mão ("Rápido", "completa",
+    vazio) cai no perfil MAIS robusto, e o pior caso de um typo é o botão demorar o que
+    sempre demorou — nunca a demonstração ficar menos capaz do que o operador pensa.
+    """
+    return (PERFIL_RAPIDO
+            if (cfg.get("feira_forcar_perfil") or "").strip().lower() == PERFIL_RAPIDO
+            else PERFIL_COMPLETO)
 
 
 def _componentes_do_perfil(perfil: str):
@@ -683,7 +701,7 @@ def _adquirir_locks(fontes: list[FonteLeitura], espera_seg: float) -> None:
             # frame do pipeline, sem abrir RTSP) ainda é melhor que devolver erro ao bico.
             diretas[0].ativa = False
             diretas[0].erro = "câmera ocupada por outra leitura em andamento"
-            log.warning("%s: lock não adquirido em %.1fs — seguindo sem conexão direta",
+            log.warning("%s: lock não adquirido em %.1fs, seguindo sem conexão direta",
                         diretas[0].rotulo, espera_seg)
         return
 
@@ -693,15 +711,30 @@ def _adquirir_locks(fontes: list[FonteLeitura], espera_seg: float) -> None:
         else:
             f.ativa = False
             f.erro = "câmera ocupada por outra leitura em andamento"
-            log.warning("%s: lock não adquirido em %.1fs — fonte fora desta leitura",
+            log.warning("%s: lock não adquirido em %.1fs, fonte fora desta leitura",
                         f.rotulo, espera_seg)
 
     if not any(f.lock_adquirido for f in diretas):
+        # Segunda tentativa COM TETO, nunca `acquire()` seco. Bloquear sem prazo aqui era o
+        # único ponto do caminho de visão sem timeout, e não custava só esta leitura: a
+        # request fica presa segurando um token do threadpool do servidor, e
+        # `app/servidor.py` documenta que esgotar esse pool faz o servidor inteiro parar de
+        # responder -- inclusive `/api/healthz` e o `/api/leitura` dos OUTROS postos. O
+        # cenário é alcançável: quem mais toma este lock segura por muito tempo (a
+        # reconexão do pipeline faz 2 tentativas com `sleep(5)`, até ~65 s).
+        #
+        # A intenção original ("uma leitura lenta é melhor que nenhuma fonte") continua de
+        # pé -- por isso uma segunda espera, e não desistir na hora. O que muda é que ela
+        # termina: se o lock não vier, a leitura segue degradada como no ramo de uma fonte
+        # só (pode cair no frame do pipeline, sem abrir RTSP), em vez de pendurar.
         primeira = diretas[0]
-        primeira.lock.acquire()
-        primeira.lock_adquirido = True
-        primeira.ativa = True
-        primeira.erro = None
+        if primeira.lock.acquire(timeout=espera_seg):
+            primeira.lock_adquirido = True
+            primeira.ativa = True
+            primeira.erro = None
+        else:
+            log.warning("%s: lock não adquirido em %.1fs na 2ª tentativa, leitura segue "
+                        "sem conexão direta", primeira.rotulo, espera_seg)
 
 
 def _sondar_pipeline(f: FonteLeitura, cfg: dict) -> None:
@@ -724,7 +757,7 @@ def _sondar_pipeline(f: FonteLeitura, cfg: dict) -> None:
     try:
         f.frame_inicial = f.provider()
     except Exception as e:
-        log.warning("%s: provider do pipeline falhou (%s) — usando conexão direta",
+        log.warning("%s: provider do pipeline falhou (%s), usando conexão direta",
                     f.rotulo, e)
         f.frame_inicial = None
     if f.frame_inicial is None:
@@ -862,7 +895,7 @@ def _abrir_fontes(fontes: list[FonteLeitura], cfg: dict, espera_lock: float,
             if f.pipeline_sondado and not f.usar_pipeline:
                 f.ativa = False
                 f.erro = "pipeline sem frame novo dentro do orçamento do modo rápido"
-                log.info("%s: fora desta leitura rápida — %s", f.rotulo, f.erro)
+                log.info("%s: fora desta leitura rápida. %s", f.rotulo, f.erro)
 
     for f in fontes:
         if f.ativa and not f.usar_pipeline:
@@ -923,7 +956,7 @@ def _revisar_fontes(fontes: list[FonteLeitura], rodada: int) -> None:
             f.ativa = False
             f.motivo_inativa = (f"sem detecção em {rodada} rodadas "
                                 f"({f.tentativas} foto(s))")
-            log.info("%s: abandonada — %s", f.rotulo, f.motivo_inativa)
+            log.info("%s: abandonada. %s", f.rotulo, f.motivo_inativa)
 
 
 def ler_placa(**kw) -> dict:
@@ -1027,7 +1060,7 @@ def _ler_placa(
         _liberar_fontes(fontes)
         raise LeituraError(503, f"Nenhuma câmera do bico respondeu — {detalhe}")
     if avisos:
-        log.warning("ler-placa bico_id=%s: seguindo degradado — %s", bico_id, "; ".join(avisos))
+        log.warning("ler-placa bico_id=%s: seguindo degradado: %s", bico_id, "; ".join(avisos))
 
     candidatos: list[dict] = []
     # Quantos recortes o DETECTOR entregou ao longo do loop, mesmo os que o OCR recusou.
@@ -1096,7 +1129,21 @@ def _ler_placa(
             # seria revisitada com o dobro do intervalo e o total de fotos cairia à toa.
             # Com uma fonte só, é exatamente o comportamento de sempre.
             intervalo = 0.15 if f.usar_pipeline else 0.5
-            if f.tentativas:
+            # Guarda em `ultimo_ts` e NÃO em `tentativas`: `tentativas` só incrementa
+            # quando um frame chega, então uma câmera que nunca publica (reconectando, ou
+            # frame velho demais) ficava em zero para sempre e a cadência nunca se
+            # aplicava a ela. Com DUAS fontes o `sleep(0.1)` de baixo também não pega (é
+            # guardado por `len(ativas) == 1`), e o laço girava livre: medido nesta
+            # máquina, com o `frame_ao_vivo` de verdade, 50 chamadas ao provider com uma
+            # câmera contra 2.070.246 com duas — um núcleo inteiro queimado, mais ~1,3
+            # milhão de linhas de WARNING (~120 MB) numa única leitura, que estoura a
+            # rotação de 40 MB e leva embora o rastro de qualquer queda.
+            #
+            # `ultimo_ts` é atualizado logo abaixo em TODA passada, com ou sem frame, então
+            # o dado da cadência já existia — só não estava sendo consultado. Na primeira
+            # visita a uma fonte ele é 0.0 e a espera é saltada, que é o comportamento
+            # desejado: a primeira foto sai na hora.
+            if f.ultimo_ts:
                 espera = intervalo - (time.time() - f.ultimo_ts)
                 if espera > 0:
                     time.sleep(espera)
@@ -1304,10 +1351,10 @@ def _ler_placa(
                 503,
                 f"Tempo esgotado ({timeout_seg:.0f}s) antes de analisar qualquer imagem. "
                 "Pode ter sido demora para conectar à câmera/pipeline, ou (se foi logo após "
-                "reiniciar o servidor) carga inicial de modelo — tente de novo. Caso "
+                "reiniciar o servidor) carga inicial de modelo. Tente de novo. Caso "
                 "persista, aumente `leitura_timeout_seg`.",
             )
-        raise LeituraError(503, "Câmera conectou mas não enviou frames — verifique a conexão")
+        raise LeituraError(503, "Câmera conectou mas não enviou frames. Verifique a conexão")
 
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     leituras_continuo = _leituras_do_continuo()
@@ -1358,8 +1405,13 @@ def _ler_placa(
                                   melhor["bbox"], melhor["placa"])
     else:
         frame_preview = _desenhar(frame_principal, fonte_nitida.roi)
-    cv2.imwrite(str(PREVIEW_DIR / f"{preview_nome}.jpg"), frame_preview,
-                [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    # ATÔMICO: a rota `/api/bicos/{id}/preview.jpg` serve este arquivo, de nome fixo,
+    # enquanto esta linha o reescreve. Com `cv2.imwrite` direto (trunca e depois escreve),
+    # dois operadores na tela de captura do mesmo bico — um disparando "Ler Placa", o outro
+    # com a tela aberta — davam 17.400 leituras de JPEG truncado contra 253 íntegras.
+    # (Auditoria 05/09/2026.)
+    arquivos.imwrite_atomico(PREVIEW_DIR / f"{preview_nome}.jpg", frame_preview, 80,
+                             tolerar_falha=True)
 
     # Preview POR CÂMERA: com duas, o operador precisa conferir o enquadramento das duas
     # de uma vez — inclusive (principalmente) o da que não achou nada, que é onde está o
@@ -1387,8 +1439,8 @@ def _ler_placa(
             img = _desenhar(melhor["frame"] if usa_bbox else f.frame_principal, f.roi,
                             melhor["bbox"] if usa_bbox else None,
                             melhor["placa"] if usa_bbox else None)
-            cv2.imwrite(str(caminho_preview_bico(bico_id, f.camera_id)), img,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            arquivos.imwrite_atomico(caminho_preview_bico(bico_id, f.camera_id), img, 80,
+                                     tolerar_falha=True)
 
     # Rota autenticada, não URL estática direta — ver o comentário de `PREVIEW_DIR`.
     # `bico_id` é None só em teoria (os dois chamadores de `ler_placa` sempre o passam,
@@ -1428,9 +1480,9 @@ def _ler_placa(
     if not candidatos:
         if bboxes_total:
             mensagem = (f"Placa localizada em {bboxes_total} recorte(s), mas o texto não foi "
-                        "reconhecido — placa pequena, borrada ou muito inclinada para o OCR")
+                        "reconhecido: placa pequena, borrada ou muito inclinada para o OCR")
         else:
-            mensagem = ("Nenhuma placa detectada nos frames — verifique o enquadramento da "
+            mensagem = ("Nenhuma placa detectada nos frames. Verifique o enquadramento da "
                         "área do bico e se o veículo aparece dentro dela")
         # O desfecho SEM placa também vai para o log, pela mesma razão do ramo de sucesso.
         # Sem esta linha ele não deixava rastro NENHUM: o `leitura-parcial` do laço só
@@ -1524,8 +1576,8 @@ def _ler_placa(
     if cfg.get("salvar_frame_deteccao", "sim").lower() in ("sim", "true", "1"):
         ts_f = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         nome_f = f"{ts_f}_{melhor['placa']}_frame.jpg"
-        cv2.imwrite(str(SNAPSHOT_DIR / nome_f), frame_preview,
-                    [int(cv2.IMWRITE_JPEG_QUALITY), int(cfg.get("snapshot_qualidade", "85"))])
+        arquivos.imwrite_atomico(SNAPSHOT_DIR / nome_f, frame_preview,
+                                 int(cfg.get("snapshot_qualidade", "85")))
         frame_rel = f"/static/snapshots/{nome_f}"
 
     # ── Snapshot do crop ──────────────────────────────────────────────────────
@@ -1533,8 +1585,8 @@ def _ler_placa(
     if cfg.get("salvar_snapshot", "").lower() in ("sim", "true", "1"):
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         nome = f"{ts}_{melhor['placa']}.jpg"
-        cv2.imwrite(str(SNAPSHOT_DIR / nome), melhor["crop"],
-                    [int(cv2.IMWRITE_JPEG_QUALITY), int(cfg.get("snapshot_qualidade", "85"))])
+        arquivos.imwrite_atomico(SNAPSHOT_DIR / nome, melhor["crop"],
+                                 int(cfg.get("snapshot_qualidade", "85")))
         snapshot_rel = f"/static/snapshots/{nome}"
 
     # ── Persiste ──────────────────────────────────────────────────────────────

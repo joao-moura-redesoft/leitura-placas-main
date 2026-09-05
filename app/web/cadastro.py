@@ -375,11 +375,14 @@ def empresas_remover(id_: int, request: Request):
     # disputa. (`empresas.id` é AUTOINCREMENT, então o id não é reaproveitado e o mock
     # não passaria a mirar outro posto — mas config morta é armadilha para a próxima
     # pessoa que ler o arquivo.)
-    cfg = config.carregar()
-    if (cfg.get("feira_empresa_id") or "").strip() == str(id_):
-        cfg["feira_empresa_id"] = ""
-        config.salvar(cfg)
-        log.warning("Posto de demonstracao %s removido — modo feira DESARMADO.", id_)
+    # A checagem fica DENTRO do `alterar()`: ler fora do lock e gravar depois desarmaria o
+    # modo feira que outra aba tivesse acabado de apontar para OUTRO posto.
+    with config.alterar() as cfg:
+        desarmou = (cfg.get("feira_empresa_id") or "").strip() == str(id_)
+        if desarmou:
+            cfg["feira_empresa_id"] = ""
+    if desarmou:
+        log.warning("Posto de demonstracao %s removido, modo feira DESARMADO.", id_)
 
     quem_id, quem_nome = deps.quem_pede(request)
     banco.auditoria_registrar(
@@ -522,7 +525,7 @@ def _validar_bico(payload: dict) -> None:
     camera2_id = int(bruto2)
     if camera2_id == camera_id:
         raise HTTPException(
-            400, "A segunda câmera precisa ser diferente da primeira — o ganho vem de "
+            400, "A segunda câmera precisa ser diferente da primeira: o ganho vem de "
                  "enxergar o veículo por outro ângulo.")
     _validar_camera_do_posto(camera2_id, automacao)
 
@@ -533,7 +536,7 @@ def _validar_bico(payload: dict) -> None:
     # a única coisa que o diagnóstico de duas fontes existe para dizer.
     if payload["papel_camera"] == payload["papel_camera2"]:
         raise HTTPException(
-            400, "As duas câmeras não podem enxergar o mesmo lado do veículo — uma é a "
+            400, "As duas câmeras não podem enxergar o mesmo lado do veículo: uma é a "
                  "traseira e a outra a frente. É por esse nome que o diagnóstico da "
                  "leitura diz qual das duas precisa de ajuste.")
 
@@ -648,7 +651,7 @@ def bicos_ler_placa_teste(id_: int, request: Request, rapido: bool = False):
     ip = request.client.host if request.client else "?"
     if not limitador.permitido("ler_placa_teste", ip, _LIMITE_LER_PLACA_MIN, 60):
         raise HTTPException(
-            429, "Muitas leituras de teste seguidas — aguarde um instante.")
+            429, "Muitas leituras de teste seguidas. Aguarde um instante.")
 
     bico, motivo = banco.bico_verificar_ativo(id_)
     if bico is None:
@@ -831,7 +834,7 @@ def feira_criar_posto(payload: dict, request: Request):
         # NÃO é erro: o cadastro está montado e o operador pode ajustar a câmera e
         # redesenhar a área depois. Falhar aqui obrigaria a refazer tudo por causa de um
         # cabo solto.
-        aviso_camera = ("a câmera não respondeu — o cadastro foi criado, mas confira o "
+        aviso_camera = ("a câmera não respondeu. O cadastro foi criado, mas confira o "
                         "índice/endereço em Câmeras e desenhe a área do bico")
 
     # O supervisor NÃO descobre câmera nova: ele só itera os pipelines já em execução.
@@ -847,8 +850,12 @@ def feira_criar_posto(payload: dict, request: Request):
 
     # ARMA o mock neste posto. Enquanto `feira_empresa_id` está vazio, `feira_ativo=sim`
     # não mocka nada (falha fechada) — ver app/visao/feira.py.
-    cfg["feira_empresa_id"] = str(empresa_id)
-    config.salvar(cfg)
+    #
+    # `alterar()` e não `salvar(cfg)`: o `cfg` acima foi lido no começo desta rota, que
+    # nesse meio-tempo criou posto/câmera/automação/bico. Gravar aquele snapshot apagaria
+    # qualquer config salva em outra aba nesse intervalo. (Auditoria 05/09/2026.)
+    with config.alterar() as c:
+        c["feira_empresa_id"] = str(empresa_id)
 
     quem_id, quem_nome = deps.quem_pede(request)
     banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome,
@@ -883,12 +890,11 @@ def feira_apontar_posto(payload: dict, request: Request):
     posto. São ações diferentes de propósito: apontar para outro posto, ou parar de
     mockar, não podem exigir destruir cadastro.
     """
-    cfg = config.carregar()
     bruto = payload.get("empresa_id")
 
     if bruto in (None, "", 0):
-        cfg["feira_empresa_id"] = ""
-        config.salvar(cfg)
+        with config.alterar() as cfg:
+            cfg["feira_empresa_id"] = ""
         quem_id, quem_nome = deps.quem_pede(request)
         banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome,
                                   acao="feira_desarmada", alvo_tipo="config")
@@ -899,13 +905,13 @@ def feira_apontar_posto(payload: dict, request: Request):
     if not emp:
         raise HTTPException(404, "Posto não encontrado")
 
-    cfg["feira_empresa_id"] = str(empresa_id)
-    config.salvar(cfg)
+    with config.alterar() as cfg:
+        cfg["feira_empresa_id"] = str(empresa_id)
     quem_id, quem_nome = deps.quem_pede(request)
     banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome,
                               acao="feira_posto_apontado", alvo_tipo="empresa",
                               alvo_id=empresa_id, detalhe=f"nome={emp['nome']}")
-    log.warning("MODO FEIRA apontado para o posto %s (%s) — leituras dele passam a ser "
+    log.warning("MODO FEIRA apontado para o posto %s (%s): leituras dele passam a ser "
                 "mockadas quando a placa casar.", empresa_id, emp["nome"])
     return {"armado": True, "empresa_id": empresa_id, "nome": emp["nome"],
             "cnpj": emp["cnpj"]}
@@ -934,8 +940,8 @@ def feira_remover_posto(request: Request):
             log.warning("Falha ao parar câmera %s do posto de demonstração: %s", cam["id"], e)
 
     removido = banco.empresas_remover(empresa_id)
-    cfg["feira_empresa_id"] = ""
-    config.salvar(cfg)
+    with config.alterar() as c:
+        c["feira_empresa_id"] = ""
 
     quem_id, quem_nome = deps.quem_pede(request)
     banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome,
@@ -998,6 +1004,49 @@ def feira_fichas_salvar(payload: dict, request: Request):
 _LIMITE_FEIRA_SCAN_MIN = 45
 
 
+def _veiculo_da_vitrine(resultado: dict, cfg: dict, *, forcado: bool) -> dict | None:
+    """O bloco `veiculo` do kiosk: ficha local do carrinho, ou a placa livre do visitante.
+
+    Ordem importa. `bloco_de_leitura` primeiro porque leitura MOCKADA nunca pode chegar à
+    apiplacas: consultar a placa do carrinho gastaria crédito para receber dados de outro
+    veículo (ou nada) e servi-los como se fossem do carro do estande.
+
+    Daí para baixo é o MODO LIVRE (`feira_livre`), em que o visitante aponta para o
+    próprio carro. Duas travas que se somam, e cada uma sozinha já basta para devolver
+    None:
+
+    - `forcado`: só o botão "Forçar leitura" pode gastar. O loop hands-free varre a cada
+      ~1,6s sem ninguém pedir, e a câmera do estande enxerga o celular na mão de quem
+      passa — ali cada leitura acidental viraria crédito queimado e dado de veículo de
+      terceiro numa TV. O botão tem um humano e um cliente atrás dele.
+    - `_pode_gastar`: a mesma regra do roteador (modo `automatico` + consenso). Reusada e
+      não reescrita de propósito: duas cópias da regra que gasta dinheiro do cliente
+      divergem, e a daqui divergiria em silêncio no meio de um evento.
+
+    Sem internet/token (`apiplacas_ativo=nao`, o estado da máquina de feira) `consultar`
+    nem é chamada e a vitrine mostra só a placa — que é o comportamento pedido para o
+    cenário offline.
+    """
+    demo = feira_fichas.bloco_de_leitura(resultado)
+    if demo is not None:
+        return demo
+    if not feira.livre(cfg) or not resultado.get("placa"):
+        return None
+    if not (forcado and config.get_bool(cfg, "feira_livre_consulta")):
+        return None
+    if not config.get_bool(cfg, "apiplacas_ativo"):
+        return None
+    try:
+        return apiplacas.consultar(
+            resultado["placa"], cfg,
+            permitir_gasto=leitura_rotas._pode_gastar(resultado, cfg))
+    except Exception as e:
+        # A vitrine NUNCA pode quebrar por causa da API externa — no estande a falha
+        # acontece na frente do cliente. Mesmo espírito de `bloco_veiculo`.
+        log.error("MODO LIVRE: falha ao consultar %s: %s", resultado.get("placa"), e)
+        return None
+
+
 @router.post("/feira/scan")
 def feira_scan(request: Request, forcar: bool = False):
     """Uma leitura do bico de demonstração para o kiosk `/feira` (loop hands-free).
@@ -1007,19 +1056,26 @@ def feira_scan(request: Request, forcar: bool = False):
     demonstração, fica fora da métrica de produção. Devolve só o que a vitrine precisa,
     incluindo a ficha local da placa reconhecida.
 
-    `forcar=1` é o botão "Forçar leitura" do kiosk: usa o perfil COMPLETO (mais fotos, mais
-    robusto) em vez do rápido do loop automático, para o caso do carrinho estar num ângulo
-    que o rápido não fecha. O loop hands-free continua usando o rápido (forcar=0).
+    `forcar=1` é o botão "Forçar leitura" do kiosk: usa o perfil de `feira_forcar_perfil`
+    (default COMPLETO — mais fotos, mais robusto) em vez do rápido do loop automático, para
+    o caso do carrinho estar num ângulo que o rápido não fecha. O loop hands-free continua
+    usando o rápido sempre (forcar=0), independente daquela config.
     """
     cfg = config.carregar()
-    if not feira.ativo(cfg):
+    # `ou livre`: `ativo` exige lista de placas de demonstração, e o modo livre existe
+    # justamente para o estande que não cadastrou carrinho nenhum. Sem este `ou`, ligar
+    # `feira_livre` sozinho deixaria a vitrine respondendo 409 a cada scan.
+    if not (feira.ativo(cfg) or feira.livre(cfg)):
         raise HTTPException(409, "Modo feira não está armado")
 
     ip = request.client.host if request.client else "?"
     if not limitador.permitido("feira_scan", ip, _LIMITE_FEIRA_SCAN_MIN, 60):
-        raise HTTPException(429, "Muitas leituras seguidas — aguarde um instante.")
+        raise HTTPException(429, "Muitas leituras seguidas. Aguarde um instante.")
 
-    perfil = leitura.PERFIL_COMPLETO if forcar else leitura.PERFIL_RAPIDO
+    # O botão respeita `feira_forcar_perfil` (default "completo"); o loop hands-free usa
+    # sempre o rápido — ver `leitura.perfil_forcar_feira` sobre por que só o botão é
+    # configurável.
+    perfil = leitura.perfil_forcar_feira(cfg) if forcar else leitura.PERFIL_RAPIDO
 
     empresa_id = feira.empresa_demo(cfg)
     bico = None
@@ -1057,11 +1113,19 @@ def feira_scan(request: Request, forcar: bool = False):
         # SEMPRE (este endpoint pede `origem="feira"` para a leitura ficar fora de
         # 'producao') — a placa do celular de um visitante seria saudada como carrinho.
         "mockada": bool(resultado.get("mockada")),
+        # Se a vitrine pode revelar esta leitura mesmo sem ficha. Vem do SERVIDOR e não de
+        # `FICHAS` no template: o kiosk fica aberto horas num estande, e o operador que
+        # liga `feira_livre` no meio do evento não vai recarregar a tela — sem isto o
+        # front decidiria por um valor congelado no carregamento da página.
+        "livre": feira.livre(cfg),
         "confirmada": resultado.get("confirmada"),
         "tipo_veiculo": resultado.get("tipo_veiculo"),
         "ficha": feira_fichas.ficha_de(placa) if placa else None,
         # O MESMO bloco que o GET do roteador devolve. O kiosk mostra a `ficha` (rótulos
         # humanos, `apelido`/`mensagem`); isto aqui existe para a demo poder exibir, na
         # própria tela, o JSON que o posto vai receber — que é o que se está vendendo.
-        "veiculo": feira_fichas.bloco_de_leitura(resultado),
+        #
+        # No modo livre é também o que traz marca/modelo/combustível do carro do visitante
+        # (`forcar=1` + internet). Ver `_veiculo_da_vitrine`.
+        "veiculo": _veiculo_da_vitrine(resultado, cfg, forcado=forcar),
     }

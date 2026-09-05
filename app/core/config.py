@@ -1,9 +1,21 @@
 """Leitura/gravação do config.txt em formato `chave = valor`."""
 from __future__ import annotations
 import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
+from app.core import arquivos
+from app.core.arquivos import escrever_texto_atomico
+
 CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "config.txt"))
+
+# Serializa o ciclo carregar→modificar→salvar de quem edita o config (ver `alterar`).
+# NÃO é o que protege o leitor: leitor nenhum conhece este lock — `carregar()` é chamado
+# do middleware de autenticação, do supervisor e das threads de câmera. Quem protege o
+# leitor é a escrita atômica em `salvar()`. Este lock resolve o OUTRO problema, a perda de
+# escrita entre dois admins salvando ao mesmo tempo. (Auditoria 05/09/2026.)
+_lock_escrita = threading.RLock()
 
 PADROES: dict[str, str] = {
     "porta": "14000",
@@ -220,6 +232,29 @@ PADROES: dict[str, str] = {
     # sim = detecta placas continuamente no stream
     # nao = stream ativo mas detecção só pelo botão "Ler Placa"
     "deteccao_automatica": "sim",
+    # Recorta o quadro pela ÁREA DOS BICOS (a união dos ROIs desta câmera) antes de
+    # detectar, no monitoramento contínuo.
+    #
+    # O ROI já existe por bico e a leitura reativa o respeita (`leitura._detectar`); o
+    # contínuo NÃO. `Pipeline._processar_frame` tem o recorte escrito, mas lê `cfg["roi"]`,
+    # que `_cfg_para_camera` só preenche a partir de uma coluna `roi` em `cameras` — coluna
+    # que deixou de existir quando bomba/lado/roi passaram para `bicos` (ver
+    # `app/core/banco/_esquema.py`). O ramo está dormente desde então: o detector do
+    # contínuo sempre olhou o quadro INTEIRO, área desenhada ou não.
+    #
+    # O que isso custa em campo (log de 04/09/2026, cam1): a palavra ENTRADA pintada na
+    # cena está fora de qualquer bico, virou track fixo e rodou o ensemble em recortes de
+    # 70x17 px indefinidamente. Dentro da área dos bicos ela não existe — e o detector
+    # ainda passa a rodar num quadro menor, o que é mais barato, não mais caro.
+    #
+    # DESLIGADO por padrão: uma instalação que só atualizou o código não muda o que o
+    # detector vê. Ligue quando os bicos desta câmera tiverem área desenhada — o valor é
+    # lido na SUBIDA do pipeline, então reinicie a câmera depois de desenhar.
+    #
+    # FAIL-OPEN por construção (ver `pipeline._roi_dos_bicos`): se qualquer bico da câmera
+    # estiver sem área, o recorte não é aplicado. Meio configurado cegaria justamente o
+    # bico que falta desenhar, e isso é pior do que olhar o quadro inteiro.
+    "roi_bicos_no_continuo": "nao",
     "salvar_snapshot": "sim",
     # Guarda também o QUADRO INTEIRO de cada detecção (com a marcação da placa), além do
     # recorte. É o que permite conferir depois se pegou o veículo certo e se a área do
@@ -415,6 +450,25 @@ PADROES: dict[str, str] = {
     # IDs de track — cada um vota do zero e pode emitir uma placa levemente diferente
     # pro mesmo carro, duplicando a linha no histórico.
     "tracker_paciencia_frames": "40",
+    # Tentativas de OCR que um track pode gastar sem produzir UMA leitura válida antes de
+    # o OCR dele ser suspenso (0 = sem teto).
+    #
+    # Existe contra TEXTO DE CENA, não contra veículo difícil, e a condição "nenhuma
+    # leitura válida" é o que separa os dois: a primeira leitura que passa pelo validador
+    # desarma o teto naquele track para sempre, então carro parado na bomba que já leu uma
+    # vez nunca é abandonado por ficar ocluso.
+    #
+    # O caso medido (log de 04/09/2026, cam1): a palavra ENTRADA pintada na cena virou o
+    # trk16, caixa fixa de 70x17 px que o tracker mantém indefinidamente, e rodou o
+    # ensemble com os três modelos convergindo em `ENTRR6DA`/`ENNTFADA`/`ENTTRADA` hora
+    # após hora. Nada disso chega ao banco (`MAX_CORRECOES=2` do validador barra todas),
+    # então o prejuízo é CPU e log — mas é CPU e log sem teto nenhum.
+    #
+    # 60 e não 10: um track que não valida é reexaminado a cada frame de detecção (ver
+    # `_EstadoTrack.contar_tentativa`), então 60 tentativas são ~15-25 s de veículo em
+    # quadro sem uma única leitura. Baixar para 10 arriscaria abandonar placa suja/molhada
+    # que ainda ia sair; subir só atrasa a suspensão do letreiro.
+    "tracker_max_ocr_sem_leitura": "60",
     # ── Ajuste adaptativo de imagem (brilho/contraste/saturação por ambiente) ──
     # Analisa cada frame, classifica a cena (noite/baixa_luz/nublado/sol_forte/normal)
     # e corrige a imagem antes da detecção — melhora a captura em condições ruins.
@@ -468,6 +522,45 @@ PADROES: dict[str, str] = {
     # cumpriria o que promete. 2 em 7 caracteres continua MUITO longe de qualquer placa
     # de visitante — é por isso que o celular do cliente passa intacto.
     "feira_tolerancia": "2",
+    # MODO LIVRE: a vitrine também revela placa NÃO cadastrada — o visitante aponta para o
+    # carro dele e vê a própria placa na tela. Sem isto (o default) só o carrinho de
+    # demonstração aparece, e qualquer outra leitura vira "Nenhuma placa reconhecida".
+    #
+    # Default "nao" porque ligado a tela passa a exibir placa de terceiro: a câmera do
+    # estande enxerga o celular na mão de quem passa, e o OCR lê a placa que estiver na
+    # tela dele. Isso é aceitável quando alguém ARMOU a demo para isso, e não como
+    # comportamento de fábrica.
+    #
+    # Só afeta EXIBIÇÃO. Quem decide gasto é `feira_livre_consulta` abaixo.
+    "feira_livre": "nao",
+    # Se a placa livre pode custar uma consulta paga à apiplacas, e só no botão "Forçar
+    # leitura" (`forcar=1`) — nunca no loop hands-free.
+    #
+    # O loop varre a cada ~1,6s sem ninguém pedir: ali cada celular de visitante lido por
+    # acaso viraria crédito queimado e dado de um veículo real de terceiro numa TV de
+    # estande. O botão é apertado por um humano com o cliente ao lado, que é exatamente a
+    # intenção deliberada que uma consulta paga exige — a mesma régua do botão do Histórico.
+    #
+    # Depende de `feira_livre`: sem exibição não há o que consultar. E os freios normais
+    # do módulo continuam valendo (tetos, cooldown, disjuntor), inclusive
+    # `apiplacas_ativo=nao`, que é o estado da máquina de feira sem internet — aí a placa
+    # aparece sozinha, que é o comportamento pedido para o cenário offline.
+    "feira_livre_consulta": "sim",
+    # Perfil de captura do botão "Forçar leitura" (↻) da vitrine. O loop hands-free usa
+    # SEMPRE o rápido e não é afetado por isto.
+    #
+    #   completo -> leitura_max_tentativas (12) fotos, orçamento leitura_timeout_seg (28s)
+    #   rapido   -> rapido_max_tentativas (2) fotos, orçamento rapido_timeout_seg (5s)
+    #
+    # Default "completo": o botão é o socorro de quando o loop rápido JÁ não fechou, e
+    # repetir o mesmo perfil que acabou de falhar não acrescenta nada — mais fotos é
+    # justamente o que muda o desfecho num ângulo ruim.
+    #
+    # Existe configurável porque o custo é tempo na frente do público: num estande com fila
+    # e câmera bem enquadrada, 28s de espera pesam mais que a acurácia extra, e aí o
+    # operador prefere um botão que responde em ~5s. Vale a mesma régua do resto do modo:
+    # valor ilegível cai no default em vez de inventar um perfil.
+    "feira_forcar_perfil": "completo",
     # FASE 2 (declarada, ainda inerte): marcadores ArUco colados nos carrinhos, no formato
     # "id:PLACA,id:PLACA". Resolve o caso em que a mini-placa é pequena demais para o OCR
     # devolver QUALQUER string — aí não há o que casar por distância de edição.
@@ -486,7 +579,10 @@ PADROES: dict[str, str] = {
 def carregar() -> dict[str, str]:
     cfg = dict(PADROES)
     if CONFIG_PATH.exists():
-        for linha in CONFIG_PATH.read_text(encoding="utf-8").splitlines():
+        # `ler_texto_com_retry` e não `read_text`: durante o `os.replace` de `salvar()`
+        # o Windows recusa o open com PermissionError, e esta função roda no middleware de
+        # autenticação — levantar aqui derrubaria a chamada do posto. Ver o docstring dela.
+        for linha in arquivos.ler_texto_com_retry(CONFIG_PATH).splitlines():
             linha = linha.strip()
             if not linha or linha.startswith("#") or "=" not in linha:
                 continue
@@ -500,8 +596,46 @@ def carregar() -> dict[str, str]:
 
 
 def salvar(cfg: dict[str, str]) -> None:
+    """Grava o config inteiro. ATÔMICO — ver `app/core/arquivos.py`.
+
+    Antes era `write_text`, que trunca e só então escreve. `carregar()` roda no middleware
+    de autenticação a cada request com `X-API-Key` (`app/servidor.py`), e medindo um admin
+    salvando enquanto os roteadores chamavam, 185 de 1155 leituras pegaram o arquivo pela
+    metade: `api_key` sumia do dict e a chamada VÁLIDA de `/api/leitura` do posto era
+    recusada com 401 — abastecimento sem placa, sem erro nenhum no log. As outras threads
+    que leem config (supervisor, retenção, pipeline) viam os PADROES no lugar do valor real
+    pela mesma janela. (Auditoria 05/09/2026.)
+
+    Quem edita config deve preferir `alterar()`, que também fecha a janela de PERDA de
+    escrita entre dois admins salvando ao mesmo tempo.
+    """
     linhas = [f"{k} = {v}" for k, v in cfg.items()]
-    CONFIG_PATH.write_text("\n".join(linhas) + "\n", encoding="utf-8")
+    with _lock_escrita:
+        escrever_texto_atomico(CONFIG_PATH, "\n".join(linhas) + "\n")
+
+
+@contextmanager
+def alterar():
+    """Ciclo carregar→modificar→salvar sob lock, para duas edições não se apagarem.
+
+    Sem isto o padrão `cfg = carregar(); cfg[k] = v; salvar(cfg)` perde escrita: dois
+    admins (ou duas abas) carregam a tela, os dois salvam, e o segundo grava por cima do
+    snapshot que leu ANTES do primeiro — a tela do segundo mostra sucesso e o valor do
+    primeiro não está mais lá. Medido com PC A gravando `intelbras_senha` e PC B gravando
+    `api_key` ao mesmo tempo: sobrava um dos dois. (Auditoria 05/09/2026.)
+
+        with config.alterar() as cfg:
+            cfg["feira_empresa_id"] = ""
+
+    O `salvar` acontece na saída do bloco, ainda sob o lock. Levantar exceção dentro do
+    bloco NÃO grava nada — o que é o certo para uma validação que falhou no meio.
+
+    RLock: `salvar()` pega o mesmo lock, e é chamado de dentro daqui.
+    """
+    with _lock_escrita:
+        cfg = carregar()
+        yield cfg
+        salvar(cfg)
 
 
 def get_int(cfg: dict[str, str], chave: str) -> int:

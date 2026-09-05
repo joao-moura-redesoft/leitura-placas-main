@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Histórico — ALPR{% endblock %}
+{% block title %}Histórico | ALPR{% endblock %}
 {% block conteudo %}
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
   <h1 style="margin:0">Histórico de Leituras</h1>
@@ -122,7 +122,7 @@ function atualizarBicos() {
   const sel = document.getElementById('filtro-bico');
   const atual = sel.value;
   sel.innerHTML = '<option value="">Todos</option>' +
-    lista.map(b => `<option value="${b.id}">${esc(b.codigo)}${b.nome ? ' — ' + esc(b.nome) : ''}</option>`).join('');
+    lista.map(b => `<option value="${b.id}">${esc(b.codigo)}${b.nome ? ' (' + esc(b.nome) : ''})</option>`).join('');
   if (lista.some(b => String(b.id) === atual)) sel.value = atual;
 }
 
@@ -146,13 +146,13 @@ function imagens(d, i) {
   const partes = [];
   if (d.snapshot) {
     partes.push(`<button type="button" class="thumb" style="margin-right:6px"
-        title="Recorte lido pelo OCR — clique para ampliar" onclick="abrirLeitura(${i}, 0)">
+        title="Recorte lido pelo OCR. Clique para ampliar" onclick="abrirLeitura(${i}, 0)">
         <img src="${esc(d.snapshot)}" alt="Ampliar o recorte da placa ${esc(d.placa)}"
              loading="lazy" style="height:26px"></button>`);
   }
   if (d.frame) {
     partes.push(`<button type="button" class="thumb"
-        title="Quadro inteiro da câmera — clique para ampliar"
+        title="Quadro inteiro da câmera. Clique para ampliar"
         onclick="abrirLeitura(${i}, ${d.snapshot ? 1 : 0})">
         <img src="${esc(d.frame)}" alt="Ampliar o quadro da câmera da leitura ${esc(d.placa)}"
              loading="lazy" style="height:34px"></button>`);
@@ -250,7 +250,7 @@ async function carregar() {
     const conferir = d.confirmada === 0
       ? ` <span class="badge" style="background:#ffedd5;color:#c2410c" title="Consenso insuficiente (acordo ${
           d.acordo != null ? Math.round(d.acordo * 100) + '%' : '?'
-        }) — confira a imagem antes de cobrar">a conferir</span>`
+        }). Confira a imagem antes de cobrar">a conferir</span>`
       : '';
     // Tipo ESTIMADO pelo detector de veículo (a classe do 1º estágio da detecção), não
     // cadastro do veículo — por isso o tracejado e o tooltip. A CÉLULA continua só
@@ -263,9 +263,9 @@ async function carregar() {
     const MOTIVOS_TIPO_NULO = {
       'sem-veiculo': 'nenhum veículo detectado no quadro',
       'classe-nao-mapeada': 'veículo detectado, mas de um tipo não mapeado',
-      'tiles': 'placa recuperada por varredura em janelas — não roda o estágio de veículo',
+      'tiles': 'placa recuperada por varredura em janelas, sem rodar o estágio de veículo',
       'sem-2-estagios': 'detecção em 2 estágios desligada nesta câmera',
-      'veiculo-ambiguo': 'a placa caiu dentro de dois veículos de tipos diferentes — '
+      'veiculo-ambiguo': 'a placa caiu dentro de dois veículos de tipos diferentes, '
                        + 'sem resposta única',
       'track-sem-deteccao': 'veículo rastreado sem detecção nova neste quadro (oclusão)',
     };
@@ -273,7 +273,7 @@ async function carregar() {
     if (d.tipo_veiculo) {
       const nomeClasse = NOMES_COCO_VEICULO[d.veiculo_classe] || 'veículo';
       const conf = d.veiculo_conf != null ? `, confiança ${Math.round(d.veiculo_conf * 100)}%` : '';
-      tituloVeiculo = `Estimado pelo detector de veículo: ${nomeClasse}${conf} — não é cadastro do veículo`;
+      tituloVeiculo = `Estimado pelo detector de veículo: ${nomeClasse}${conf}. Não é cadastro do veículo`;
     } else {
       const fonteBase = (d.tipo_veiculo_fonte || '').replace(/^replay:/, '');
       const motivo = MOTIVOS_TIPO_NULO[fonteBase] || 'leitura anterior a este campo';
@@ -315,7 +315,7 @@ function celulaVeiculo(placa, v) {
     const titulo = `${detalhe || 'sem detalhes'} · consultado em `
       + (v.consultado_em ? new Date(v.consultado_em).toLocaleDateString('pt-BR') : '?');
     return `<span title="${esc(titulo)}" style="border-bottom:1px dotted #94a3b8;cursor:help">${
-      esc(v.combustivel || '— não informado')}</span>`;
+      esc(v.combustivel || 'não informado')}</span>`;
   }
   if (v && v.consulta === 'inexistente') {
     // Consultada E sem registro é diferente de nunca consultada: oferecer "consultar"
@@ -420,7 +420,7 @@ async function consultarLote() {
   btn.dataset.rodando = '0';
   btn.textContent = 'Consultar placas sem dados';
   status.textContent = _loteCancelar
-    ? `cancelado — ${feitas} consultada(s), o restante não foi cobrado.`
+    ? `cancelado: ${feitas} consultada(s), o restante não foi cobrado.`
     : `${feitas} placa(s) consultada(s)` + (falhas ? `, ${falhas} falhou(ram)` : '') + '.';
 }
 

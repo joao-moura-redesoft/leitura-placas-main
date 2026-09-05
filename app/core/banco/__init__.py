@@ -31,6 +31,7 @@ from ._deteccoes import (
     contagem_com_imagem,
     contar_deteccoes_placa,
     deteccoes_e_chamadas_antigas,
+    empresa_da_imagem,
     imagens_excedentes,
     listar_deteccoes,
     listas_buscar,
@@ -97,6 +98,7 @@ from ._cadastro import (
 )
 from ._chamadas import chamadas_listar, chamadas_resumo, registrar_chamada
 from ._acesso import (
+    UltimoAdminError,
     buscar_usuario_email,
     buscar_usuario_id,
     contar_usuarios,

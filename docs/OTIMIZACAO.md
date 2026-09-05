@@ -1,13 +1,13 @@
 # Otimização do Pipeline ALPR
 
-Documento vivo — registra gargalos identificados, impacto estimado e estratégias de melhoria.
+Documento vivo: registra gargalos identificados, impacto estimado e estratégias de melhoria.
 Atualizar sempre que um gargalo for resolvido ou um novo for descoberto.
 
-> ⚠️ Escrito para o modo contínuo/single-camera (pipeline por câmera, seções 2.1–2.10
-> abaixo) — ainda válido tecnicamente (esse modo continua existindo, opcional). O modo
+> ⚠️ Escrito para o modo contínuo/single-camera (pipeline por câmera, seções 2.1-2.10
+> abaixo), ainda válido tecnicamente (esse modo continua existindo, opcional). O modo
 > alvo hoje é a leitura REATIVA multi-tenant (`GET /api/leitura`), cujo gargalo de
 > capacidade é outro (lock global de detector/OCR sob concorrência entre clientes, não
-> CPU do loop contínuo) — ver [ARQUITETURA.md §20](ARQUITETURA.md#20-capacidade-e-escala-multi-tenant).
+> CPU do loop contínuo). Ver [ARQUITETURA.md §20](ARQUITETURA.md#20-capacidade-e-escala-multi-tenant).
 
 ---
 
@@ -25,10 +25,10 @@ Atualizar sempre que um gargalo for resolvido ou um novo for descoberto.
 
 | Métrica                 | Antes (v0)          | Hoje (v2.1)            | Alvo             |
 |-------------------------|---------------------|------------------------|------------------|
-| CPU (Python, 1 câmera)  | ~60% (spin puro)    | ~8–15%                 | < 10%            |
+| CPU (Python, 1 câmera)  | ~60% (spin puro)    | ~8-15%                 | < 10%            |
 | RAM total               | ~1,1 GB (EasyOCR)   | ~1,1 GB (EasyOCR)      | < 300 MB         |
-| Latência OCR/frame      | 100–900 ms          | 100–900 ms             | < 50 ms          |
-| Tempo p/ emitir placa   | 1–3 s               | ~0,6–1 s               | < 0,5 s          |
+| Latência OCR/frame      | 100-900 ms          | 100-900 ms             | < 50 ms          |
+| Tempo p/ emitir placa   | 1-3 s               | ~0,6-1 s               | < 0,5 s          |
 | Câmeras simultâneas     | 2 testadas          | 2 testadas             | 6 (3 bombas × 2) |
 | Precisão OCR Mercosul   | ~40%                | ~92,9%                 | > 95%            |
 | Chamadas OCR/placa      | 1 por frame YOLO    | **-80 a -99% (tracker)** | mín. possível  |
@@ -42,25 +42,25 @@ Ambiente: Windows 11, Python 3.13, CPU (sem GPU), câmeras Intelbras PoE via RTS
 
 ## 2. Gargalos identificados
 
-### 2.1 OCR Engine — maior consumidor de RAM e latência
+### 2.1 OCR Engine: maior consumidor de RAM e latência
 
 **Arquivo:** `ocr.py` / `config.py`
 
-O engine padrão `tesseract` faz 1–3 chamadas de processo externo por crop detectado:
+O engine padrão `tesseract` faz 1-3 chamadas de processo externo por crop detectado:
 ```python
 for psm in [self.psm, 6, 11]:   # até 3 chamadas de processo se PSM 7 falhar
     texto, conf = self._tentar_psm(pytesseract, img, psm)
 ```
-Cada chamada `pytesseract` faz `subprocess.run(tesseract ...)` — overhead de fork + I/O.
+Cada chamada `pytesseract` faz `subprocess.run(tesseract ...)`, com overhead de fork + I/O.
 
-Se o engine configurado for `easyocr`, carrega PyTorch completo (~700–900 MB de RAM) e
+Se o engine configurado for `easyocr`, carrega PyTorch completo (~700-900 MB de RAM) e
 faz inferência de rede neural a cada crop (~500 ms em CPU sem GPU).
 
 **Impacto:** RAM (EasyOCR), latência (ambos), CPU (Tesseract subprocess).
 
 **Solução recomendada:** trocar para `fast_plate_ocr`
 - Motor ONNX dedicado a placas (sem PyTorch)
-- Latência: ~20–50 ms em CPU
+- Latência: ~20-50 ms em CPU
 - RAM: ~80 MB
 - Config: `ocr_engine = fast_plate_ocr`
 
@@ -74,8 +74,8 @@ Impacto estimado: RAM -700 MB | Latência OCR -200 ms/detecção
 
 **Arquivo:** `pipeline.py` → `_processar_frame`
 
-O OCR roda **dentro** do loop principal. Enquanto o Tesseract processa (100–900 ms), nenhum
-frame novo é registrado no estado. O tracker mitiga isso evitando 80–99% das chamadas, mas
+O OCR roda **dentro** do loop principal. Enquanto o Tesseract processa (100-900 ms), nenhum
+frame novo é registrado no estado. O tracker mitiga isso evitando 80-99% das chamadas, mas
 quando OCR ocorre, ainda bloqueia.
 
 **Solução:** mover OCR para uma thread worker separada com fila.
@@ -109,9 +109,9 @@ Impacto estimado: elimina bloqueio do loop | stream mais fluido
 Cada conexão `/stream/{id}.mjpg` executa `cv2.imencode` independentemente. Com 3 abas × 6
 câmeras × 15 fps = 270 JPEGs/segundo desnecessários.
 
-**Solução:** cache de JPEG por câmera — encoda uma vez, distribui para todos os leitores.
+**Solução:** cache de JPEG por câmera: encoda uma vez, distribui para todos os leitores.
 
-> Nota: o modo HLS (`streaming_modo=hls`) já resolve esse gargalo — O(cameras) encodes em vez
+> Nota: o modo HLS (`streaming_modo=hls`) já resolve esse gargalo, com O(cameras) encodes em vez
 > de O(cameras × viewers). Considere HLS se houver múltiplos viewers simultâneos.
 
 ```
@@ -129,10 +129,10 @@ há redimensionamento desnecessário.
 
 **Solução A:** redimensionar frame para 640px antes de passar ao detector.
 
-**Solução B (config):** usar sub-stream da câmera (subtype=1) — já configurado como padrão.
+**Solução B (config):** usar sub-stream da câmera (subtype=1), já configurado como padrão.
 
 ```
-Impacto estimado: YOLO -20–40% mais rápido
+Impacto estimado: YOLO -20-40% mais rápido
 ```
 
 ---
@@ -185,7 +185,7 @@ opts.inter_op_num_threads = 1
 ```
 
 ```
-Impacto estimado: YOLO -10–30% mais rápido sem custo
+Impacto estimado: YOLO -10-30% mais rápido sem custo
 ```
 
 ---
@@ -194,7 +194,7 @@ Impacto estimado: YOLO -10–30% mais rápido sem custo
 
 **Arquivo:** `pipeline.py` → `_loop`
 
-`time.sleep(30)` dentro do loop ignora `self._parar.is_set()` — pipeline demora 30s para
+`time.sleep(30)` dentro do loop ignora `self._parar.is_set()`, então o pipeline demora 30s para
 encerrar quando câmera está tentando reconectar.
 
 **Solução:**
@@ -215,7 +215,7 @@ Impacto estimado: shutdown passa de 30s para < 1s no pior caso
 
 **Arquivo:** `pipeline.py` → `_tentar_emitir`
 
-`cv2.imwrite` é chamado diretamente na thread do pipeline — I/O bloqueante.
+`cv2.imwrite` é chamado diretamente na thread do pipeline, e é I/O bloqueante.
 
 **Solução:** salvar via `ThreadPoolExecutor`.
 ```python
@@ -250,16 +250,16 @@ Ordenado por impacto × facilidade de implementação:
 
 | Prioridade | Item                                | Esforço | RAM     | CPU     | Latência |
 |:----------:|-------------------------------------|:-------:|:-------:|:-------:|:--------:|
-| 🔴 Alta    | 2.1 — Trocar para `fast_plate_ocr`  | Baixo   | -700 MB | -30%    | -200 ms  |
-| 🔴 Alta    | 2.7 — ONNX Runtime session options  | Baixo   | —       | -20%    | -20 ms   |
-| 🟡 Média   | 2.3 — Cache JPEG MJPEG / trocar HLS | Médio   | estável | -N×enc  | —        |
-| 🟡 Média   | 2.8 — Sleep interrompível p/ parar  | Baixo   | —       | —       | shutdown |
-| 🟡 Média   | 2.9 — Snapshot I/O assíncrono       | Baixo   | —       | stutter | —        |
-| 🟡 Média   | 2.4 — Frame menor para YOLO         | Médio   | -30%    | -25%    | -20 ms   |
-| 🟢 Baixa   | 2.2 — OCR assíncrono (thread queue) | Alto    | —       | distrib | stream   |
-| 🟢 Baixa   | 2.5 — Consenso tolerante a OCR      | Baixo   | —       | —       | emit     |
-| 🟢 Baixa   | 2.6 — Unificar lock de frame        | Baixo   | —       | micro   | —        |
-| 🟢 Baixa   | 2.10 — Remover frame_atual legado   | Baixo   | micro   | micro   | —        |
+| 🔴 Alta    | 2.1: Trocar para `fast_plate_ocr`   | Baixo   | -700 MB | -30%    | -200 ms  |
+| 🔴 Alta    | 2.7: ONNX Runtime session options   | Baixo   | —       | -20%    | -20 ms   |
+| 🟡 Média   | 2.3: Cache JPEG MJPEG / trocar HLS  | Médio   | estável | -N×enc  | —        |
+| 🟡 Média   | 2.8: Sleep interrompível p/ parar   | Baixo   | —       | —       | shutdown |
+| 🟡 Média   | 2.9: Snapshot I/O assíncrono        | Baixo   | —       | stutter | —        |
+| 🟡 Média   | 2.4: Frame menor para YOLO          | Médio   | -30%    | -25%    | -20 ms   |
+| 🟢 Baixa   | 2.2: OCR assíncrono (thread queue)  | Alto    | —       | distrib | stream   |
+| 🟢 Baixa   | 2.5: Consenso tolerante a OCR       | Baixo   | —       | —       | emit     |
+| 🟢 Baixa   | 2.6: Unificar lock de frame         | Baixo   | —       | micro   | —        |
+| 🟢 Baixa   | 2.10: Remover frame_atual legado    | Baixo   | micro   | micro   | —        |
 
 ---
 
@@ -269,20 +269,20 @@ Ordenado por impacto × facilidade de implementação:
 |------------|------------|-----------------------------------------------------------------|
 | 2026-05-18 | `e6610a2`  | `_focar_caracteres`: crop por projeção de pixels nos chars      |
 | 2026-05-18 | `c0af4c4`  | Header detection agnóstica a cor (transição escuro→branco)      |
-| 2026-05-18 | `6ea4f33`  | Sem expansão de bbox para cima — evita capturar header azul     |
+| 2026-05-18 | `6ea4f33`  | Sem expansão de bbox para cima, evita capturar header azul      |
 | 2026-05-18 | `5ce56f9`  | Proporções QR/BR corretas baseadas no template oficial          |
 | 2026-05-18 | `5360a46`  | Máscara QR/BR só quando header é detectado (não aplica em moto) |
 | 2026-05-18 | `ae67503`  | Validador com janela deslizante para texto > 7 chars            |
 | 2026-05-18 | `293b012`  | Remove QR code e marcador BR antes do OCR (Mercosul)            |
-| 2026-05-18 | `70db3ec`  | Falha rápida se porta em uso — evita pipeline duplo             |
-| 2026-05-18 | `8133ace`  | `_loop` com sleep por camera_fps — elimina spin de CPU          |
+| 2026-05-18 | `70db3ec`  | Falha rápida se porta em uso, evita pipeline duplo              |
+| 2026-05-18 | `8133ace`  | `_loop` com sleep por camera_fps, elimina spin de CPU           |
 | 2026-05-18 | `396df45`  | PSM 6 padrão, `frames_consenso` 5→3, retry sem duplicatas      |
-| 2026-05-20 | sessão     | Tracker IoU + wrapper ByteTrack — reduz OCR em 80–99%          |
-| 2026-05-20 | sessão     | WorkerSupervisor — reinicia pipelines mortos com backoff        |
-| 2026-05-20 | sessão     | HLS Streaming via FFmpeg — O(cameras) encodes para N viewers   |
-| 2026-05-20 | sessão     | ROI por câmera — elimina detecções fora da área de interesse   |
+| 2026-05-20 | sessão     | Tracker IoU + wrapper ByteTrack, reduz OCR em 80-99%           |
+| 2026-05-20 | sessão     | WorkerSupervisor, reinicia pipelines mortos com backoff         |
+| 2026-05-20 | sessão     | HLS Streaming via FFmpeg, O(cameras) encodes para N viewers    |
+| 2026-05-20 | sessão     | ROI por câmera, elimina detecções fora da área de interesse    |
 | 2026-05-20 | sessão     | Painel de saúde no dashboard (`/api/health`)                   |
-| 2026-07-20 | sessão     | Deskew rotacional — `minAreaRect` + `warpAffine` antes do OCR  |
+| 2026-07-20 | sessão     | Deskew rotacional: `minAreaRect` + `warpAffine` antes do OCR   |
 
 ---
 
@@ -292,11 +292,11 @@ Ordenado por impacto × facilidade de implementação:
 
 | Engine          | RAM       | Latência/crop | Precisão placa BR | Instalação  |
 |-----------------|-----------|---------------|-------------------|-------------|
-| Tesseract 5     | ~50 MB    | 80–300 ms     | Média (com PSM 6) | apt/winget  |
-| EasyOCR         | ~800 MB   | 400–1200 ms   | Alta              | pip         |
-| PaddleOCR       | ~400 MB   | 150–400 ms    | Alta              | pip         |
-| **fast_plate_ocr** | **~80 MB** | **20–50 ms** | **Alta (dedicado)** | **pip**  |
-| docTR           | ~600 MB   | 200–600 ms    | Média-alta        | pip         |
+| Tesseract 5     | ~50 MB    | 80-300 ms     | Média (com PSM 6) | apt/winget  |
+| EasyOCR         | ~800 MB   | 400-1200 ms   | Alta              | pip         |
+| PaddleOCR       | ~400 MB   | 150-400 ms    | Alta              | pip         |
+| **fast_plate_ocr** | **~80 MB** | **20-50 ms** | **Alta (dedicado)** | **pip**  |
+| docTR           | ~600 MB   | 200-600 ms    | Média-alta        | pip         |
 
 ### Benchmark do Tracker (IoU interno, simulação)
 
@@ -316,7 +316,7 @@ deteccao_fps_max   = 3                # 3 detecções/s suficiente para < 30 km/
 frames_consenso    = 3                # confirmação em 1s
 camera_fps         = 15               # sub-stream Intelbras
 intelbras_subtype  = 1                # sub-stream (menos CPU de decode)
-tracker_ativo      = sim              # reduz OCR em 80–99%
+tracker_ativo      = sim              # reduz OCR em 80-99%
 tracker_ocr_intervalo = 5             # OCR a cada 5 frames do mesmo veículo
 tracker_votos_emitir  = 2             # 2 votos concordantes para emitir
 ```

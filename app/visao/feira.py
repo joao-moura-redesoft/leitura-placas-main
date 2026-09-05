@@ -89,6 +89,27 @@ def ativo(cfg: dict) -> bool:
             and empresa_demo(cfg) is not None)
 
 
+def livre(cfg: dict) -> bool:
+    """Se a vitrine também revela placa NÃO cadastrada (o visitante aponta para o carro dele).
+
+    NÃO chama `ativo`: aquele exige `placas_demo` não vazia, e o modo livre é justamente o
+    caso sem carrinho nenhum cadastrado — um estande que só quer ler o carro do cliente
+    ficaria com o recurso morto por falta de uma lista que não usa.
+
+    O que ele herda de `ativo` é o que protege: `feira_ativo` ligado E posto de
+    demonstração definido. A segunda é a mesma trava fail-closed — sem
+    `feira_empresa_id` a vitrine não tem bico para ler, e ligar o interruptor num
+    servidor que atende clientes reais não pode, sozinho, transformar posto de verdade em
+    telão de demonstração.
+
+    Governa só EXIBIÇÃO. Se a placa livre pode custar consulta paga é
+    `feira_livre_consulta`, decidido em `app/web/cadastro.py`.
+    """
+    return ((cfg.get("feira_ativo") or "").strip().lower() in ("sim", "true", "1")
+            and (cfg.get("feira_livre") or "").strip().lower() in ("sim", "true", "1")
+            and empresa_demo(cfg) is not None)
+
+
 def _distancia(a: str, b: str) -> int:
     """Levenshtein. Cobre substituição, inserção e remoção.
 

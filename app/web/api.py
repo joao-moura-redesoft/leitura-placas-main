@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 
 from app.core import banco
 from app.integracoes import apiplacas
 from app.core import config
 from app.core import estado
 from app.core import rotulos
+from app.core.arquivos import ler_bytes_com_retry
 from app.operacao import retencao as ret_mod
 from app.operacao import supervisor as sv
 from app.visao import camera as camera_mod
@@ -115,7 +116,7 @@ def remover_deteccao(id_: int):
     # remoção manual de uma linha do histórico, sem essa janela de segurança.
     intocaveis = rotulos.protegidos()
     if intocaveis is None:
-        log.warning("Remoção da detecção %d: dataset ilegível — snapshots preservados", id_)
+        log.warning("Remoção da detecção %d: dataset ilegível, snapshots preservados", id_)
         apagaveis: list[str] = []
     else:
         apagaveis = [a for a in arquivos if Path(a).name not in intocaveis]
@@ -389,7 +390,7 @@ def _validar_camera(payload: dict) -> dict:
         raise HTTPException(400, "nome é obrigatório")
     empresa_id = payload.get("empresa_id")
     if not empresa_id:
-        raise HTTPException(400, "empresa_id é obrigatório — toda câmera pertence a um posto")
+        raise HTTPException(400, "empresa_id é obrigatório: toda câmera pertence a um posto")
     if not banco.empresas_obter(deps.inteiro_ou_400(empresa_id, 'empresa_id')):
         raise HTTPException(400, f"Empresa {empresa_id} não encontrada")
     return {**payload, "nome": nome, "local": (payload.get("local") or "").strip()}
@@ -405,7 +406,7 @@ def cameras_inserir(payload: dict):
         # A mensagem interna da exceção (texto do SQLite, caminho de arquivo) fica no
         # LOG, não na resposta ao cliente. (Auditoria 27/08/2026.)
         log.error("Falha em câmera: %s" % e, exc_info=True)
-        raise HTTPException(500, "Operação falhou — veja o log do servidor.")
+        raise HTTPException(500, "Operação falhou. Veja o log do servidor.")
     # Inicia pipeline em background sem bloquear a resposta
     cam = banco.cameras_obter(id_)
     if cam and cam["ativo"]:
@@ -427,7 +428,7 @@ def cameras_atualizar(id_: int, payload: dict):
         # A mensagem interna da exceção (texto do SQLite, caminho de arquivo) fica no
         # LOG, não na resposta ao cliente. (Auditoria 27/08/2026.)
         log.error("Falha em câmera: %s" % e, exc_info=True)
-        raise HTTPException(500, "Operação falhou — veja o log do servidor.")
+        raise HTTPException(500, "Operação falhou. Veja o log do servidor.")
     if not ok:
         raise HTTPException(404, "Câmera não encontrada")
     # empresa_id pode ter mudado — o HLS não pode continuar servindo pela permissão velha
@@ -465,7 +466,7 @@ def cameras_remover(id_: int):
     except sqlite3.IntegrityError:
         # A checagem acima e o DELETE não são atômicos — se um bico foi cadastrado
         # nessa câmera bem no meio da janela entre as duas, o RESTRICT dispara aqui.
-        raise HTTPException(409, "Câmera passou a estar em uso por um bico durante a remoção — tente novamente.")
+        raise HTTPException(409, "Câmera passou a estar em uso por um bico durante a remoção. Tente novamente.")
     deps.descartar_cache_camera(id_)
     # A linha já saiu do banco; o pipeline pode não ter parado. `parar_camera` devolve
     # False quando a thread não confirmou morte — e nesse caso ela NÃO desregistra a
@@ -613,7 +614,7 @@ def cameras_snapshot(id_: int, request: Request):
                 },
             )
         if frame is None:
-            raise HTTPException(503, "Não foi possível capturar imagem da câmera — verifique a conexão")
+            raise HTTPException(503, "Não foi possível capturar imagem da câmera. Verifique a conexão")
     ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     if not ok:
         raise HTTPException(500, "Falha ao codificar frame")
@@ -641,7 +642,7 @@ def cameras_teste(id_: int, request: Request):
             ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
             if ok:
                 return Response(content=jpg.tobytes(), media_type="image/jpeg")
-        raise HTTPException(503, "Pipeline iniciado mas câmera ainda sem frame — aguarde e tente novamente")
+        raise HTTPException(503, "Pipeline iniciado mas câmera ainda sem frame. Aguarde e tente novamente")
 
     # Câmera ainda não está no pipeline — tenta conexão direta
     intelbras = {
@@ -699,7 +700,7 @@ def cameras_scan(payload: dict):
         raise HTTPException(400, f"Rede inválida: '{rede}'. Use CIDR (ex: 192.168.1.0/24)")
 
     if net.num_addresses > 1024:
-        raise HTTPException(400, "Rede muito grande — limite: /22 (1024 endereços)")
+        raise HTTPException(400, "Rede muito grande. Limite: /22 (1024 endereços)")
 
     hosts = [str(ip) for ip in net.hosts()]
 
@@ -781,10 +782,20 @@ def bicos_preview(bico_id: int, request: Request, camera_id: int | None = None):
     caminho = leitura.caminho_preview_bico(bico_id, camera_id)
     if not caminho.exists():
         raise HTTPException(404, "Sem preview para este bico ainda")
+    # Lê os bytes aqui em vez de `FileResponse(caminho)`: o arquivo é republicado por
+    # `os.replace` a cada leitura do bico, e no Windows o `open` cai em PermissionError
+    # durante a janela da troca — com `FileResponse` isso viraria 500 na tela do operador
+    # (dois PCs no mesmo bico é o caso comum). `ler_bytes_com_retry` espera a troca
+    # terminar. O arquivo é pequeno (JPEG de preview) e a rota já é autenticada e rara.
+    # (Auditoria 05/09/2026.)
+    try:
+        dados = ler_bytes_com_retry(caminho)
+    except OSError:
+        raise HTTPException(404, "Sem preview para este bico ainda")
     # no-store: o arquivo é sobrescrito a cada leitura, e o mesmo nome nunca deve ser
     # servido do cache (do navegador ou de um proxy) depois que o conteúdo já mudou.
-    return FileResponse(caminho, media_type="image/jpeg",
-                        headers={"Cache-Control": "no-store"})
+    return Response(content=dados, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
 
 
 @router.post("/config", dependencies=[Depends(deps.exigir_admin)])
@@ -792,7 +803,6 @@ def config_salvar(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(400, "payload inválido")
 
-    atual = config.carregar()
     invalidas = [k for k in payload if k not in CHAVES_CONFIG]
     if invalidas:
         raise HTTPException(400, f"chaves desconhecidas: {invalidas}")
@@ -804,17 +814,26 @@ def config_salvar(payload: dict, request: Request):
     # IMPOSSÍVEL limpar um destes 4 campos pela tela. (Achado A7.)
     payload = redacao.descartar_mascara(payload, tuple(CHAVES_SENSIVEIS))
 
-    novo = dict(atual)
-    for k, v in payload.items():
-        novo[k] = str(v) if v is not None else ""
+    # Tudo sob `alterar()`: a base é relida DENTRO do lock. Lendo fora, dois admins (ou
+    # duas abas) salvando ao mesmo tempo perdiam uma das duas escritas — o segundo gravava
+    # por cima do snapshot que leu ANTES do primeiro, e a tela dele mostrava sucesso.
+    # Medido com um salvando `intelbras_senha` e outro `api_key`: sobrava só um dos dois.
+    # (Auditoria 05/09/2026.)
+    with config.alterar() as cfg:
+        atual = dict(cfg)
+        for k, v in payload.items():
+            cfg[k] = str(v) if v is not None else ""
 
-    # Filtra só as chaves conhecidas (descarta lixo herdado, ex.: _padroes).
-    novo = {k: novo[k] for k in CHAVES_CONFIG if k in novo}
-    # Só os NOMES das chaves que mudaram vão pra auditoria — nunca o valor: várias
-    # (intelbras_senha, api_key, smtp_senha) são segredo, e mesmo as que não são não
-    # precisam virar histórico permanente só por terem passado por aqui.
-    mudadas = sorted(k for k in novo if atual.get(k) != novo.get(k))
-    config.salvar(novo)
+        # Filtra só as chaves conhecidas (descarta lixo herdado, ex.: _padroes). Muta o
+        # dict NO LUGAR: quem grava é o `alterar()`, que segura ESTE objeto — rebindar o
+        # nome aqui dentro gravaria o dict não filtrado.
+        for k in [k for k in cfg if k not in CHAVES_CONFIG]:
+            del cfg[k]
+        # Só os NOMES das chaves que mudaram vão pra auditoria — nunca o valor: várias
+        # (intelbras_senha, api_key, smtp_senha) são segredo, e mesmo as que não são não
+        # precisam virar histórico permanente só por terem passado por aqui.
+        mudadas = sorted(k for k in cfg if atual.get(k) != cfg.get(k))
+        novo = dict(cfg)    # cópia para o `pipeline.reiniciar`, já fora do lock
     log.info("Configuração salva via interface")
     quem_id, quem_nome = deps.quem_pede(request)
     banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="config_salva",
@@ -853,7 +872,7 @@ def config_salvar(payload: dict, request: Request):
             _hls.hls_manager.parar()
             if novo.get("streaming_modo", "mjpeg") == "hls":
                 if not _hls.hls_manager.iniciar(banco.cameras_listar()):
-                    log.warning("HLS não subiu — a tela cai para MJPEG")
+                    log.warning("HLS não subiu, a tela cai para MJPEG")
         except Exception as e:
             log.error("Falha ao aplicar streaming_modo: %s", e)
 
@@ -982,7 +1001,7 @@ def veiculo_consultar(placa: str, request: Request):
     """
     cfg = config.carregar()
     if not apiplacas.configurado(cfg):
-        raise HTTPException(400, "Consulta de veículo não configurada — falta o token em Configuração.")
+        raise HTTPException(400, "Consulta de veículo não configurada: falta o token em Configuração.")
 
     placa_norm = apiplacas.normalizar_placa(placa)
     if not apiplacas.placa_consultavel(placa_norm):
@@ -998,7 +1017,7 @@ def veiculo_consultar(placa: str, request: Request):
         banco.auditoria_registrar(
             usuario_id=quem_id, usuario_nome=quem_nome, acao="veiculo_consultado",
             alvo_tipo="placa", alvo_id=placa_norm,
-            detalhe=f"consulta paga ({bloco['consulta']})" + ("" if ja_tinha else " — placa nova"),
+            detalhe=f"consulta paga ({bloco['consulta']})" + ("" if ja_tinha else " (placa nova)"),
         )
     return {"placa": placa_norm, "veiculo": bloco}
 
@@ -1006,13 +1025,12 @@ def veiculo_consultar(placa: str, request: Request):
 @router.post("/setup/concluir", dependencies=[Depends(deps.exigir_admin)])
 def setup_concluir(payload: dict):
     """Grava configurações do wizard e marca sistema como implantado."""
-    atual = config.carregar()
     permitidos = {"porta", "ocr_engine", "deteccao_automatica", "log_level",
                   "webhook_url", "webhook_todas", "alerta_lista_negra"}
-    for k, v in payload.items():
-        if k in permitidos and v is not None:
-            atual[k] = str(v)
-    atual["implantado"] = "sim"
-    config.salvar(atual)
+    with config.alterar() as atual:
+        for k, v in payload.items():
+            if k in permitidos and v is not None:
+                atual[k] = str(v)
+        atual["implantado"] = "sim"
     log.info("Implantação concluída via wizard de primeiro uso")
     return {"ok": True}

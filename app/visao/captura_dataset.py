@@ -37,6 +37,7 @@ from pathlib import Path
 
 import cv2
 
+from app.core import arquivos
 from app.core import threads
 from app.core.rotulos import protegidos
 
@@ -293,8 +294,7 @@ class CapturaDataset:
             # O hifen e o que impede `_placa_do_nome` de ler isto como placa: ele exige
             # 7 alfanumericos seguidos de ponto.
             nome = f"{ts}_cam{self.camera_db_id}-{marca}.jpg"
-            cv2.imwrite(str(SNAPSHOT_DIR / nome), img,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), self.qualidade])
+            arquivos.imwrite_atomico(SNAPSHOT_DIR / nome, img, self.qualidade)
             log.debug("Captura para dataset: %s", nome)
             return True
         except Exception as e:
@@ -347,7 +347,7 @@ def _coletar_de_camera(cam_id: int, intervalo: float) -> None:
             thread = getattr(pinst, "_thread", None) if pinst is not None else None
             if (pinst is not None and getattr(pinst, "deteccao_automatica", False)
                     and thread is not None and thread.is_alive()):
-                log.debug("Camera %d: coleta pulada — pipeline contínuo já amostra "
+                log.debug("Camera %d: coleta pulada, pipeline contínuo já amostra "
                           "de dentro do laço e detém a conexão", cam_id)
                 continue
             # O mesmo lock da leitura reativa: uma câmera, uma conexão RTSP por vez.
@@ -428,6 +428,6 @@ def parar_coletor(timeout: float = 5.0) -> None:
             # Não é fatal: as threads são daemon e o próximo `_parar.clear()` não as revive
             # (elas já saíram do laço ou vão sair na próxima volta). Mas registra, porque uma
             # coletora presa está segurando `lock_camera`.
-            log.warning("Coletor: %d thread(s) não encerraram em %.0fs — provavelmente presas "
+            log.warning("Coletor: %d thread(s) não encerraram em %.0fs, provavelmente presas "
                         "numa captura; o lock da câmera pode demorar a liberar",
                         len(restantes), timeout)

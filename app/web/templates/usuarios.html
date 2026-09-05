@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Usuários — ALPR{% endblock %}
+{% block title %}Usuários | ALPR{% endblock %}
 {% block conteudo %}
 <h1>Usuários</h1>
 
@@ -210,7 +210,7 @@ async function salvar(e) {
     method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
   if (res.ok) {
     fecharModal(); await carregar();
-    if (convidar) avisar('Usuário criado — convite enviado por e-mail.', 'ok');
+    if (convidar) avisar('Usuário criado. Convite enviado por e-mail.', 'ok');
   } else await avisarResposta(res);
 }
 

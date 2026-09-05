@@ -149,18 +149,19 @@ class Detector:
         if self.sess is not None:
             return          # idempotente — ver a nota em `BuscaEmTiles.carregar`
         if not self.modelo_path.exists():
-            log.warning("Modelo %s não encontrado — usando fallback por contornos", self.modelo_path)
+            log.warning("Modelo %s não encontrado, usando fallback por contornos", self.modelo_path)
             return
         try:
             import onnxruntime as ort
-            from app.visao.hardware import onnx_providers
-            self.sess = ort.InferenceSession(str(self.modelo_path), providers=onnx_providers())
+            from app.visao.hardware import onnx_providers, onnx_session_options
+            self.sess = ort.InferenceSession(str(self.modelo_path), providers=onnx_providers(),
+                                             sess_options=onnx_session_options())
             self.input_name = self.sess.get_inputs()[0].name
             out_shape = self.sess.get_outputs()[0].shape
             fmt = "YOLO26 e2e" if (len(out_shape) == 3 and out_shape[-1] == 6) else "YOLOv8"
             log.info("ONNX carregado [%s]: %s", fmt, self.modelo_path)
         except Exception as e:
-            log.error("Falha ao carregar ONNX (%s) — usando fallback", e)
+            log.error("Falha ao carregar ONNX (%s), usando fallback", e)
             self.sess = None
 
     def detectar(self, frame) -> list[tuple[int, int, int, int, float]]:
@@ -348,17 +349,32 @@ class OpenImageDetector:
         try:
             from open_image_models import LicensePlateDetector
         except ImportError:
-            log.error("open-image-models não instalado — rode: pip install open-image-models")
+            log.error("open-image-models não instalado. Rode: pip install open-image-models")
             self.sess = None
             return
         try:
-            from app.visao.hardware import onnx_providers
+            from app.visao.hardware import onnx_providers, onnx_session_options
+            # `sess_options` aqui pelo MESMO motivo do `Detector`/`VehicleDetector`: este é
+            # o backend PADRÃO (`detector_backend = open_image_models`), e a sessão que a
+            # biblioteca abre por dentro também dimensiona o pool pelo total de núcleos do
+            # host. Sem isto, o ajuste de `onnx_session_options` não alcançava justamente o
+            # detector que roda em produção. Medido nesta máquina (yolo-v9-t-512, frame
+            # 1920x1080), com as DUAS câmeras do posto inferindo ao mesmo tempo:
+            #
+            #     sem sess_options ......  9,91 infer/s   3,79 núcleos
+            #     com sess_options ...... 17,19 infer/s   1,91 núcleo
+            #
+            # +73% de vazão com metade da CPU. Isolado (1 câmera, máquina ociosa) o default
+            # ganha (53,7 ms contra 96,0 ms) porque toma os 4 núcleos para si — mas esse não
+            # é o caso do posto, e é exatamente esse excesso que o `cpus:` do compose
+            # throttla. Otimizar para a máquina ociosa era otimizar para o cenário errado.
             self._det = LicensePlateDetector(detection_model=self.modelo, conf_thresh=self.conf,
-                                              providers=onnx_providers())
+                                              providers=onnx_providers(),
+                                              sess_options=onnx_session_options())
             self.sess = getattr(self._det, "model", None)
             log.info("open-image-models carregado [MIT]: %s (conf≥%.2f)", self.modelo, self.conf)
         except Exception as e:
-            log.error("Falha ao carregar open-image-models (%s) — detecção desativada", e)
+            log.error("Falha ao carregar open-image-models (%s), detecção desativada", e)
             self.sess = None
             self._det = None
 
@@ -438,13 +454,14 @@ class VehicleDetector:
         if self.sess is not None:
             return          # idempotente — ver a nota em `BuscaEmTiles.carregar`
         if not self.modelo_path.exists():
-            log.warning("VehicleDetector: modelo %s não encontrado — 2 estágios cairá "
+            log.warning("VehicleDetector: modelo %s não encontrado, 2 estágios cairá "
                         "sempre no fallback (frame inteiro)", self.modelo_path)
             return
         try:
             import onnxruntime as ort
-            from app.visao.hardware import onnx_providers
-            self.sess = ort.InferenceSession(str(self.modelo_path), providers=onnx_providers())
+            from app.visao.hardware import onnx_providers, onnx_session_options
+            self.sess = ort.InferenceSession(str(self.modelo_path), providers=onnx_providers(),
+                                             sess_options=onnx_session_options())
             self.input_name = self.sess.get_inputs()[0].name
             log.info("VehicleDetector carregado [YOLOX-s, Apache-2.0]: %s", self.modelo_path)
             # Aquece o grafo ONNX no carregamento (não na 1ª detecção real) — ORT otimiza
@@ -454,7 +471,7 @@ class VehicleDetector:
             except Exception:
                 pass
         except Exception as e:
-            log.error("Falha ao carregar VehicleDetector (%s) — 2 estágios desativado", e)
+            log.error("Falha ao carregar VehicleDetector (%s), 2 estágios desativado", e)
             self.sess = None
 
     def detectar(self, frame) -> list[tuple[int, int, int, int, float, int]]:
@@ -623,7 +640,7 @@ class DetectorDoisEstagios:
             tipo_mantido = tipo_de_bbox(duplicada_de)
             tipo_descartado = tipo_de_bbox(p)
             if tipo_mantido != tipo_descartado and None not in (tipo_mantido, tipo_descartado):
-                log.debug("Placa em %d veículos de classes diferentes (%s vs %s) — tipo ambíguo",
+                log.debug("Placa em %d veículos de classes diferentes (%s vs %s), tipo ambíguo",
                           2, tipo_mantido, tipo_descartado)
                 # Índice por IDENTIDADE, não por conteúdo. `BBoxPlaca` é subclasse de
                 # `tuple`, e `list.index` compara elemento a elemento — ignorando o atributo
@@ -732,7 +749,7 @@ class BuscaEmTiles:
                 achados.append(BBoxPlaca(px + x0, py + y0, pw, ph, pconf, TILES))
 
         if achados:
-            log.info("BuscaEmTiles: %d placa(s) recuperada(s) em %d janela(s) — a passada "
+            log.info("BuscaEmTiles: %d placa(s) recuperada(s) em %d janela(s). A passada "
                      "única no recorte de %dx%d não tinha achado nada",
                      len(achados), len(janelas), frame.shape[1], frame.shape[0])
         # Uma placa perto da divisa entre janelas aparece nas duas (é para isso que existe

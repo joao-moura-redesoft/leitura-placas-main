@@ -62,7 +62,7 @@ class WorkerSupervisor:
         """
         self._parar.set()
         return threads.encerrar_thread(self._thread, timeout, lambda: log.error(
-            "Supervisor: ciclo não encerrou em %.0fs — provavelmente preso num "
+            "Supervisor: ciclo não encerrou em %.0fs, provavelmente preso num "
             "reinício de câmera. O desligamento segue, mas pode haver conexão "
             "RTSP pendurada.", timeout))
 
@@ -190,7 +190,7 @@ class WorkerSupervisor:
 
             seg_sem_frame = agora - ultimo_ts
             if seg_sem_frame < _FRESHNESS_ALERTA and cam_id in self._delay_atual:
-                log.info("Camera %d: operando normalmente — backoff resetado", cam_id)
+                log.info("Camera %d: operando normalmente, backoff resetado", cam_id)
                 self._delay_atual.pop(cam_id, None)
                 self._backoff_ate.pop(cam_id, None)
                 continue
@@ -211,7 +211,7 @@ class WorkerSupervisor:
         # Ainda dentro do período de backoff?
         if agora < self._backoff_ate.get(cam_id, 0):
             restante = self._backoff_ate[cam_id] - agora
-            log.debug("Camera %d: backoff ativo — %.0fs restantes", cam_id, restante)
+            log.debug("Camera %d: backoff ativo, %.0fs restantes", cam_id, restante)
             return
 
         # Calcula próximo delay (exponencial: 5 → 10 → 20 → ... → 300s)
@@ -239,12 +239,12 @@ class WorkerSupervisor:
                 # órfão retinha a câmera física até o processo reiniciar. O supervisor é
                 # quem tem de ser o zelador disso, porque é o único que volta a olhar.
                 if pl.parar_camera(cam_id):
-                    log.warning("Camera %d: fora do cadastro — pipeline órfão liberado", cam_id)
+                    log.warning("Camera %d: fora do cadastro, pipeline órfão liberado", cam_id)
                     self._backoff_ate.pop(cam_id, None)
                     self._delay_atual.pop(cam_id, None)
                 else:
                     log.error(
-                        "Camera %d: fora do cadastro e thread do pipeline ainda viva — "
+                        "Camera %d: fora do cadastro e thread do pipeline ainda viva. "
                         "órfão retendo a conexão; tenta liberar de novo no próximo ciclo",
                         cam_id,
                     )
@@ -273,7 +273,7 @@ class WorkerSupervisor:
                 # "reiniciado com sucesso" mesmo neste caso, e quem lia o log concluía
                 # que a câmera havia voltado.
                 log.error(
-                    "Camera %d: reinício NÃO confirmado (tentativa #%d) — pipeline "
+                    "Camera %d: reinício NÃO confirmado (tentativa #%d). Pipeline "
                     "anterior ainda no ar; nova tentativa após o backoff",
                     cam_id, n,
                 )

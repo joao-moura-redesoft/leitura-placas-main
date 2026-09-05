@@ -358,7 +358,13 @@
     // `d.mockada` e não `d.origem === 'feira'`: a origem vale "feira" em TODA leitura deste
     // endpoint (é o que a mantém fora de 'producao'), então a placa do celular de um
     // visitante entraria aqui. `mockada` é verdadeiro só quando `casar` aprovou a placa.
-    return d && d.placa && (d.mockada || d.ficha || FICHAS[normalizar(d.placa)]);
+    //
+    // `d.livre` (MODO LIVRE) afrouxa isso de propósito: o visitante aponta para o carro
+    // dele e vê a própria placa. Aí a leitura de um celular que passa VIRA card — é o
+    // preço conhecido do modo, e por isso ele é opt-in (`feira_livre`, default "nao") em
+    // vez de comportamento padrão. Continua exigindo `d.placa`: sem string lida não há o
+    // que revelar, no livre tanto quanto no mock.
+    return d && d.placa && (d.mockada || d.livre || d.ficha || FICHAS[normalizar(d.placa)]);
   }
 
   function revelar(d) {
@@ -369,14 +375,35 @@
     const placa = normalizar(d && d.placa);
     if (!placa) { setStatus(AGUARDANDO); return; }
 
+    // A ficha local manda quando existe (é o carrinho, com apelido e mensagem curados).
+    // Sem ficha, o MODO LIVRE cai no bloco `veiculo` — os dados reais da apiplacas do
+    // carro do visitante, quando o "Forçar leitura" conseguiu consultar. Os nomes dos
+    // campos batem porque a ficha local foi desenhada com as chaves curadas da apiplacas
+    // (ver `feira_fichas.CAMPOS`), então um `||` por campo resolve sem tradução.
+    //
+    // `consulta === 'ok'` e não só a existência do bloco: `indisponivel` vem com todos os
+    // campos nulos, e tratá-lo como fonte só produziria specs vazias. Sem internet é
+    // exatamente esse o caminho — a placa aparece sozinha, sem card mentindo dados.
+    const api = (d.veiculo && d.veiculo.consulta === 'ok') ? d.veiculo : {};
     const ficha = d.ficha || FICHAS[placa] || {};
+    const campo = nome => ficha[nome] || api[nome] || '';
+    // O ano da apiplacas é INTEIRO (`ano`/`ano_modelo`); a ficha local guarda texto.
+    // `spec` descarta valor falsy, e sem o String() um ano 0 sumiria em silêncio.
+    const ano = ficha.ano || (api.ano != null ? String(api.ano) : '');
+
     document.getElementById('rev-placa').textContent = placa;
-    document.getElementById('rev-apelido').textContent = ficha.apelido || 'Veículo de demonstração';
+    // Sem ficha o rótulo "Veículo de demonstração" seria mentira na cara do visitante: o
+    // carro é dele. Com dados da API o próprio modelo vira o título; sem eles, um rótulo
+    // neutro que não afirma nada.
+    document.getElementById('rev-apelido').textContent =
+      ficha.apelido || (d.mockada ? 'Veículo de demonstração'
+                                  : (api.modelo ? [api.marca, api.modelo].filter(Boolean).join(' ')
+                                                : 'Placa reconhecida'));
     document.getElementById('rev-ficha').innerHTML = [
-      spec(ICON.fuel, 'Combustível', ficha.combustivel, true),
-      spec(ICON.car,  'Modelo',      ficha.modelo),
-      spec(ICON.cor,  'Cor',         ficha.cor),
-      spec(ICON.ano,  'Ano',         ficha.ano, false, 'ano'),
+      spec(ICON.fuel, 'Combustível', campo('combustivel'), true),
+      spec(ICON.car,  'Modelo',      campo('modelo')),
+      spec(ICON.cor,  'Cor',         campo('cor')),
+      spec(ICON.ano,  'Ano',         ano, false, 'ano'),
     ].join('');
 
     // A mensagem de boas-vindas da ficha. O campo é editável na configuração desde que a
@@ -426,16 +453,36 @@
   // mesma frase "Nenhuma placa reconhecida — reposicione o veículo": 429 de limite de taxa,
   // 409 de bico desativado, 404 de câmera sem cadastro e queda de rede. O operador movia o
   // carro achando que era enquadramento, num problema que não estava no carro.
+  // Teto de espera. Sem ele, um servidor que ACEITA a conexão e nunca responde (threadpool
+  // esgotado, RTSP travado) deixava o `await` pendente para sempre: `lendo` ficava `true`,
+  // o `finally` nunca rodava, e como `ciclo()` estava suspenso DENTRO do await não sobrava
+  // nenhum `agenda()` — o loop morria de vez. Pior, a tela não parecia travada: o botão de
+  // forçar respondia, batia no guard `if (lendo)` e dizia "reposicione o veículo". O
+  // visitante mexia o carro, o operador reapertava, e nenhuma leitura acontecia mais até
+  // alguém dar F5 — na frente do público. O timeout devolve `_erro: 0`, que o chamador já
+  // sabe tratar (mensagem de conexão + reagendamento), então o loop se recupera sozinho.
+  //
+  // 25s: acima do orçamento do lado servidor (~21s no perfil completo do botão forçar) para
+  // não abortar leitura legítima e lenta, e abaixo dos 30s em que a demo pareceria morta.
+  const TIMEOUT_SCAN = 25000;
+
   async function fazerScan(forcar) {
     if (lendo) return null;
     lendo = true;
+    // `AbortController` pode não existir num navegador muito antigo (o kiosk é nosso, mas
+    // a vitrine também abre no celular de visitante): sem ele a chamada segue como antes,
+    // sem teto, em vez de a página quebrar num `ReferenceError`.
+    const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const alarme = ctrl ? setTimeout(() => ctrl.abort(), TIMEOUT_SCAN) : null;
     try {
-      const r = await fetch('/api/feira/scan' + (forcar ? '?forcar=1' : ''), { method: 'POST' });
+      const r = await fetch('/api/feira/scan' + (forcar ? '?forcar=1' : ''),
+                            ctrl ? { method: 'POST', signal: ctrl.signal }
+                                 : { method: 'POST' });
       const corpo = await r.json().catch(() => null);
       if (!r.ok) return { _erro: r.status, _detalhe: (corpo && corpo.detail) || '' };
       return corpo;
     } catch (e) { return { _erro: 0, _detalhe: '' }; }
-    finally { lendo = false; }
+    finally { if (alarme) clearTimeout(alarme); lendo = false; }
   }
 
   // Traduz a falha para o visitante, e manda o detalhe técnico para o overlay da câmera
@@ -445,6 +492,17 @@
       return 'Muitas leituras seguidas — só um instante.';
     if (d._erro === 0)
       return 'Sem conexão com o servidor da demonstração.';
+    // Sessão expirada. O TTL do servidor é de 1h e se RENOVA a cada uso, então o loop em
+    // atividade nunca chega aqui — mas ele PARA de varrer com a aba escondida
+    // (`document.hidden`) e enquanto um card fica revelado. Kiosk deixado na tela de um
+    // veículo de um dia para o outro, ou com a aba trocada, volta com 401 em todo scan:
+    // sem este ramo isso caía no texto genérico "fora do ar por um instante" e o loop
+    // repetia para sempre a cada 8s, sem nunca se recuperar e sem dizer o que fazer.
+    // Recarregar é o que resolve (o `/feira` redireciona para /login e o operador
+    // reautentica), e é isso que a mensagem manda fazer — em vez de mandar sozinho, que
+    // trocaria a tela do estande por um formulário de login na frente do público.
+    if (d._erro === 401 || d._erro === 403)
+      return 'Sessão expirada — recarregue a página (F5) para retomar a demonstração.';
     if (d._erro === 404 || d._erro === 409) {
       // Cadastro: fica quebrado até alguém mexer, então o bastidor aparece no overlay da
       // câmera — que agora normalmente está escondido, então o detalhe vai TAMBÉM para o

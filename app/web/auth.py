@@ -230,7 +230,7 @@ async def esqueci_senha_post(request: Request, email: str = Form(...)):
         token = banco.reset_token_criar(user["id"])
         link = f"{email_mod.url_base(request, cfg)}/redefinir-senha/{token}"
         email_mod.enviar(
-            email_norm, "Redefinição de senha — Leitura de Placas",
+            email_norm, "Redefinição de senha | Leitura de Placas",
             f"Olá, {user['nome']}.\n\n"
             f"Alguém (esperamos que você) pediu para redefinir a senha desta conta.\n\n"
             f"Para continuar, acesse o link abaixo — ele vale por 2 horas:\n{link}\n\n"
