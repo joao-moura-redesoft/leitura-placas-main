@@ -155,7 +155,7 @@ def _limite_ou_429(bucket: str, ip: str, rotulo_log: str) -> JSONResponse | None
     if limitador.permitido(bucket, ip, _LIMITE_APIKEY_MIN, 60):
         return None
     log.warning("%s: limite de tentativas excedido para o IP %s", rotulo_log, ip)
-    return JSONResponse({"detail": "Muitas tentativas — aguarde um instante."},
+    return JSONResponse({"detail": "Muitas tentativas. Aguarde um instante."},
                         status_code=429)
 
 
@@ -173,7 +173,7 @@ def _ampliar_threadpool(total: int) -> None:
         anyio.to_thread.current_default_thread_limiter().total_tokens = total
         log.info("Threadpool de rotas síncronas: %d threads", total)
     except Exception as e:
-        log.warning("Não foi possível ampliar o threadpool (%s) — seguindo com o default "
+        log.warning("Não foi possível ampliar o threadpool (%s), seguindo com o default "
                     "do AnyIO (40). Streams MJPEG simultâneos podem esgotá-lo.", e)
 
 
@@ -326,7 +326,7 @@ def _aquecer_modelos_bg(cfg: dict) -> None:
         t0 = _t.time()
         obter_detector_leitura(cfg)
         obter_ocr_leitura(cfg)
-        log.info("Modelos de leitura prontos em %.1fs — primeira leitura já sai rápida",
+        log.info("Modelos de leitura prontos em %.1fs. A primeira leitura já sai rápida",
                  _t.time() - t0)
         # O perfil rápido tem par PRÓPRIO de modelos, e sem aquecê-los aqui a primeira
         # chamada com `rapido=1` pagaria a carga inteira — a latência que o modo existe
@@ -339,7 +339,7 @@ def _aquecer_modelos_bg(cfg: dict) -> None:
             log.info("Modelos do perfil rápido prontos em %.1fs", _t.time() - t1)
     except Exception as e:
         # Falhar aqui não pode derrubar o servidor: a leitura recarrega sob demanda.
-        log.warning("Não foi possível pré-carregar os modelos (%s) — serão carregados "
+        log.warning("Não foi possível pré-carregar os modelos (%s), serão carregados "
                     "na primeira leitura", e)
 
 
@@ -467,7 +467,7 @@ def _registrar_quem_pede_o_desligamento() -> None:
                 except ValueError:
                     nome = str(sig)
                 log.warning("Sinal %s (%s) recebido: desligamento do servidor HTTP "
-                            "PEDIDO — não é queda.", nome, int(sig))
+                            "PEDIDO, não é queda.", nome, int(sig))
             except Exception:
                 pass
             return original(self, sig, frame)
@@ -475,7 +475,7 @@ def _registrar_quem_pede_o_desligamento() -> None:
         handle_exit._alpr_instrumentado = True
         uvicorn.Server.handle_exit = handle_exit
     except Exception as e:
-        log.warning("Não foi possível anotar o sinal de desligamento (%s) — o servidor "
+        log.warning("Não foi possível anotar o sinal de desligamento (%s). O servidor "
                     "sobe igual, só sem essa pista no log.", e)
 
 
@@ -640,7 +640,7 @@ async def lifespan(_app: FastAPI):
     if cfg.get("streaming_modo", "mjpeg") == "hls":
         cameras = banco.cameras_listar()
         if not hls_mod.hls_manager.iniciar(cameras):
-            log.warning("HLS desativado — usando MJPEG como fallback")
+            log.warning("HLS desativado, usando MJPEG como fallback")
 
     yield
 
@@ -677,7 +677,7 @@ async def lifespan(_app: FastAPI):
         await asyncio.wait_for(asyncio.shield(_tarefa_visao), TIMEOUT_SHUTDOWN_SEG)
     except asyncio.TimeoutError:
         log.warning("Desligamento: a subida da visão não terminou em %ds (provável carga "
-                    "de modelo em andamento). Seguindo com o encerramento — o processo sai "
+                    "de modelo em andamento). Seguindo com o encerramento. O processo sai "
                     "agora em vez de ficar de pé sem porta.", TIMEOUT_SHUTDOWN_SEG)
 
 
@@ -709,7 +709,46 @@ class _EstaticosApp(StaticFiles):
         return resposta
 
 
-app.mount("/static", _EstaticosApp(directory="app/web/static"), name="static")
+class _EstaticosPorPosto(_EstaticosApp):
+    """`_EstaticosApp` que escopa `snapshots/` por posto. O resto de `/static` é público.
+
+    O mount cru exigia LOGIN mas não checava DONO, e `snapshots/` guarda foto de veículo:
+    um `cliente` do posto 4 pedia `/static/snapshots/{ts}_{PLACA}.jpg` e recebia o carro do
+    posto 7 -- placa, imagem e horário, que é dado pessoal (LGPD). Nem adivinhação era
+    preciso: `/api/deteccoes` devolve a URL pronta no campo `snapshot`.
+
+    É o mesmo remendo que `_HlsPorPosto` já aplicava aos segmentos de vídeo (auditoria
+    27/08, achado A4); o histórico de leitura tinha ficado de fora. CSS/JS/fonte/favicon
+    seguem sem checagem -- não são dado de cliente, e são o volume do site.
+    """
+
+    _PREFIXO = "snapshots/"
+
+    async def get_response(self, path: str, scope):
+        rel = path.replace("\\", "/").lstrip("/")
+        if not rel.startswith(self._PREFIXO):
+            return await super().get_response(path, scope)
+        # `preview_bico_*` NÃO mora mais aqui (foi para `web/dados_privados/`), então tudo
+        # sob `snapshots/` é foto de detecção e tem dono resolvível pelo banco.
+        try:
+            empresa_id = banco.empresa_da_imagem(f"/static/{rel}")
+        except Exception as e:
+            log.error("Erro ao resolver dono do snapshot %s: %s", rel, e)
+            return JSONResponse({"detail": "Erro interno."}, status_code=500)
+        if empresa_id is None:
+            # Arquivo órfão (detecção já apagada pela retenção) ou sem posto resolvível.
+            # 404 e não 200: sem dono conhecido não há como afirmar que o pedinte pode ver.
+            return JSONResponse({"detail": "Não encontrado."}, status_code=404)
+        try:
+            web_deps.checar_acesso_empresa(Request(scope), empresa_id)
+        except HTTPException as e:
+            # Repassa o status REAL (404, não 403) pelo mesmo motivo do HLS: não confirmar
+            # a quem está fora do escopo que o arquivo existe.
+            return JSONResponse({"detail": e.detail}, status_code=e.status_code)
+        return await super().get_response(path, scope)
+
+
+app.mount("/static", _EstaticosPorPosto(directory="app/web/static"), name="static")
 
 # `/favicon.ico` já estava em `_PUBLICAS` desde sempre, mas não tinha rota: cada
 # carregamento de página gastava um 404 no log e a aba ficava com o ícone quebrado — o que

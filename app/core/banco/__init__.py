@@ -31,6 +31,7 @@ from ._deteccoes import (
     contagem_com_imagem,
     contar_deteccoes_placa,
     deteccoes_e_chamadas_antigas,
+    empresa_da_imagem,
     imagens_excedentes,
     listar_deteccoes,
     listas_buscar,

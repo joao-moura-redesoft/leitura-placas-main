@@ -426,16 +426,36 @@
   // mesma frase "Nenhuma placa reconhecida — reposicione o veículo": 429 de limite de taxa,
   // 409 de bico desativado, 404 de câmera sem cadastro e queda de rede. O operador movia o
   // carro achando que era enquadramento, num problema que não estava no carro.
+  // Teto de espera. Sem ele, um servidor que ACEITA a conexão e nunca responde (threadpool
+  // esgotado, RTSP travado) deixava o `await` pendente para sempre: `lendo` ficava `true`,
+  // o `finally` nunca rodava, e como `ciclo()` estava suspenso DENTRO do await não sobrava
+  // nenhum `agenda()` — o loop morria de vez. Pior, a tela não parecia travada: o botão de
+  // forçar respondia, batia no guard `if (lendo)` e dizia "reposicione o veículo". O
+  // visitante mexia o carro, o operador reapertava, e nenhuma leitura acontecia mais até
+  // alguém dar F5 — na frente do público. O timeout devolve `_erro: 0`, que o chamador já
+  // sabe tratar (mensagem de conexão + reagendamento), então o loop se recupera sozinho.
+  //
+  // 25s: acima do orçamento do lado servidor (~21s no perfil completo do botão forçar) para
+  // não abortar leitura legítima e lenta, e abaixo dos 30s em que a demo pareceria morta.
+  const TIMEOUT_SCAN = 25000;
+
   async function fazerScan(forcar) {
     if (lendo) return null;
     lendo = true;
+    // `AbortController` pode não existir num navegador muito antigo (o kiosk é nosso, mas
+    // a vitrine também abre no celular de visitante): sem ele a chamada segue como antes,
+    // sem teto, em vez de a página quebrar num `ReferenceError`.
+    const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const alarme = ctrl ? setTimeout(() => ctrl.abort(), TIMEOUT_SCAN) : null;
     try {
-      const r = await fetch('/api/feira/scan' + (forcar ? '?forcar=1' : ''), { method: 'POST' });
+      const r = await fetch('/api/feira/scan' + (forcar ? '?forcar=1' : ''),
+                            ctrl ? { method: 'POST', signal: ctrl.signal }
+                                 : { method: 'POST' });
       const corpo = await r.json().catch(() => null);
       if (!r.ok) return { _erro: r.status, _detalhe: (corpo && corpo.detail) || '' };
       return corpo;
     } catch (e) { return { _erro: 0, _detalhe: '' }; }
-    finally { lendo = false; }
+    finally { if (alarme) clearTimeout(alarme); lendo = false; }
   }
 
   // Traduz a falha para o visitante, e manda o detalhe técnico para o overlay da câmera

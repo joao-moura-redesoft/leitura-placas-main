@@ -683,7 +683,7 @@ def _adquirir_locks(fontes: list[FonteLeitura], espera_seg: float) -> None:
             # frame do pipeline, sem abrir RTSP) ainda é melhor que devolver erro ao bico.
             diretas[0].ativa = False
             diretas[0].erro = "câmera ocupada por outra leitura em andamento"
-            log.warning("%s: lock não adquirido em %.1fs — seguindo sem conexão direta",
+            log.warning("%s: lock não adquirido em %.1fs, seguindo sem conexão direta",
                         diretas[0].rotulo, espera_seg)
         return
 
@@ -693,15 +693,30 @@ def _adquirir_locks(fontes: list[FonteLeitura], espera_seg: float) -> None:
         else:
             f.ativa = False
             f.erro = "câmera ocupada por outra leitura em andamento"
-            log.warning("%s: lock não adquirido em %.1fs — fonte fora desta leitura",
+            log.warning("%s: lock não adquirido em %.1fs, fonte fora desta leitura",
                         f.rotulo, espera_seg)
 
     if not any(f.lock_adquirido for f in diretas):
+        # Segunda tentativa COM TETO, nunca `acquire()` seco. Bloquear sem prazo aqui era o
+        # único ponto do caminho de visão sem timeout, e não custava só esta leitura: a
+        # request fica presa segurando um token do threadpool do servidor, e
+        # `app/servidor.py` documenta que esgotar esse pool faz o servidor inteiro parar de
+        # responder -- inclusive `/api/healthz` e o `/api/leitura` dos OUTROS postos. O
+        # cenário é alcançável: quem mais toma este lock segura por muito tempo (a
+        # reconexão do pipeline faz 2 tentativas com `sleep(5)`, até ~65 s).
+        #
+        # A intenção original ("uma leitura lenta é melhor que nenhuma fonte") continua de
+        # pé -- por isso uma segunda espera, e não desistir na hora. O que muda é que ela
+        # termina: se o lock não vier, a leitura segue degradada como no ramo de uma fonte
+        # só (pode cair no frame do pipeline, sem abrir RTSP), em vez de pendurar.
         primeira = diretas[0]
-        primeira.lock.acquire()
-        primeira.lock_adquirido = True
-        primeira.ativa = True
-        primeira.erro = None
+        if primeira.lock.acquire(timeout=espera_seg):
+            primeira.lock_adquirido = True
+            primeira.ativa = True
+            primeira.erro = None
+        else:
+            log.warning("%s: lock não adquirido em %.1fs na 2ª tentativa, leitura segue "
+                        "sem conexão direta", primeira.rotulo, espera_seg)
 
 
 def _sondar_pipeline(f: FonteLeitura, cfg: dict) -> None:
@@ -724,7 +739,7 @@ def _sondar_pipeline(f: FonteLeitura, cfg: dict) -> None:
     try:
         f.frame_inicial = f.provider()
     except Exception as e:
-        log.warning("%s: provider do pipeline falhou (%s) — usando conexão direta",
+        log.warning("%s: provider do pipeline falhou (%s), usando conexão direta",
                     f.rotulo, e)
         f.frame_inicial = None
     if f.frame_inicial is None:
@@ -862,7 +877,7 @@ def _abrir_fontes(fontes: list[FonteLeitura], cfg: dict, espera_lock: float,
             if f.pipeline_sondado and not f.usar_pipeline:
                 f.ativa = False
                 f.erro = "pipeline sem frame novo dentro do orçamento do modo rápido"
-                log.info("%s: fora desta leitura rápida — %s", f.rotulo, f.erro)
+                log.info("%s: fora desta leitura rápida. %s", f.rotulo, f.erro)
 
     for f in fontes:
         if f.ativa and not f.usar_pipeline:
@@ -923,7 +938,7 @@ def _revisar_fontes(fontes: list[FonteLeitura], rodada: int) -> None:
             f.ativa = False
             f.motivo_inativa = (f"sem detecção em {rodada} rodadas "
                                 f"({f.tentativas} foto(s))")
-            log.info("%s: abandonada — %s", f.rotulo, f.motivo_inativa)
+            log.info("%s: abandonada. %s", f.rotulo, f.motivo_inativa)
 
 
 def ler_placa(**kw) -> dict:
@@ -1027,7 +1042,7 @@ def _ler_placa(
         _liberar_fontes(fontes)
         raise LeituraError(503, f"Nenhuma câmera do bico respondeu — {detalhe}")
     if avisos:
-        log.warning("ler-placa bico_id=%s: seguindo degradado — %s", bico_id, "; ".join(avisos))
+        log.warning("ler-placa bico_id=%s: seguindo degradado: %s", bico_id, "; ".join(avisos))
 
     candidatos: list[dict] = []
     # Quantos recortes o DETECTOR entregou ao longo do loop, mesmo os que o OCR recusou.
@@ -1304,10 +1319,10 @@ def _ler_placa(
                 503,
                 f"Tempo esgotado ({timeout_seg:.0f}s) antes de analisar qualquer imagem. "
                 "Pode ter sido demora para conectar à câmera/pipeline, ou (se foi logo após "
-                "reiniciar o servidor) carga inicial de modelo — tente de novo. Caso "
+                "reiniciar o servidor) carga inicial de modelo. Tente de novo. Caso "
                 "persista, aumente `leitura_timeout_seg`.",
             )
-        raise LeituraError(503, "Câmera conectou mas não enviou frames — verifique a conexão")
+        raise LeituraError(503, "Câmera conectou mas não enviou frames. Verifique a conexão")
 
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     leituras_continuo = _leituras_do_continuo()
@@ -1428,9 +1443,9 @@ def _ler_placa(
     if not candidatos:
         if bboxes_total:
             mensagem = (f"Placa localizada em {bboxes_total} recorte(s), mas o texto não foi "
-                        "reconhecido — placa pequena, borrada ou muito inclinada para o OCR")
+                        "reconhecido: placa pequena, borrada ou muito inclinada para o OCR")
         else:
-            mensagem = ("Nenhuma placa detectada nos frames — verifique o enquadramento da "
+            mensagem = ("Nenhuma placa detectada nos frames. Verifique o enquadramento da "
                         "área do bico e se o veículo aparece dentro dela")
         # O desfecho SEM placa também vai para o log, pela mesma razão do ramo de sucesso.
         # Sem esta linha ele não deixava rastro NENHUM: o `leitura-parcial` do laço só
