@@ -37,6 +37,7 @@ from pathlib import Path
 
 import cv2
 
+from app.core import arquivos
 from app.core import threads
 from app.core.rotulos import protegidos
 
@@ -293,8 +294,7 @@ class CapturaDataset:
             # O hifen e o que impede `_placa_do_nome` de ler isto como placa: ele exige
             # 7 alfanumericos seguidos de ponto.
             nome = f"{ts}_cam{self.camera_db_id}-{marca}.jpg"
-            cv2.imwrite(str(SNAPSHOT_DIR / nome), img,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), self.qualidade])
+            arquivos.imwrite_atomico(SNAPSHOT_DIR / nome, img, self.qualidade)
             log.debug("Captura para dataset: %s", nome)
             return True
         except Exception as e:

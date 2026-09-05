@@ -26,6 +26,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from app.core import arquivos
 from app.core import banco
 from app.core import estado
 from app.operacao import retencao as ret_mod
@@ -1387,8 +1388,13 @@ def _ler_placa(
                                   melhor["bbox"], melhor["placa"])
     else:
         frame_preview = _desenhar(frame_principal, fonte_nitida.roi)
-    cv2.imwrite(str(PREVIEW_DIR / f"{preview_nome}.jpg"), frame_preview,
-                [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    # ATÔMICO: a rota `/api/bicos/{id}/preview.jpg` serve este arquivo, de nome fixo,
+    # enquanto esta linha o reescreve. Com `cv2.imwrite` direto (trunca e depois escreve),
+    # dois operadores na tela de captura do mesmo bico — um disparando "Ler Placa", o outro
+    # com a tela aberta — davam 17.400 leituras de JPEG truncado contra 253 íntegras.
+    # (Auditoria 05/09/2026.)
+    arquivos.imwrite_atomico(PREVIEW_DIR / f"{preview_nome}.jpg", frame_preview, 80,
+                             tolerar_falha=True)
 
     # Preview POR CÂMERA: com duas, o operador precisa conferir o enquadramento das duas
     # de uma vez — inclusive (principalmente) o da que não achou nada, que é onde está o
@@ -1416,8 +1422,8 @@ def _ler_placa(
             img = _desenhar(melhor["frame"] if usa_bbox else f.frame_principal, f.roi,
                             melhor["bbox"] if usa_bbox else None,
                             melhor["placa"] if usa_bbox else None)
-            cv2.imwrite(str(caminho_preview_bico(bico_id, f.camera_id)), img,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            arquivos.imwrite_atomico(caminho_preview_bico(bico_id, f.camera_id), img, 80,
+                                     tolerar_falha=True)
 
     # Rota autenticada, não URL estática direta — ver o comentário de `PREVIEW_DIR`.
     # `bico_id` é None só em teoria (os dois chamadores de `ler_placa` sempre o passam,
@@ -1553,8 +1559,8 @@ def _ler_placa(
     if cfg.get("salvar_frame_deteccao", "sim").lower() in ("sim", "true", "1"):
         ts_f = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         nome_f = f"{ts_f}_{melhor['placa']}_frame.jpg"
-        cv2.imwrite(str(SNAPSHOT_DIR / nome_f), frame_preview,
-                    [int(cv2.IMWRITE_JPEG_QUALITY), int(cfg.get("snapshot_qualidade", "85"))])
+        arquivos.imwrite_atomico(SNAPSHOT_DIR / nome_f, frame_preview,
+                                 int(cfg.get("snapshot_qualidade", "85")))
         frame_rel = f"/static/snapshots/{nome_f}"
 
     # ── Snapshot do crop ──────────────────────────────────────────────────────
@@ -1562,8 +1568,8 @@ def _ler_placa(
     if cfg.get("salvar_snapshot", "").lower() in ("sim", "true", "1"):
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         nome = f"{ts}_{melhor['placa']}.jpg"
-        cv2.imwrite(str(SNAPSHOT_DIR / nome), melhor["crop"],
-                    [int(cv2.IMWRITE_JPEG_QUALITY), int(cfg.get("snapshot_qualidade", "85"))])
+        arquivos.imwrite_atomico(SNAPSHOT_DIR / nome, melhor["crop"],
+                                 int(cfg.get("snapshot_qualidade", "85")))
         snapshot_rel = f"/static/snapshots/{nome}"
 
     # ── Persiste ──────────────────────────────────────────────────────────────

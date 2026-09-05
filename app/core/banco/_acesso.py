@@ -60,25 +60,56 @@ def usuarios_listar() -> list[dict]:
         ).fetchall()]
 
 
-def usuarios_atualizar(id_: int, dados: dict) -> bool:
+class UltimoAdminError(Exception):
+    """`usuarios_atualizar(..., exigir_outro_admin=True)` recusou: não sobraria admin."""
+
+
+def usuarios_atualizar(id_: int, dados: dict, *, exigir_outro_admin: bool = False) -> bool:
     """Atualiza nome/email/papel/ativo/empresa_id. Senha só é trocada quando
     `senha_hash` vem preenchido — campo vazio no formulário significa "manter a senha
     atual", mesmo padrão usado em `cameras_atualizar` para não sobrescrever com string
-    vazia. `empresa_id` só é gravado quando `papel='cliente'` (ver `criar_usuario`)."""
+    vazia. `empresa_id` só é gravado quando `papel='cliente'` (ver `criar_usuario`).
+
+    `exigir_outro_admin=True` só aplica o UPDATE se sobrar ao menos um OUTRO admin ativo,
+    levantando `UltimoAdminError` caso contrário. A condição vai DENTRO do próprio UPDATE
+    de propósito: checar antes, em outra transação, é uma corrida real — dois admins em
+    duas máquinas, cada um rebaixando o outro ao mesmo tempo, passavam os dois pela
+    checagem (`usuarios_contar_admins_ativos` via 2 admins nas duas chamadas) e o sistema
+    terminava com ZERO admin ativo, sem ninguém conseguindo entrar no painel e exigindo
+    mexer no SQLite à mão para recuperar. Reproduzido em 05/09/2026.
+
+    `BEGIN IMMEDIATE` pega a trava de escrita antes do SELECT do próprio UPDATE, o que
+    serializa as duas transações concorrentes em vez de deixá-las decidir sobre o mesmo
+    estado lido. O `cursor()` daqui usa a conexão em `isolation_level` padrão do sqlite3,
+    que só abriria a transação no UPDATE — tarde demais.
+    """
     senha_hash = dados.get("senha_hash")
     empresa_id = dados.get("empresa_id") if dados.get("papel") == "cliente" else None
+    colunas = "nome=?, email=?, papel=?, ativo=?, empresa_id=?" + (", senha=?" if senha_hash else "")
+    valores: list = [dados["nome"], dados["email"], dados["papel"], dados["ativo"], empresa_id]
+    if senha_hash:
+        valores.append(senha_hash)
+    valores.append(id_)
+
+    # A guarda é uma subconsulta no WHERE: "existe outro admin ativo além deste?".
+    onde_extra = ""
+    if exigir_outro_admin:
+        onde_extra = (" AND EXISTS (SELECT 1 FROM usuarios WHERE papel='admin' "
+                      "AND ativo=1 AND id<>?)")
+        valores.append(id_)
+
     with cursor() as c:
-        if senha_hash:
-            cur = c.execute(
-                "UPDATE usuarios SET nome=?, email=?, papel=?, ativo=?, empresa_id=?, senha=? WHERE id=?",
-                (dados["nome"], dados["email"], dados["papel"], dados["ativo"], empresa_id, senha_hash, id_),
-            )
-        else:
-            cur = c.execute(
-                "UPDATE usuarios SET nome=?, email=?, papel=?, ativo=?, empresa_id=? WHERE id=?",
-                (dados["nome"], dados["email"], dados["papel"], dados["ativo"], empresa_id, id_),
-            )
-        return cur.rowcount > 0
+        if exigir_outro_admin:
+            c.execute("BEGIN IMMEDIATE")
+        cur = c.execute(f"UPDATE usuarios SET {colunas} WHERE id=?{onde_extra}", valores)
+        if cur.rowcount > 0:
+            return True
+        if exigir_outro_admin and c.execute(
+                "SELECT 1 FROM usuarios WHERE id=?", (id_,)).fetchone():
+            # A linha existe e o UPDATE não pegou: foi a guarda que barrou, não um id
+            # inexistente. Sem esta distinção a rota responderia 404 para o último admin.
+            raise UltimoAdminError
+        return False
 
 
 def usuarios_definir_senha(id_: int, senha_hash: str) -> bool:

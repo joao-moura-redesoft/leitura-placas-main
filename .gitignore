@@ -11,6 +11,11 @@ env/
 
 # Projeto
 config.txt
+# Fichas da vitrine: estado de runtime editado pela tela, vizinho do config.txt (mesma
+# pasta, ver feira_fichas.NOME_ARQUIVO). As fichas PADRÃO moram no código
+# (feira_fichas.py), então versionar este arquivo só serviria para o cadastro de uma
+# máquina sobrescrever o da outra a cada pull.
+feira_fichas.json
 placas.db
 placas.db-journal
 placas.db-wal

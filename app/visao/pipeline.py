@@ -9,6 +9,7 @@ from pathlib import Path
 
 import cv2
 
+from app.core import arquivos
 from app.core import banco
 from app.core import broadcaster as bc
 from app.core import estado
@@ -845,7 +846,7 @@ class Pipeline:
             nome = f"{ts}_{placa}.jpg"
             caminho = SNAPSHOT_DIR / nome
             crop = frame_limpo[y: y + h, x: x + w]
-            cv2.imwrite(str(caminho), crop, [int(cv2.IMWRITE_JPEG_QUALITY), self.snapshot_q])
+            arquivos.imwrite_atomico(caminho, crop, self.snapshot_q)
             snapshot_rel = f"/static/snapshots/{nome}"
 
         # Quadro inteiro com a caixa lida, igual ao que a leitura reativa grava. Só o
@@ -865,8 +866,7 @@ class Pipeline:
                 r = self.roi
                 cv2.rectangle(marcado, (r["x"], r["y"]),
                               (r["x"] + r["w"], r["y"] + r["h"]), (120, 120, 120), 1)
-            cv2.imwrite(str(SNAPSHOT_DIR / nome_f), marcado,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), self.snapshot_q])
+            arquivos.imwrite_atomico(SNAPSHOT_DIR / nome_f, marcado, self.snapshot_q)
             frame_rel = f"/static/snapshots/{nome_f}"
 
         # Desempacota os quatro campos aqui — o único ponto em que `banco` (que não deve

@@ -239,13 +239,13 @@ def atualizar(id_: int, payload: dict, request: Request):
     if eh_auto_edicao and atual["papel"] == "admin" and (papel != "admin" or not ativo):
         raise HTTPException(400, "Você não pode alterar seu próprio papel ou status. Peça a outro administrador.")
 
+    # A trava do último admin NÃO é checada aqui — é aplicada dentro do próprio UPDATE,
+    # via `exigir_outro_admin` (ver `banco.usuarios_atualizar`). Checar antes, em outra
+    # transação, era uma corrida real: dois admins em duas máquinas rebaixando um ao outro
+    # ao mesmo tempo passavam os dois pela checagem e o sistema ficava com ZERO admin
+    # ativo — todo mundo trancado fora do painel, recuperável só por SQL na mão.
+    # (Auditoria 05/09/2026.)
     vira_nao_admin = atual["papel"] == "admin" and (papel != "admin" or not ativo)
-    if vira_nao_admin and banco.usuarios_contar_admins_ativos(excluir_id=id_) == 0:
-        raise HTTPException(
-            400,
-            "Este é o último administrador ativo. Promova outro usuário a admin "
-            "antes de rebaixar ou desativar este.",
-        )
 
     dados = {
         "nome": nome, "email": email,
@@ -256,9 +256,15 @@ def atualizar(id_: int, payload: dict, request: Request):
         dados["senha_hash"] = auth_mod.hash_senha(senha)
 
     try:
-        banco.usuarios_atualizar(id_, dados)
+        banco.usuarios_atualizar(id_, dados, exigir_outro_admin=vira_nao_admin)
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"E-mail {email} já cadastrado")
+    except banco.UltimoAdminError:
+        raise HTTPException(
+            400,
+            "Este é o último administrador ativo. Promova outro usuário a admin "
+            "antes de rebaixar ou desativar este.",
+        )
 
     mudancas = []
     if nome != atual["nome"]:

@@ -1,9 +1,21 @@
 """Leitura/gravação do config.txt em formato `chave = valor`."""
 from __future__ import annotations
 import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
+from app.core import arquivos
+from app.core.arquivos import escrever_texto_atomico
+
 CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "config.txt"))
+
+# Serializa o ciclo carregar→modificar→salvar de quem edita o config (ver `alterar`).
+# NÃO é o que protege o leitor: leitor nenhum conhece este lock — `carregar()` é chamado
+# do middleware de autenticação, do supervisor e das threads de câmera. Quem protege o
+# leitor é a escrita atômica em `salvar()`. Este lock resolve o OUTRO problema, a perda de
+# escrita entre dois admins salvando ao mesmo tempo. (Auditoria 05/09/2026.)
+_lock_escrita = threading.RLock()
 
 PADROES: dict[str, str] = {
     "porta": "14000",
@@ -528,7 +540,10 @@ PADROES: dict[str, str] = {
 def carregar() -> dict[str, str]:
     cfg = dict(PADROES)
     if CONFIG_PATH.exists():
-        for linha in CONFIG_PATH.read_text(encoding="utf-8").splitlines():
+        # `ler_texto_com_retry` e não `read_text`: durante o `os.replace` de `salvar()`
+        # o Windows recusa o open com PermissionError, e esta função roda no middleware de
+        # autenticação — levantar aqui derrubaria a chamada do posto. Ver o docstring dela.
+        for linha in arquivos.ler_texto_com_retry(CONFIG_PATH).splitlines():
             linha = linha.strip()
             if not linha or linha.startswith("#") or "=" not in linha:
                 continue
@@ -542,8 +557,46 @@ def carregar() -> dict[str, str]:
 
 
 def salvar(cfg: dict[str, str]) -> None:
+    """Grava o config inteiro. ATÔMICO — ver `app/core/arquivos.py`.
+
+    Antes era `write_text`, que trunca e só então escreve. `carregar()` roda no middleware
+    de autenticação a cada request com `X-API-Key` (`app/servidor.py`), e medindo um admin
+    salvando enquanto os roteadores chamavam, 185 de 1155 leituras pegaram o arquivo pela
+    metade: `api_key` sumia do dict e a chamada VÁLIDA de `/api/leitura` do posto era
+    recusada com 401 — abastecimento sem placa, sem erro nenhum no log. As outras threads
+    que leem config (supervisor, retenção, pipeline) viam os PADROES no lugar do valor real
+    pela mesma janela. (Auditoria 05/09/2026.)
+
+    Quem edita config deve preferir `alterar()`, que também fecha a janela de PERDA de
+    escrita entre dois admins salvando ao mesmo tempo.
+    """
     linhas = [f"{k} = {v}" for k, v in cfg.items()]
-    CONFIG_PATH.write_text("\n".join(linhas) + "\n", encoding="utf-8")
+    with _lock_escrita:
+        escrever_texto_atomico(CONFIG_PATH, "\n".join(linhas) + "\n")
+
+
+@contextmanager
+def alterar():
+    """Ciclo carregar→modificar→salvar sob lock, para duas edições não se apagarem.
+
+    Sem isto o padrão `cfg = carregar(); cfg[k] = v; salvar(cfg)` perde escrita: dois
+    admins (ou duas abas) carregam a tela, os dois salvam, e o segundo grava por cima do
+    snapshot que leu ANTES do primeiro — a tela do segundo mostra sucesso e o valor do
+    primeiro não está mais lá. Medido com PC A gravando `intelbras_senha` e PC B gravando
+    `api_key` ao mesmo tempo: sobrava um dos dois. (Auditoria 05/09/2026.)
+
+        with config.alterar() as cfg:
+            cfg["feira_empresa_id"] = ""
+
+    O `salvar` acontece na saída do bloco, ainda sob o lock. Levantar exceção dentro do
+    bloco NÃO grava nada — o que é o certo para uma validação que falhou no meio.
+
+    RLock: `salvar()` pega o mesmo lock, e é chamado de dentro daqui.
+    """
+    with _lock_escrita:
+        cfg = carregar()
+        yield cfg
+        salvar(cfg)
 
 
 def get_int(cfg: dict[str, str], chave: str) -> int:

@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 
 from app.core import banco
 from app.integracoes import apiplacas
 from app.core import config
 from app.core import estado
 from app.core import rotulos
+from app.core.arquivos import ler_bytes_com_retry
 from app.operacao import retencao as ret_mod
 from app.operacao import supervisor as sv
 from app.visao import camera as camera_mod
@@ -781,10 +782,20 @@ def bicos_preview(bico_id: int, request: Request, camera_id: int | None = None):
     caminho = leitura.caminho_preview_bico(bico_id, camera_id)
     if not caminho.exists():
         raise HTTPException(404, "Sem preview para este bico ainda")
+    # Lê os bytes aqui em vez de `FileResponse(caminho)`: o arquivo é republicado por
+    # `os.replace` a cada leitura do bico, e no Windows o `open` cai em PermissionError
+    # durante a janela da troca — com `FileResponse` isso viraria 500 na tela do operador
+    # (dois PCs no mesmo bico é o caso comum). `ler_bytes_com_retry` espera a troca
+    # terminar. O arquivo é pequeno (JPEG de preview) e a rota já é autenticada e rara.
+    # (Auditoria 05/09/2026.)
+    try:
+        dados = ler_bytes_com_retry(caminho)
+    except OSError:
+        raise HTTPException(404, "Sem preview para este bico ainda")
     # no-store: o arquivo é sobrescrito a cada leitura, e o mesmo nome nunca deve ser
     # servido do cache (do navegador ou de um proxy) depois que o conteúdo já mudou.
-    return FileResponse(caminho, media_type="image/jpeg",
-                        headers={"Cache-Control": "no-store"})
+    return Response(content=dados, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
 
 
 @router.post("/config", dependencies=[Depends(deps.exigir_admin)])
@@ -792,7 +803,6 @@ def config_salvar(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(400, "payload inválido")
 
-    atual = config.carregar()
     invalidas = [k for k in payload if k not in CHAVES_CONFIG]
     if invalidas:
         raise HTTPException(400, f"chaves desconhecidas: {invalidas}")
@@ -804,17 +814,26 @@ def config_salvar(payload: dict, request: Request):
     # IMPOSSÍVEL limpar um destes 4 campos pela tela. (Achado A7.)
     payload = redacao.descartar_mascara(payload, tuple(CHAVES_SENSIVEIS))
 
-    novo = dict(atual)
-    for k, v in payload.items():
-        novo[k] = str(v) if v is not None else ""
+    # Tudo sob `alterar()`: a base é relida DENTRO do lock. Lendo fora, dois admins (ou
+    # duas abas) salvando ao mesmo tempo perdiam uma das duas escritas — o segundo gravava
+    # por cima do snapshot que leu ANTES do primeiro, e a tela dele mostrava sucesso.
+    # Medido com um salvando `intelbras_senha` e outro `api_key`: sobrava só um dos dois.
+    # (Auditoria 05/09/2026.)
+    with config.alterar() as cfg:
+        atual = dict(cfg)
+        for k, v in payload.items():
+            cfg[k] = str(v) if v is not None else ""
 
-    # Filtra só as chaves conhecidas (descarta lixo herdado, ex.: _padroes).
-    novo = {k: novo[k] for k in CHAVES_CONFIG if k in novo}
-    # Só os NOMES das chaves que mudaram vão pra auditoria — nunca o valor: várias
-    # (intelbras_senha, api_key, smtp_senha) são segredo, e mesmo as que não são não
-    # precisam virar histórico permanente só por terem passado por aqui.
-    mudadas = sorted(k for k in novo if atual.get(k) != novo.get(k))
-    config.salvar(novo)
+        # Filtra só as chaves conhecidas (descarta lixo herdado, ex.: _padroes). Muta o
+        # dict NO LUGAR: quem grava é o `alterar()`, que segura ESTE objeto — rebindar o
+        # nome aqui dentro gravaria o dict não filtrado.
+        for k in [k for k in cfg if k not in CHAVES_CONFIG]:
+            del cfg[k]
+        # Só os NOMES das chaves que mudaram vão pra auditoria — nunca o valor: várias
+        # (intelbras_senha, api_key, smtp_senha) são segredo, e mesmo as que não são não
+        # precisam virar histórico permanente só por terem passado por aqui.
+        mudadas = sorted(k for k in cfg if atual.get(k) != cfg.get(k))
+        novo = dict(cfg)    # cópia para o `pipeline.reiniciar`, já fora do lock
     log.info("Configuração salva via interface")
     quem_id, quem_nome = deps.quem_pede(request)
     banco.auditoria_registrar(usuario_id=quem_id, usuario_nome=quem_nome, acao="config_salva",
@@ -1006,13 +1025,12 @@ def veiculo_consultar(placa: str, request: Request):
 @router.post("/setup/concluir", dependencies=[Depends(deps.exigir_admin)])
 def setup_concluir(payload: dict):
     """Grava configurações do wizard e marca sistema como implantado."""
-    atual = config.carregar()
     permitidos = {"porta", "ocr_engine", "deteccao_automatica", "log_level",
                   "webhook_url", "webhook_todas", "alerta_lista_negra"}
-    for k, v in payload.items():
-        if k in permitidos and v is not None:
-            atual[k] = str(v)
-    atual["implantado"] = "sim"
-    config.salvar(atual)
+    with config.alterar() as atual:
+        for k, v in payload.items():
+            if k in permitidos and v is not None:
+                atual[k] = str(v)
+        atual["implantado"] = "sim"
     log.info("Implantação concluída via wizard de primeiro uso")
     return {"ok": True}

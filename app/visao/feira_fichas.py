@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 
-from app.core import banco, config
+from app.core import arquivos, banco, config
 from app.integracoes import apiplacas
 from app.visao import feira
 
@@ -139,7 +139,12 @@ def salvar_fichas(fichas: dict) -> dict[str, dict[str, str]]:
         for placa, ficha in (fichas or {}).items()
         if feira.normalizar(placa) and isinstance(ficha, dict)
     }
-    _arquivo().write_text(json.dumps(limpo, ensure_ascii=False, indent=2), encoding="utf-8")
+    # ATÔMICO: a vitrine (`/api/feira/scan`, ~1,5 s entre leituras) e `/feira` chamam
+    # `carregar_fichas` em paralelo a este salvamento. Com `write_text` (trunca e depois
+    # escreve), o `json.loads` do leitor levantava no meio da janela e `carregar_fichas`
+    # caía nos PADROES — a demo perdia as fichas do operador em silêncio, na hora errada.
+    # (Auditoria 05/09/2026.)
+    arquivos.escrever_json_atomico(_arquivo(), limpo)
     return limpo
 
 

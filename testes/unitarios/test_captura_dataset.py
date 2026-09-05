@@ -144,7 +144,12 @@ def test_teto_zero_significa_sem_limite(dir_snap):
 def test_falha_de_escrita_nao_derruba_o_pipeline(dir_snap, monkeypatch):
     """Isto é coleta acessória: nunca pode interromper a operação da câmera."""
     import app.visao.captura_dataset as mod
-    monkeypatch.setattr(mod.cv2, "imwrite", lambda *a, **k: (_ for _ in ()).throw(OSError("disco cheio")))
+    # Falha o PONTO DE ESCRITA de verdade, não `cv2.imwrite`: a gravação passou a ser
+    # atômica (`arquivos.imwrite_atomico`, encode em memória + os.replace) e o teste
+    # continuava verde patchando um `cv2.imwrite` que ninguém mais chamava — ou seja,
+    # mediria "não levanta" de um caminho que nunca falhava. (Auditoria 05/09/2026.)
+    monkeypatch.setattr(mod.arquivos, "escrever_bytes_atomico",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disco cheio")))
 
     _cap(dir_snap).amostrar(IMG)             # não levanta
 

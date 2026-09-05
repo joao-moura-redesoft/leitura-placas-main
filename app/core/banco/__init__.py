@@ -98,6 +98,7 @@ from ._cadastro import (
 )
 from ._chamadas import chamadas_listar, chamadas_resumo, registrar_chamada
 from ._acesso import (
+    UltimoAdminError,
     buscar_usuario_email,
     buscar_usuario_id,
     contar_usuarios,
