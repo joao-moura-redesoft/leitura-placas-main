@@ -77,13 +77,17 @@ def cenario(ambiente, admin, posto, monkeypatch):
 
     monkeypatch.setattr(apiplacas, "buscar_na_api", _fronteira)
 
-    def _ler(**over):
+    def _ler(_rapido: bool = False, **over):
+        """`_rapido` sai do `**over` de propósito: é query da ROTA, não campo do resultado
+        de `ler_placa`. Misturar os dois faria `rapido=1` virar chave inventada no dublê e
+        o teste passaria sem nunca ter pedido o perfil leve."""
         if over:
             estado["resultado"] = _resultado(**over)
-        return admin.get("/api/leitura", params={
-            "entidade": "Rede Teste", "cnpj": posto["cnpj"],
-            "automacao": "1", "bico": "3",
-        })
+        params = {"entidade": "Rede Teste", "cnpj": posto["cnpj"],
+                  "automacao": "1", "bico": "3"}
+        if _rapido:
+            params["rapido"] = 1
+        return admin.get("/api/leitura", params=params)
 
     yield type("C", (), {
         "ler": staticmethod(_ler),
@@ -234,6 +238,67 @@ class TestNaoGasta:
         config.salvar({**config.carregar(), "apiplacas_exigir_confirmada": "nao"})
         cenario.ler(confirmada=False)
         assert len(cenario.chamadas) == 1
+
+
+class TestModoRapidoConsulta:
+    """`rapido=1` consulta igual ao modo completo (mudança de 05/09/2026).
+
+    Antes o perfil rápido era cache-only CATEGÓRICO: um `return` antes de `_pode_gastar`
+    que recusava a consulta mesmo com a leitura perfeita. O caso real que derrubou a regra
+    foi um payload de moto com `acordo=1,0`, três engines devolvendo a mesma placa e
+    `confirmada=True`, que saía com "sem dados em cache (este fluxo não consulta a API
+    paga)" — exatamente a leitura que vale enriquecer.
+
+    Nenhum teste cobria o veto quando ele foi removido: a suíte inteira passava nos DOIS
+    estados. Esta classe existe para que a próxima mudança de opinião sobre o assunto seja
+    uma decisão, e não um efeito colateral silencioso.
+    """
+
+    def test_rapido_consulta_quando_a_leitura_e_boa(self, cenario):
+        """O caso que motivou a mudança, com os números do payload real."""
+        corpo = cenario.ler(_rapido=True, confirmada=True, acordo=1.0,
+                            parada_motivo="acordo", tipo_veiculo="moto").json()
+        assert cenario.chamadas == [PLACA], "leitura boa no rápido: consulta acontece"
+        assert corpo["veiculo"]["consulta"] == "ok"
+        assert corpo["veiculo"]["combustivel"] == "Alcool / Gasolina"
+
+    def test_rapido_e_completo_decidem_igual(self, cenario):
+        """O perfil deixou de ser variável da decisão — é isto que a mudança afirma."""
+        cenario.ler(_rapido=True)
+        rapido = len(cenario.chamadas)
+        banco.veiculos_remover(PLACA)                  # senão o 2º vem do cache e não mede
+        limitador._resetar_para_teste()
+        cenario.ler(_rapido=False)
+        assert rapido == 1 and len(cenario.chamadas) == 2, "mesma leitura, mesma decisão"
+
+    def test_rapido_nao_confirmada_continua_sem_gastar(self, cenario):
+        """A trava que IMPORTA sobrevive: quem barra é `_pode_gastar`, não o perfil.
+
+        Sem esta asserção a mudança teria trocado um veto grosso por nenhum veto."""
+        corpo = cenario.ler(_rapido=True, confirmada=False, acordo=0.4).json()
+        assert cenario.chamadas == []
+        assert corpo["veiculo"]["consulta"] == "indisponivel"
+
+    def test_rapido_respeita_modo_manual(self, cenario):
+        """O outro interruptor de quem quiser o rápido barato de novo."""
+        config.salvar({**config.carregar(), "apiplacas_modo": "manual"})
+        cenario.ler(_rapido=True)
+        assert cenario.chamadas == []
+
+    def test_rapido_sem_orcamento_nao_gasta(self, cenario, monkeypatch):
+        """Custo de TEMPO é tratado por `orcamento_seg`, e ele corta ANTES de gastar.
+
+        É a razão sobrevivente do veto antigo: a consulta não pode empurrar a resposta
+        para além do que o roteador tolera. Com o orçamento estourado a leitura sai
+        normalmente e ninguém paga."""
+        monkeypatch.setattr(leitura_rotas.config, "get_float",
+                            lambda cfg, chave: 0.0
+                            if chave == "apiplacas_timeout_seg"
+                            else config.get_float(cfg, chave))
+        corpo = cenario.ler(_rapido=True).json()
+        assert cenario.chamadas == []
+        assert corpo["placa"] == PLACA, "a leitura é o produto; a consulta é enfeite"
+        assert corpo["veiculo"]["consulta"] == "indisponivel"
 
 
 class TestBotaoDeTesteNaoGasta:
